@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.AppLanguage
 import com.example.data.BillEntity
 import com.example.data.BillingRepository
+import com.example.data.ChargeType
 import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
 import com.example.data.InvoiceItem
@@ -50,12 +51,16 @@ enum class MainTab(val route: String) {
 
 data class BillDraft(
     val editingId: String? = null,
+    val openedFromSaved: Boolean = false,
     val createdBy: String = "",
     val customerName: String = "",
     val customerDetails: String = "",
+    val customerLocationUrl: String = "",
     val invoiceNo: String = "TSE-001",
     val date: String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()),
     val items: List<InvoiceItem> = listOf(InvoiceItem()),
+    val extraChargeType: ChargeType = ChargeType.NONE,
+    val extraChargeAmountText: String = "0",
     val discountText: String = "0",
     val paidAmountText: String = "0",
     val paymentMode: PaymentMode = PaymentMode.ONLINE,
@@ -63,7 +68,11 @@ data class BillDraft(
     val customQrText: String = "",
     val showSheetPreview: Boolean = false
 ) {
-    val subtotal: Double get() = items.sumOf { it.amount }
+    val itemsSubtotal: Double get() = items.sumOf { it.amount }
+    val extraChargeAmount: Double
+        get() = if (extraChargeType == ChargeType.NONE) 0.0
+        else (extraChargeAmountText.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
+    val subtotal: Double get() = itemsSubtotal + extraChargeAmount
     val discount: Double get() = (discountText.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
     val grandTotal: Double get() = (subtotal - discount).coerceAtLeast(0.0)
     val paidAmount: Double get() = (paidAmountText.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
@@ -166,13 +175,17 @@ class BillingViewModel(
             }
         }
         viewModelScope.launch {
-            delay(950)
+            delay(1150)
             _splashVisible.value = false
         }
     }
 
     fun dismissSplash() {
         _splashVisible.value = false
+    }
+
+    fun speakLoginWelcome() {
+        soundEngine.speakEnglish("Welcome to Total Solution Bill system. Select username and enter password.")
     }
 
     fun toggleSound() {
@@ -198,9 +211,10 @@ class BillingViewModel(
 
     fun selectTab(tab: MainTab) {
         val currentSession = _session.value ?: return
-        if (tab != MainTab.BILL && !currentSession.isAdmin) {
+        val staffAllowed = tab == MainTab.BILL || tab == MainTab.SAVED || tab == MainTab.CUSTOMERS
+        if (!staffAllowed && (currentSession.isStaff || !currentSession.isAdmin)) {
             soundEngine.play(SoundCue.ERROR)
-            emitToast("Admin access only — Staff can only generate bills", isError = true)
+            emitToast("Admin access only", isError = true)
             return
         }
         soundEngine.play(SoundCue.CLICK)
@@ -280,22 +294,37 @@ class BillingViewModel(
     fun updateCustomerName(name: String) {
         val matched = customers.value.firstOrNull { it.name.equals(name.trim(), ignoreCase = true) }
         _billDraft.update { d ->
+            val matchedDetails = matched?.let { c ->
+                c.details.ifBlank { listOf(c.address, c.phone).filter { it.isNotBlank() }.joinToString("\n") }
+            }
             d.copy(
                 customerName = name,
-                customerDetails = matched?.details ?: d.customerDetails
+                customerDetails = matchedDetails ?: d.customerDetails,
+                customerLocationUrl = matched?.locationUrl ?: d.customerLocationUrl
             )
         }
     }
 
     fun selectCustomerSuggestion(customer: CustomerEntity) {
         soundEngine.play(SoundCue.CLICK)
+        val combined = customer.details.ifBlank {
+            listOf(customer.address, customer.phone).filter { it.isNotBlank() }.joinToString("\n")
+        }
         _billDraft.update {
-            it.copy(customerName = customer.name, customerDetails = customer.details)
+            it.copy(
+                customerName = customer.name,
+                customerDetails = combined,
+                customerLocationUrl = customer.locationUrl
+            )
         }
     }
 
     fun updateCustomerDetails(details: String) {
         _billDraft.update { it.copy(customerDetails = details) }
+    }
+
+    fun updateCustomerLocationUrl(url: String) {
+        _billDraft.update { it.copy(customerLocationUrl = url) }
     }
 
     fun updateInvoiceNo(no: String) {
@@ -304,6 +333,18 @@ class BillingViewModel(
 
     fun updateInvoiceDate(date: String) {
         _billDraft.update { it.copy(date = date) }
+    }
+
+    fun updateExtraChargeType(type: ChargeType) {
+        soundEngine.play(SoundCue.CLICK)
+        _billDraft.update {
+            if (type == ChargeType.NONE) it.copy(extraChargeType = ChargeType.NONE, extraChargeAmountText = "0")
+            else it.copy(extraChargeType = type)
+        }
+    }
+
+    fun updateExtraChargeAmount(value: String) {
+        _billDraft.update { it.copy(extraChargeAmountText = value) }
     }
 
     fun updateDiscount(value: String) {
@@ -410,7 +451,7 @@ class BillingViewModel(
     fun saveBill(silent: Boolean = false, onSaved: (() -> Unit)? = null) {
         val currentUser = _session.value ?: return
         val draft = _billDraft.value
-        if (draft.editingId != null && !currentUser.isAdmin) {
+        if (draft.openedFromSaved && !currentUser.isAdmin) {
             soundEngine.play(SoundCue.ERROR)
             emitToast("Only Admin can edit saved bills", isError = true)
             return
@@ -442,20 +483,25 @@ class BillingViewModel(
             signatureBase64 = draft.signatureBase64,
             customQrText = draft.customQrText.trim(),
             createdBy = billCreator,
-            updatedAt = System.currentTimeMillis()
+            updatedAt = System.currentTimeMillis(),
+            extraChargeType = draft.extraChargeType.name,
+            extraChargeAmount = draft.extraChargeAmount
         )
         viewModelScope.launch {
-            repository.saveBill(entity)
+            repository.saveBill(entity, draft.customerLocationUrl)
             _billDraft.update { it.copy(editingId = billId, createdBy = billCreator) }
             if (!silent) {
                 soundEngine.play(SoundCue.SAVE)
-                emitToast("Bill saved (By @$billCreator)")
+                emitToast("Bill saved & customer updated (By @$billCreator)")
+                val amtSpeech = formatAmountForSpeech(entity.grandTotal)
                 val dueClause = if (entity.dueAmount > 0.009) {
-                    " और बकाया राशि ${entity.dueAmount.toInt()} रुपये है।"
+                    " Due amount is ${formatAmountForSpeech(entity.dueAmount)} rupees."
                 } else {
-                    "।"
+                    ""
                 }
-                soundEngine.speak("बिल सेव हो गया है। कुल राशि ${entity.grandTotal.toInt()} रुपये$dueClause")
+                soundEngine.speakEnglish(
+                    "Bill saved. Total amount is $amtSpeech rupees.$dueClause Thank you for choosing Total Solution Enterprises."
+                )
             }
             onSaved?.invoke()
         }
@@ -463,20 +509,25 @@ class BillingViewModel(
 
     fun openBillForEdit(bill: BillEntity) {
         val currentUser = _session.value ?: return
-        if (!currentUser.isAdmin) {
+        if (currentUser.isStaff || !currentUser.isAdmin) {
             soundEngine.play(SoundCue.ERROR)
             emitToast("Only Admin can edit saved bills", isError = true)
             return
         }
         val parsedItems = InvoiceItemJson.fromJson(bill.itemsJson).ifEmpty { listOf(InvoiceItem()) }
+        val matchedLoc = customers.value.firstOrNull { it.name.equals(bill.customerName.trim(), ignoreCase = true) }?.locationUrl ?: ""
         _billDraft.value = BillDraft(
             editingId = bill.id,
+            openedFromSaved = true,
             createdBy = bill.createdBy,
             customerName = bill.customerName,
             customerDetails = bill.customerDetails,
+            customerLocationUrl = matchedLoc,
             invoiceNo = bill.invoiceNo,
             date = bill.date,
             items = parsedItems,
+            extraChargeType = ChargeType.fromString(bill.extraChargeType),
+            extraChargeAmountText = formatInputNum(bill.extraChargeAmount),
             discountText = formatInputNum(bill.discount),
             paidAmountText = formatInputNum(bill.paidAmount),
             paymentMode = PaymentMode.fromString(bill.paymentMode),
@@ -518,13 +569,15 @@ class BillingViewModel(
             dueAmount = bill.dueAmount,
             paymentMode = PaymentMode.fromString(bill.paymentMode),
             signatureBase64 = bill.signatureBase64,
-            customQrText = bill.customQrText
+            customQrText = bill.customQrText,
+            extraChargeType = ChargeType.fromString(bill.extraChargeType),
+            extraChargeAmount = bill.extraChargeAmount
         )
     }
 
     fun deleteBill(id: String) {
         val currentUser = _session.value ?: return
-        if (!currentUser.isAdmin) {
+        if (currentUser.isStaff || !currentUser.isAdmin) {
             soundEngine.play(SoundCue.ERROR)
             emitToast("Only Admin can delete bills", isError = true)
             return
@@ -579,12 +632,15 @@ class BillingViewModel(
             _finalModalError.value = ""
             saveBill(silent = true) {
                 soundEngine.play(SoundCue.SAVE)
-                val statusMsg = if (draft.dueAmount > 0.009) {
-                    " बकाया राशि ${draft.dueAmount.toInt()} रुपये है।"
+                val totalSpeech = formatAmountForSpeech(draft.grandTotal)
+                val dueClause = if (draft.dueAmount > 0.009) {
+                    " Due amount is ${formatAmountForSpeech(draft.dueAmount)} rupees."
                 } else {
-                    " पूरा भुगतान हो चुका है।"
+                    " Paid in full."
                 }
-                soundEngine.speak("बिल तैयार है। ग्रैंड टोटल ${draft.grandTotal.toInt()} रुपये है।$statusMsg")
+                soundEngine.speakEnglish(
+                    "Bill generated. Total amount is $totalSpeech rupees.$dueClause Thank you for choosing Total Solution Enterprises."
+                )
                 val payload = InvoicePrintPayload(
                     company = companySettings.value,
                     upi = upiSettings.value,
@@ -600,11 +656,19 @@ class BillingViewModel(
                     dueAmount = draft.dueAmount,
                     paymentMode = draft.paymentMode,
                     signatureBase64 = draft.signatureBase64,
-                    customQrText = draft.customQrText
+                    customQrText = draft.customQrText,
+                    extraChargeType = draft.extraChargeType,
+                    extraChargeAmount = draft.extraChargeAmount
                 )
                 _exportOptionsPayload.value = payload
             }
         }
+    }
+
+    private fun formatAmountForSpeech(amount: Double): String {
+        val rounded = kotlin.math.round(amount * 100.0) / 100.0
+        return if (rounded % 1.0 == 0.0) rounded.toLong().toString()
+        else String.format(Locale.US, "%.2f", rounded)
     }
 
     fun dismissExportOptions() {
@@ -639,11 +703,18 @@ class BillingViewModel(
         }
     }
 
-    /* ===== Customers & Products (Admin Only) ===== */
-    fun saveCustomer(name: String, details: String) {
-        if (_session.value?.isAdmin != true) {
+    /* ===== Customers & Products (Admin Only Edit/Delete) ===== */
+    fun saveCustomer(
+        name: String,
+        phone: String,
+        address: String,
+        locationUrl: String,
+        id: Long = 0L
+    ) {
+        val current = _session.value
+        if (current == null || current.isStaff || !current.isAdmin) {
             soundEngine.play(SoundCue.ERROR)
-            emitToast("Admin access only", isError = true)
+            emitToast("Admin access only — Staff cannot edit customers", isError = true)
             return
         }
         if (name.isBlank()) {
@@ -651,15 +722,24 @@ class BillingViewModel(
             emitToast("Customer name required", isError = true)
             return
         }
+        val combinedDetails = listOf(address.trim(), phone.trim()).filter { it.isNotBlank() }.joinToString("\n")
         viewModelScope.launch {
-            repository.saveCustomer(name, details)
+            repository.saveCustomer(
+                name = name,
+                details = combinedDetails,
+                phone = phone,
+                address = address,
+                locationUrl = locationUrl,
+                id = id
+            )
             soundEngine.play(SoundCue.SAVE)
-            emitToast("Customer saved")
+            emitToast(if (id > 0L) "Customer updated" else "Customer saved")
         }
     }
 
     fun deleteCustomer(id: Long) {
-        if (_session.value?.isAdmin != true) {
+        val current = _session.value
+        if (current == null || current.isStaff || !current.isAdmin) {
             soundEngine.play(SoundCue.ERROR)
             emitToast("Admin access only", isError = true)
             return

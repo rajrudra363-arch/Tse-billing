@@ -59,6 +59,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.data.BillEntity
+import com.example.data.ChargeType
 import com.example.data.CompanySettings
 import com.example.data.InvoiceItemJson
 import com.example.data.PaymentMode
@@ -341,6 +342,8 @@ fun SavedBillsScreen(
                 invoiceNo = billToPreview.invoiceNo,
                 date = billToPreview.date,
                 items = InvoiceItemJson.fromJson(billToPreview.itemsJson),
+                extraChargeType = ChargeType.fromString(billToPreview.extraChargeType),
+                extraChargeAmountText = if (billToPreview.extraChargeAmount == 0.0) "0" else billToPreview.extraChargeAmount.toString(),
                 discountText = billToPreview.discount.toString(),
                 paidAmountText = billToPreview.paidAmount.toString(),
                 paymentMode = PaymentMode.fromString(billToPreview.paymentMode),

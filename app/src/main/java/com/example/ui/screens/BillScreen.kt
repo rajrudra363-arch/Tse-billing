@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -30,9 +33,13 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.QrCode2
@@ -69,6 +76,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
@@ -80,6 +88,7 @@ import androidx.compose.ui.unit.dp
 import com.example.ui.components.ProvideSafeTextToolbar
 import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.data.AppLanguage
+import com.example.data.ChargeType
 import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
 import com.example.data.InvoiceItem
@@ -98,6 +107,7 @@ import com.example.ui.theme.RedDueBg
 import com.example.ui.theme.RedDueDark
 import com.example.ui.theme.TealAccent
 import com.example.util.InvoicePrintPayload
+import com.example.util.LocationHelper
 import com.example.util.QrGenerator
 import com.example.util.RupeesWords
 import java.util.Locale
@@ -118,12 +128,15 @@ fun BillScreen(
     onCustomerNameChange: (String) -> Unit,
     onCustomerSelected: (CustomerEntity) -> Unit,
     onCustomerDetailsChange: (String) -> Unit,
+    onCustomerLocationUrlChange: (String) -> Unit,
     onInvoiceNoChange: (String) -> Unit,
     onInvoiceDateChange: (String) -> Unit,
     onAddItem: () -> Unit,
     onSelectProductForRow: (Int, ProductEntity) -> Unit,
     onUpdateItem: (Int, String?, Double?, String?, Double?) -> Unit,
     onRemoveItem: (Int) -> Unit,
+    onExtraChargeTypeChange: (ChargeType) -> Unit,
+    onExtraChargeAmountChange: (String) -> Unit,
     onDiscountChange: (String) -> Unit,
     onPaidAmountChange: (String) -> Unit,
     onPaymentModeChange: (PaymentMode) -> Unit,
@@ -143,8 +156,29 @@ fun BillScreen(
     val isAdmin = currentUser.isAdmin && !currentUser.isStaff
     val isHi = language == AppLanguage.HI
     var customerDropdownOpen by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
+    var locationBusy by remember { mutableStateOf(false) }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val granted = perms.values.any { it }
+        if (granted) {
+            locationBusy = true
+            LocationHelper.fetchCurrentLocationMapsUrl(context) { url, error ->
+                locationBusy = false
+                if (url != null) {
+                    onCustomerLocationUrlChange(url)
+                } else if (!error.isNullOrBlank()) {
+                    Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+                }
+            }
+        } else {
+            Toast.makeText(context, "Location permission denied", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -353,6 +387,62 @@ fun BillScreen(
                         minLines = 2,
                         modifier = Modifier.fillMaxWidth().testTag("bill_customer_details")
                     )
+
+                    OutlinedTextField(
+                        value = draft.customerLocationUrl,
+                        onValueChange = onCustomerLocationUrlChange,
+                        label = { Text(if (isHi) "गूगल मैप्स लोकेशन (वैकल्पिक)" else "Google Maps Location Link / GPS (Optional)") },
+                        leadingIcon = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = TealAccent) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("bill_customer_location")
+                    )
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                if (LocationHelper.hasLocationPermission(context)) {
+                                    locationBusy = true
+                                    LocationHelper.fetchCurrentLocationMapsUrl(context) { url, error ->
+                                        locationBusy = false
+                                        if (url != null) {
+                                            onCustomerLocationUrlChange(url)
+                                        } else if (!error.isNullOrBlank()) {
+                                            Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                } else {
+                                    locationPermissionLauncher.launch(LocationHelper.LOCATION_PERMISSIONS)
+                                }
+                            },
+                            enabled = !locationBusy,
+                            modifier = Modifier.testTag("bill_gps_location_button")
+                        ) {
+                            Icon(Icons.Default.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (locationBusy) "Getting GPS..." else "GPS Pin")
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                val query = draft.customerLocationUrl.ifBlank { draft.customerDetails.ifBlank { draft.customerName } }
+                                if (query.isBlank()) {
+                                    Toast.makeText(context, "Enter address or tap GPS Pin first", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    LocationHelper.openInGoogleMaps(context, query)
+                                }
+                            },
+                            modifier = Modifier.testTag("bill_open_map_button")
+                        ) {
+                            Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Open Maps")
+                        }
+                    }
                 }
             }
         }
@@ -368,6 +458,59 @@ fun BillScreen(
                 onUpdate = { desc, qty, unit, rate -> onUpdateItem(index, desc, qty, unit, rate) },
                 onDelete = { onRemoveItem(index) }
             )
+        }
+
+        // Service & Installation Charges Card
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.Build, contentDescription = null, tint = TealAccent)
+                        Text(
+                            text = if (isHi) "सर्विस और इंस्टॉलेशन चार्ज" else "Service / Installation Charges",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+                    Text(
+                        text = if (isHi) {
+                            "चुना गया चार्ज ऑटोमैटिक प्रिंट पेज में प्रोडक्ट लिस्ट के आखिर में जुड़ जाएगा।"
+                        } else {
+                            "Selected charge automatically appends as the last row in Product Details on A4 print & PDF."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        ChargeType.entries.forEach { chargeType ->
+                            FilterChip(
+                                selected = draft.extraChargeType == chargeType,
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    onExtraChargeTypeChange(chargeType)
+                                },
+                                label = { Text(chargeType.label) },
+                                modifier = Modifier.testTag("charge_chip_${chargeType.name}")
+                            )
+                        }
+                    }
+                    AnimatedVisibility(visible = draft.extraChargeType != ChargeType.NONE) {
+                        OutlinedTextField(
+                            value = draft.extraChargeAmountText,
+                            onValueChange = onExtraChargeAmountChange,
+                            label = { Text("${draft.extraChargeType.label} (₹)") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().testTag("bill_extra_charge_amount")
+                        )
+                    }
+                }
+            }
         }
 
         // Totals + Payment Mode + Dynamic UPI QR Card

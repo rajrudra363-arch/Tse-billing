@@ -25,6 +25,7 @@ import android.text.TextPaint
 import android.text.TextUtils
 import android.util.Base64
 import androidx.core.content.FileProvider
+import com.example.data.ChargeType
 import com.example.data.CompanySettings
 import com.example.data.InvoiceItem
 import com.example.data.PaymentMode
@@ -49,7 +50,9 @@ data class InvoicePrintPayload(
     val dueAmount: Double,
     val paymentMode: PaymentMode,
     val signatureBase64: String,
-    val customQrText: String
+    val customQrText: String,
+    val extraChargeType: ChargeType = ChargeType.NONE,
+    val extraChargeAmount: Double = 0.0
 )
 
 object InvoicePdfPrinter {
@@ -324,14 +327,15 @@ object InvoicePdfPrinter {
         canvas.drawText("DATE: ${p.date}", metaSplitX + 8f, metaTop + 20f, labelPaint)
         canvas.drawText("INVOICE NO. : ${p.invoiceNo}", metaSplitX + 8f, metaTop + 40f, labelPaint)
 
-        // 4. ITEMS TABLE (Header + 11 Fixed Rows, y: 219 -> 522.5)
+        // 4. ITEMS TABLE (Header + 11+ Fixed Rows, y: 219 -> 522.5)
+        val effectiveItems = buildEffectivePrintItems(p.items, p.extraChargeType, p.extraChargeAmount)
         val tableTop = metaBottom + 5f
         val tableLeft = left + 5f
         val tableRight = right - 5f
         val tableW = tableRight - tableLeft
         val headerRowH = 23f
-        val itemRowH = 25.5f
-        val totalRows = 11
+        val totalRows = maxOf(11, effectiveItems.size)
+        val itemRowH = (25.5f * 11f) / totalRows.toFloat()
         val tableBottom = tableTop + headerRowH + (itemRowH * totalRows)
 
         val colWidths = floatArrayOf(34f, tableW - 34f - 42f - 46f - 72f - 82f, 42f, 46f, 72f, 82f)
@@ -360,10 +364,10 @@ object InvoicePdfPrinter {
 
         for (r in 0 until totalRows) {
             val rowTop = tableTop + headerRowH + r * itemRowH
-            val rowBase = rowTop + 16.5f
+            val rowBase = rowTop + (itemRowH * 0.65f)
             if (r > 0) canvas.drawLine(tableLeft, rowTop, tableRight, rowTop, thinBorder)
 
-            val item = p.items.getOrNull(r)
+            val item = effectiveItems.getOrNull(r)
             if (item != null && (item.description.isNotBlank() || item.rate > 0.0)) {
                 var cx = tableLeft
                 canvas.drawText("${r + 1}", cx + colWidths[0] - 6f, rowBase, cellRightPaint)
@@ -682,6 +686,26 @@ object InvoicePdfPrinter {
             end--
         }
         return text.substring(0, end.coerceAtLeast(0)) + "..."
+    }
+
+    fun buildEffectivePrintItems(
+        items: List<InvoiceItem>,
+        extraChargeType: ChargeType,
+        extraChargeAmount: Double
+    ): List<InvoiceItem> {
+        val active = items.filter { it.description.isNotBlank() || it.rate > 0.0 }.toMutableList()
+        if (extraChargeType != ChargeType.NONE && extraChargeAmount > 0.0) {
+            active.add(
+                InvoiceItem(
+                    localId = -999L,
+                    description = extraChargeType.label,
+                    qty = 1.0,
+                    unit = "Job",
+                    rate = extraChargeAmount
+                )
+            )
+        }
+        return active
     }
 
     fun decodeBase64Bitmap(raw: String): Bitmap? {

@@ -103,17 +103,18 @@ fun SplashOverlay(
         ),
         label = "floatY"
     )
-    var targetProgress by remember { mutableStateOf(0.15f) }
+    var targetProgress by remember { mutableStateOf(0f) }
     val progress by animateFloatAsState(
         targetValue = targetProgress,
-        animationSpec = tween(820, easing = FastOutSlowInEasing),
+        animationSpec = tween(950, easing = FastOutSlowInEasing),
         label = "splashProgress"
     )
+    val percentText = ((progress * 100f).toInt()).coerceIn(0, 100)
     var showSkip by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         targetProgress = 1f
-        delay(650)
+        delay(950)
         showSkip = true
     }
 
@@ -148,10 +149,11 @@ fun SplashOverlay(
                 textAlign = TextAlign.Center
             )
             Text(
-                text = "LOADING SECURE CCTV BILLING...",
+                text = "LOADING SECURE CCTV BILLING... $percentText%",
                 style = MaterialTheme.typography.labelMedium,
                 color = GoldSoft,
-                letterSpacing = 1.6.sp
+                letterSpacing = 1.6.sp,
+                modifier = Modifier.testTag("splash_progress_text")
             )
             LinearProgressIndicator(
                 progress = { progress },
@@ -398,7 +400,7 @@ private fun StaffAdminLoginForm(
     onLogin: (String, String) -> Unit
 ) {
     var selectedUsername by remember(accounts) {
-        mutableStateOf(accounts.firstOrNull()?.username ?: "")
+        mutableStateOf("")
     }
     var dropdownExpanded by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf("") }
@@ -413,6 +415,11 @@ private fun StaffAdminLoginForm(
             Icon(Icons.Default.Login, contentDescription = null, tint = TealAccent)
             Text("Staff / Admin Login", style = MaterialTheme.typography.titleLarge, color = NavyPrimary)
         }
+        Text(
+            text = "Welcome to Total Solution Bill system. Select username and enter password.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
 
         Box(modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(
@@ -435,9 +442,9 @@ private fun StaffAdminLoginForm(
                         Icon(Icons.Default.Person, contentDescription = null)
                         Text(
                             text = if (selectedAccount != null) {
-                                "${selectedAccount.username} (${if (selectedAccount.role == "admin") "Admin" else "Staff"})"
+                                "Username: ${selectedAccount.username} (${if (selectedAccount.role == "admin") "Admin" else "Staff"})"
                             } else {
-                                "Select Username / ID"
+                                "Select Username"
                             },
                             fontWeight = FontWeight.Bold
                         )
@@ -465,7 +472,8 @@ private fun StaffAdminLoginForm(
                             selectedUsername = acc.username
                             dropdownExpanded = false
                             onClearError()
-                        }
+                        },
+                        modifier = Modifier.testTag("login_user_option_${acc.username}")
                     )
                 }
             }

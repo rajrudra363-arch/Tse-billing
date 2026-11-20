@@ -20,14 +20,19 @@ data class BillEntity(
     val signatureBase64: String,
     val customQrText: String,
     val createdBy: String,
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val extraChargeType: String = "NONE",
+    val extraChargeAmount: Double = 0.0
 )
 
 @Entity(tableName = "customers")
 data class CustomerEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
-    val details: String
+    val details: String,
+    val phone: String = "",
+    val address: String = "",
+    val locationUrl: String = ""
 )
 
 @Entity(tableName = "products")

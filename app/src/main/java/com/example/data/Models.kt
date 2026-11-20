@@ -59,6 +59,18 @@ enum class PaymentMode(val label: String) {
     }
 }
 
+enum class ChargeType(val label: String) {
+    NONE("None"),
+    SERVICE("Service Charges"),
+    INSTALLATION("Installation Charges"),
+    INSTALLATION_AND_SERVICE("Installation & Service Charges");
+
+    companion object {
+        fun fromString(raw: String): ChargeType =
+            entries.firstOrNull { it.name.equals(raw, ignoreCase = true) || it.label.equals(raw, ignoreCase = true) } ?: NONE
+    }
+}
+
 enum class AppLanguage(val code: String, val displayName: String) {
     EN("en", "English"),
     HI("hi", "हिन्दी");

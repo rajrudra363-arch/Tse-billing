@@ -10,12 +10,15 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.AppDatabase
 import com.example.data.BillEntity
 import com.example.data.BillingRepository
+import com.example.data.ChargeType
 import com.example.data.CompanySettings
+import com.example.data.CustomerEntity
 import com.example.data.InvoiceItem
 import com.example.data.InvoiceItemJson
 import com.example.data.PaymentMode
@@ -23,7 +26,10 @@ import com.example.data.ProductEntity
 import com.example.data.UpiSettings
 import com.example.data.UserSession
 import com.example.ui.BillDraft
+import com.example.ui.BillingViewModel
+import com.example.ui.MainTab
 import com.example.ui.screens.BillScreen
+import com.example.ui.screens.CustomersScreen
 import com.example.ui.screens.ProductsScreen
 import com.example.ui.screens.SavedBillsScreen
 import com.example.ui.screens.SettingsScreen
@@ -31,6 +37,7 @@ import com.example.ui.theme.TseBillingTheme
 import com.example.util.InvoicePdfPrinter
 import com.example.util.InvoicePrintPayload
 import com.example.util.QrGenerator
+import com.example.util.SoundEngine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -241,12 +248,15 @@ class ExampleRobolectricTest {
                     onCustomerNameChange = {},
                     onCustomerSelected = {},
                     onCustomerDetailsChange = {},
+                    onCustomerLocationUrlChange = {},
                     onInvoiceNoChange = {},
                     onInvoiceDateChange = {},
                     onAddItem = {},
                     onSelectProductForRow = { _, _ -> },
                     onUpdateItem = { _, _, _, _, _ -> },
                     onRemoveItem = {},
+                    onExtraChargeTypeChange = {},
+                    onExtraChargeAmountChange = {},
                     onDiscountChange = {},
                     onPaidAmountChange = {},
                     onPaymentModeChange = {},
@@ -315,6 +325,137 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("saved_bill_creator_TSE-055").assertIsDisplayed()
         composeTestRule.onNodeWithTag("saved_bill_creator_TSE-055").assertTextContains("@rahul_staff", substring = true)
+    }
+
+    @Test
+    fun chargeType_appendsAtLastOfPrintItems_andAddsToTotals() {
+        val items = listOf(
+            InvoiceItem(description = "2MP Dome Camera", qty = 2.0, unit = "Nos", rate = 1200.0),
+            InvoiceItem(description = "4 Ch DVR", qty = 1.0, unit = "Nos", rate = 3500.0)
+        )
+        val draft = BillDraft(
+            items = items,
+            extraChargeType = ChargeType.INSTALLATION_AND_SERVICE,
+            extraChargeAmountText = "850",
+            discountText = "100",
+            paidAmountText = "5000"
+        )
+        assertEquals(6750.0, draft.subtotal, 0.001)
+        assertEquals(6650.0, draft.grandTotal, 0.001)
+        assertEquals(1650.0, draft.dueAmount, 0.001)
+
+        val effective = InvoicePdfPrinter.buildEffectivePrintItems(
+            items = items,
+            extraChargeType = draft.extraChargeType,
+            extraChargeAmount = draft.extraChargeAmount
+        )
+        assertEquals(3, effective.size)
+        assertEquals("Installation & Service Charges", effective.last().description)
+        assertEquals(850.0, effective.last().amount, 0.001)
+    }
+
+    @Test
+    fun saveBill_autoSavesCustomerWithPhoneAddressAndLocationUrl() = runTest {
+        val bill = BillEntity(
+            id = "b_auto_1",
+            invoiceNo = "TSE-010",
+            date = "2026-11-20",
+            customerName = "Rakesh Naik",
+            customerDetails = "Mapusa Market, Goa\n9876543210",
+            itemsJson = InvoiceItemJson.toJson(listOf(InvoiceItem(description = "DVR", qty = 1.0, rate = 4000.0))),
+            subtotal = 4500.0,
+            discount = 0.0,
+            grandTotal = 4500.0,
+            paidAmount = 4500.0,
+            dueAmount = 0.0,
+            paymentMode = PaymentMode.ONLINE.label,
+            signatureBase64 = "",
+            customQrText = "",
+            createdBy = "staff1",
+            extraChargeType = ChargeType.SERVICE.name,
+            extraChargeAmount = 500.0
+        )
+        val mapsPin = "https://maps.google.com/?q=15.591500,73.810000"
+        repo.saveBill(bill, customerLocationUrl = mapsPin)
+
+        val savedCustomers = repo.customers.first()
+        assertEquals(1, savedCustomers.size)
+        val cust = savedCustomers.first()
+        assertEquals("Rakesh Naik", cust.name)
+        assertEquals("9876543210", cust.phone)
+        assertEquals("Mapusa Market, Goa", cust.address)
+        assertEquals(mapsPin, cust.locationUrl)
+    }
+
+    @Test
+    fun customersScreen_hidesEditAddDeleteForStaff_showsForAdmin() {
+        val sampleCustomers = listOf(
+            CustomerEntity(
+                id = 10L,
+                name = "Suresh Desai",
+                details = "Ponda, Goa\n9988776655",
+                phone = "9988776655",
+                address = "Ponda, Goa",
+                locationUrl = "https://maps.google.com/?q=15.4027,74.0078"
+            )
+        )
+        val staffUser = UserSession(username = "staff1", displayName = "Staff One", role = "staff")
+        val adminUser = UserSession(username = "admin1", displayName = "Admin", role = "admin")
+
+        var currentUser by mutableStateOf(staffUser)
+        composeTestRule.setContent {
+            TseBillingTheme {
+                CustomersScreen(
+                    customers = sampleCustomers,
+                    user = currentUser,
+                    onSaveCustomer = { _, _, _, _, _ -> },
+                    onDeleteCustomer = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Suresh Desai").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("open_customer_map_10").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("save_customer_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("edit_customer_10").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("delete_customer_10").assertDoesNotExist()
+
+        currentUser = adminUser
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("customers_lazy_list").performScrollToIndex(1)
+        composeTestRule.onNodeWithTag("save_customer_button").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("customers_lazy_list").performScrollToIndex(2)
+        composeTestRule.onNodeWithTag("edit_customer_10").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("delete_customer_10").assertIsDisplayed()
+    }
+
+    @Test
+    fun staffViewModel_canAccessSavedBillsAndCustomers_cannotOpenAdminTabs() {
+        kotlinx.coroutines.runBlocking {
+            repo.setupAdmin("admin1", "pass1234", "9999")
+            repo.addStaff("Staff One", "staff1", "pass1234")
+        }
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val soundEngine = SoundEngine(context)
+        val vm = BillingViewModel(repo, soundEngine)
+        vm.login("staff1", "pass1234")
+
+        val deadline = System.currentTimeMillis() + 3000L
+        while (vm.session.value == null && System.currentTimeMillis() < deadline) {
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+            Thread.sleep(20)
+        }
+        assertNotNull(vm.session.value)
+
+        vm.selectTab(MainTab.SAVED)
+        assertEquals(MainTab.SAVED, vm.activeTab.value)
+
+        vm.selectTab(MainTab.CUSTOMERS)
+        assertEquals(MainTab.CUSTOMERS, vm.activeTab.value)
+
+        vm.selectTab(MainTab.PRODUCTS)
+        assertEquals(MainTab.CUSTOMERS, vm.activeTab.value)
+        soundEngine.release()
     }
 
     @Test

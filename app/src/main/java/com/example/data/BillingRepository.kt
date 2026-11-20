@@ -142,29 +142,103 @@ class BillingRepository(private val db: AppDatabase) {
         userDao.deleteByUsername(username)
     }
 
-    suspend fun saveBill(bill: BillEntity) {
+    suspend fun saveBill(bill: BillEntity, customerLocationUrl: String = "") {
         billDao.upsert(bill)
         val custName = bill.customerName.trim()
         if (custName.isNotEmpty()) {
             val old = customerDao.findByName(custName)
+            val (parsedPhone, parsedAddress) = parsePhoneAndAddress(bill.customerDetails)
+            val cleanLoc = customerLocationUrl.trim()
             if (old != null) {
-                customerDao.upsert(old.copy(details = bill.customerDetails))
+                customerDao.upsert(
+                    old.copy(
+                        details = bill.customerDetails.ifBlank { old.details },
+                        phone = parsedPhone.ifBlank { old.phone },
+                        address = parsedAddress.ifBlank { old.address },
+                        locationUrl = cleanLoc.ifBlank { old.locationUrl }
+                    )
+                )
             } else {
-                customerDao.upsert(CustomerEntity(name = custName, details = bill.customerDetails))
+                customerDao.upsert(
+                    CustomerEntity(
+                        name = custName,
+                        details = bill.customerDetails,
+                        phone = parsedPhone,
+                        address = parsedAddress,
+                        locationUrl = cleanLoc
+                    )
+                )
             }
         }
     }
 
     suspend fun deleteBill(id: String) = billDao.deleteById(id)
 
-    suspend fun saveCustomer(name: String, details: String) {
+    suspend fun saveCustomer(
+        name: String,
+        details: String,
+        phone: String = "",
+        address: String = "",
+        locationUrl: String = "",
+        id: Long = 0L
+    ) {
         val clean = name.trim()
+        val cleanPhone = phone.trim()
+        val cleanAddress = address.trim()
+        val cleanLoc = locationUrl.trim()
+        val combinedDetails = details.trim().ifBlank {
+            listOf(cleanAddress, cleanPhone).filter { it.isNotBlank() }.joinToString("\n")
+        }
+        val (fallbackPhone, fallbackAddress) = parsePhoneAndAddress(combinedDetails)
+        val finalPhone = cleanPhone.ifBlank { fallbackPhone }
+        val finalAddress = cleanAddress.ifBlank { fallbackAddress }
+
+        if (id > 0L) {
+            customerDao.upsert(
+                CustomerEntity(
+                    id = id,
+                    name = clean,
+                    details = combinedDetails,
+                    phone = finalPhone,
+                    address = finalAddress,
+                    locationUrl = cleanLoc
+                )
+            )
+            return
+        }
+
         val existing = customerDao.findByName(clean)
         if (existing != null) {
-            customerDao.upsert(existing.copy(details = details.trim()))
+            customerDao.upsert(
+                existing.copy(
+                    details = combinedDetails.ifBlank { existing.details },
+                    phone = finalPhone.ifBlank { existing.phone },
+                    address = finalAddress.ifBlank { existing.address },
+                    locationUrl = cleanLoc.ifBlank { existing.locationUrl }
+                )
+            )
         } else {
-            customerDao.upsert(CustomerEntity(name = clean, details = details.trim()))
+            customerDao.upsert(
+                CustomerEntity(
+                    name = clean,
+                    details = combinedDetails,
+                    phone = finalPhone,
+                    address = finalAddress,
+                    locationUrl = cleanLoc
+                )
+            )
         }
+    }
+
+    private fun parsePhoneAndAddress(details: String): Pair<String, String> {
+        val lines = details.lines().map { it.trim() }.filter { it.isNotBlank() }
+        if (lines.isEmpty()) return "" to ""
+        val phoneLine = lines.firstOrNull { line ->
+            val digits = line.count { it.isDigit() }
+            digits in 7..15 && line.length <= 24
+        }
+        val addressLines = lines.filter { it != phoneLine }
+        return (phoneLine ?: "") to addressLines.joinToString(", ")
     }
 
     suspend fun deleteCustomer(id: Long) = customerDao.deleteById(id)
@@ -269,6 +343,8 @@ class BillingRepository(private val db: AppDatabase) {
                     put("customQrText", b.customQrText)
                     put("createdBy", b.createdBy)
                     put("updatedAt", b.updatedAt)
+                    put("extraChargeType", b.extraChargeType)
+                    put("extraChargeAmount", b.extraChargeAmount)
                 })
             }
         })
@@ -277,6 +353,9 @@ class BillingRepository(private val db: AppDatabase) {
                 put(JSONObject().apply {
                     put("name", c.name)
                     put("details", c.details)
+                    put("phone", c.phone)
+                    put("address", c.address)
+                    put("locationUrl", c.locationUrl)
                 })
             }
         })
@@ -345,7 +424,9 @@ class BillingRepository(private val db: AppDatabase) {
                         signatureBase64 = obj.optString("signature", ""),
                         customQrText = obj.optString("customQrText", ""),
                         createdBy = obj.optString("createdBy", "Admin"),
-                        updatedAt = obj.optLong("updatedAt", System.currentTimeMillis())
+                        updatedAt = obj.optLong("updatedAt", System.currentTimeMillis()),
+                        extraChargeType = obj.optString("extraChargeType", "NONE"),
+                        extraChargeAmount = obj.optDouble("extraChargeAmount", 0.0)
                     )
                 )
             }
@@ -356,7 +437,15 @@ class BillingRepository(private val db: AppDatabase) {
                     val obj = custArr.getJSONObject(i)
                     val name = obj.optString("name", "").trim()
                     if (name.isNotEmpty()) {
-                        customerDao.upsert(CustomerEntity(name = name, details = obj.optString("details", "")))
+                        customerDao.upsert(
+                            CustomerEntity(
+                                name = name,
+                                details = obj.optString("details", ""),
+                                phone = obj.optString("phone", ""),
+                                address = obj.optString("address", ""),
+                                locationUrl = obj.optString("locationUrl", "")
+                            )
+                        )
                     }
                 }
             }

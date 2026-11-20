@@ -210,12 +210,24 @@ fun TseBillingApp(viewModel: BillingViewModel) {
         }
     }
 
+    var loginWelcomeSpoken by remember { mutableStateOf(false) }
+    LaunchedEffect(splashVisible, session, isAdminConfigured) {
+        if (!splashVisible && session == null && isAdminConfigured == true) {
+            if (!loginWelcomeSpoken) {
+                loginWelcomeSpoken = true
+                viewModel.speakLoginWelcome()
+            }
+        } else if (session != null) {
+            loginWelcomeSpoken = false
+        }
+    }
+
     val navItems = remember(session) {
         buildList {
             add(NavItem(MainTab.BILL, "New Bill", "नया बिल", Icons.Default.Receipt))
-            if (session?.isAdmin == true) {
-                add(NavItem(MainTab.SAVED, "Saved", "सेव बिल", Icons.Default.ReceiptLong))
-                add(NavItem(MainTab.CUSTOMERS, "Customers", "ग्राहक", Icons.Default.People))
+            add(NavItem(MainTab.SAVED, "Saved", "सेव बिल", Icons.Default.ReceiptLong))
+            add(NavItem(MainTab.CUSTOMERS, "Customers", "ग्राहक", Icons.Default.People))
+            if (session?.isAdmin == true && session?.isStaff == false) {
                 add(NavItem(MainTab.PRODUCTS, "Products", "प्रोडक्ट", Icons.Default.Inventory2))
                 add(NavItem(MainTab.ADMIN, "Admin", "एडमिन", Icons.Default.AdminPanelSettings))
                 add(NavItem(MainTab.SETTINGS, "Settings", "सेटिंग्स", Icons.Default.Settings))
@@ -352,12 +364,15 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                     onCustomerNameChange = viewModel::updateCustomerName,
                                     onCustomerSelected = viewModel::selectCustomerSuggestion,
                                     onCustomerDetailsChange = viewModel::updateCustomerDetails,
+                                    onCustomerLocationUrlChange = viewModel::updateCustomerLocationUrl,
                                     onInvoiceNoChange = viewModel::updateInvoiceNo,
                                     onInvoiceDateChange = viewModel::updateInvoiceDate,
                                     onAddItem = viewModel::addItem,
                                     onSelectProductForRow = viewModel::selectProductForRow,
                                     onUpdateItem = viewModel::updateItemFields,
                                     onRemoveItem = viewModel::removeItem,
+                                    onExtraChargeTypeChange = viewModel::updateExtraChargeType,
+                                    onExtraChargeAmountChange = viewModel::updateExtraChargeAmount,
                                     onDiscountChange = viewModel::updateDiscount,
                                     onPaidAmountChange = viewModel::updatePaidAmount,
                                     onPaymentModeChange = viewModel::updatePaymentMode,
@@ -381,7 +396,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                     searchQuery = billSearch,
                                     company = company,
                                     upi = upi,
-                                    isAdmin = currentSession.isAdmin,
+                                    isAdmin = currentSession.isAdmin && !currentSession.isStaff,
                                     onSearchChange = viewModel::updateBillSearch,
                                     onOpenBill = viewModel::openBillForEdit,
                                     onPrintBill = viewModel::printBillDirect,
@@ -392,8 +407,16 @@ fun TseBillingApp(viewModel: BillingViewModel) {
 
                                 MainTab.CUSTOMERS -> CustomersScreen(
                                     customers = customers,
-                                    isAdmin = currentSession.isAdmin,
-                                    onSaveCustomer = viewModel::saveCustomer,
+                                    user = currentSession,
+                                    onSaveCustomer = { id, name, phone, address, locationUrl ->
+                                        viewModel.saveCustomer(
+                                            name = name,
+                                            phone = phone,
+                                            address = address,
+                                            locationUrl = locationUrl,
+                                            id = id
+                                        )
+                                    },
                                     onDeleteCustomer = viewModel::deleteCustomer
                                 )
 
@@ -481,10 +504,10 @@ private fun TseTopBar(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = if (session.isAdmin) {
+                        text = if (session.isAdmin && !session.isStaff) {
                             "${session.displayName} (Admin)"
                         } else {
-                            "${session.displayName} (Staff · Bill Only)"
+                            "${session.displayName} (Staff · View & Bill)"
                         },
                         color = GoldSoft,
                         style = MaterialTheme.typography.labelMedium

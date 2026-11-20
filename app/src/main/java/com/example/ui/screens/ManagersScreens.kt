@@ -1,7 +1,12 @@
 package com.example.ui.screens
 
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -9,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,7 +24,11 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -27,6 +37,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -38,6 +49,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
@@ -52,34 +64,68 @@ import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.RedDue
 import com.example.ui.theme.TealAccent
+import com.example.util.LocationHelper
 import java.util.Locale
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CustomersScreen(
     customers: List<CustomerEntity>,
-    isAdmin: Boolean,
-    onSaveCustomer: (name: String, details: String) -> Unit,
+    user: UserSession,
+    onSaveCustomer: (id: Long, name: String, phone: String, address: String, locationUrl: String) -> Unit,
     onDeleteCustomer: (Long) -> Unit
 ) {
+    val canManageCustomers = !user.isStaff && user.isAdmin
+    val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
+
+    var editingId by remember { mutableStateOf(0L) }
     var name by remember { mutableStateOf("") }
-    var details by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    var address by remember { mutableStateOf("") }
+    var locationUrl by remember { mutableStateOf("") }
+    var locationBusy by remember { mutableStateOf(false) }
+
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val granted = perms.values.any { it }
+        if (granted) {
+            locationBusy = true
+            LocationHelper.fetchCurrentLocationMapsUrl(context) { url, error ->
+                locationBusy = false
+                if (url != null) {
+                    locationUrl = url
+                } else if (!error.isNullOrBlank()) {
+                    Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+                }
+            }
+        } else {
+            Toast.makeText(context, "Location permission denied", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = 12.dp)
+            .testTag("customers_lazy_list"),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item { Spacer(Modifier.height(4.dp)) }
 
-        if (isAdmin) {
+        if (canManageCustomers) {
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Customer Manager", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            text = if (editingId > 0L) "Edit Customer (Admin)" else "Customer Manager (Admin)",
+                            style = MaterialTheme.typography.titleLarge
+                        )
                         OutlinedTextField(
                             value = name,
                             onValueChange = { name = it },
@@ -88,28 +134,130 @@ fun CustomersScreen(
                             modifier = Modifier.fillMaxWidth().testTag("new_customer_name")
                         )
                         OutlinedTextField(
-                            value = details,
-                            onValueChange = { details = it },
-                            label = { Text("Address / Mobile") },
-                            minLines = 2,
-                            modifier = Modifier.fillMaxWidth().testTag("new_customer_details")
+                            value = phone,
+                            onValueChange = { phone = it },
+                            label = { Text("Mobile Number") },
+                            leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().testTag("new_customer_phone")
                         )
-                        Button(
-                            onClick = {
-                                if (name.isNotBlank()) {
-                                    onSaveCustomer(name, details)
-                                    name = ""
-                                    details = ""
-                                } else {
-                                    onSaveCustomer("", details)
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
-                            modifier = Modifier.fillMaxWidth().height(48.dp).testTag("save_customer_button")
+                        OutlinedTextField(
+                            value = address,
+                            onValueChange = { address = it },
+                            label = { Text("Customer Address") },
+                            minLines = 2,
+                            modifier = Modifier.fillMaxWidth().testTag("new_customer_address")
+                        )
+                        OutlinedTextField(
+                            value = locationUrl,
+                            onValueChange = { locationUrl = it },
+                            label = { Text("Google Maps Location Link / Coordinates") },
+                            leadingIcon = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = TealAccent) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().testTag("new_customer_location")
+                        )
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = null)
-                            Text(" Save Customer", fontWeight = FontWeight.Bold)
+                            OutlinedButton(
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    if (LocationHelper.hasLocationPermission(context)) {
+                                        locationBusy = true
+                                        LocationHelper.fetchCurrentLocationMapsUrl(context) { url, error ->
+                                            locationBusy = false
+                                            if (url != null) {
+                                                locationUrl = url
+                                            } else if (!error.isNullOrBlank()) {
+                                                Toast.makeText(context, error, Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    } else {
+                                        locationPermissionLauncher.launch(LocationHelper.LOCATION_PERMISSIONS)
+                                    }
+                                },
+                                enabled = !locationBusy,
+                                modifier = Modifier.testTag("customer_gps_location_button")
+                            ) {
+                                Icon(Icons.Default.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (locationBusy) "Getting GPS..." else "Use GPS Location")
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    val query = locationUrl.ifBlank { address.ifBlank { name } }
+                                    if (query.isBlank()) {
+                                        Toast.makeText(context, "Enter address or GPS location first", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        LocationHelper.openInGoogleMaps(context, query)
+                                    }
+                                },
+                                modifier = Modifier.testTag("customer_open_maps_picker_button")
+                            ) {
+                                Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("Open Google Maps")
+                            }
                         }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    onSaveCustomer(editingId, name, phone, address, locationUrl)
+                                    if (name.isNotBlank()) {
+                                        editingId = 0L
+                                        name = ""
+                                        phone = ""
+                                        address = ""
+                                        locationUrl = ""
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                                modifier = Modifier.weight(1f).height(48.dp).testTag("save_customer_button")
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null)
+                                Text(if (editingId > 0L) " Update Customer" else " Save Customer", fontWeight = FontWeight.Bold)
+                            }
+                            if (editingId > 0L) {
+                                OutlinedButton(
+                                    onClick = {
+                                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                                        editingId = 0L
+                                        name = ""
+                                        phone = ""
+                                        address = ""
+                                        locationUrl = ""
+                                    },
+                                    modifier = Modifier.height(48.dp)
+                                ) {
+                                    Text("Cancel")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Customer Directory (View Only)", style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            text = "Staff can view customer details and open Google Maps locations, but cannot add, edit, or delete customers.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
@@ -133,24 +281,87 @@ fun CustomersScreen(
             }
         } else {
             items(customers, key = { it.id }) { cust ->
+                val displayPhone = cust.phone.ifBlank { "" }
+                val displayAddress = cust.address.ifBlank { cust.details }
+                val mapTarget = cust.locationUrl.ifBlank { displayAddress }
+
                 Card(
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier.fillMaxWidth().padding(14.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(cust.name, style = MaterialTheme.typography.titleMedium)
-                            if (cust.details.isNotBlank()) {
-                                Text(cust.details, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(cust.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                if (displayPhone.isNotBlank()) {
+                                    Text(
+                                        text = "Mobile: $displayPhone",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = TealAccent,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                                if (displayAddress.isNotBlank()) {
+                                    Text(
+                                        text = displayAddress,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (cust.locationUrl.isNotBlank()) {
+                                    Text(
+                                        text = "Maps Pin: ${cust.locationUrl}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            if (canManageCustomers) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(
+                                        onClick = {
+                                            clearFocusAndHideToolbar(focusManager, textToolbar)
+                                            editingId = cust.id
+                                            name = cust.name
+                                            phone = cust.phone
+                                            address = cust.address.ifBlank { cust.details }
+                                            locationUrl = cust.locationUrl
+                                        },
+                                        modifier = Modifier.testTag("edit_customer_${cust.id}")
+                                    ) {
+                                        Icon(Icons.Default.Edit, contentDescription = "Edit customer", tint = TealAccent)
+                                    }
+                                    IconButton(
+                                        onClick = { onDeleteCustomer(cust.id) },
+                                        modifier = Modifier.testTag("delete_customer_${cust.id}")
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete customer", tint = RedDue)
+                                    }
+                                }
                             }
                         }
-                        if (isAdmin) {
-                            IconButton(onClick = { onDeleteCustomer(cust.id) }) {
-                                Icon(Icons.Default.Delete, contentDescription = "Delete customer", tint = RedDue)
+
+                        if (mapTarget.isNotBlank()) {
+                            OutlinedButton(
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    val opened = LocationHelper.openInGoogleMaps(context, mapTarget)
+                                    if (!opened) {
+                                        Toast.makeText(context, "No Google Maps or browser app found", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier.testTag("open_customer_map_${cust.id}")
+                            ) {
+                                Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (cust.locationUrl.isNotBlank()) "View Saved Location on Maps" else "Search Address on Maps")
                             }
                         }
                     }

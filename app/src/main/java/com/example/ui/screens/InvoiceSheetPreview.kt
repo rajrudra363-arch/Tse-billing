@@ -236,7 +236,14 @@ fun InvoiceSheetPreview(
                 TableCell("Amount", 1.1f, bold = true, align = TextAlign.End)
             }
             HorizontalDivider(color = sheetBorder, thickness = 1.dp)
-            draft.items.forEachIndexed { idx, item ->
+            val previewItems = remember(draft.items, draft.extraChargeType, draft.extraChargeAmount) {
+                InvoicePdfPrinter.buildEffectivePrintItems(
+                    draft.items,
+                    draft.extraChargeType,
+                    draft.extraChargeAmount
+                ).ifEmpty { draft.items }
+            }
+            previewItems.forEachIndexed { idx, item ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

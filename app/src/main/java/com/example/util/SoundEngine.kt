@@ -28,19 +28,22 @@ class SoundEngine(context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    @Volatile private var pendingMessage: String? = null
+    @Volatile private var pendingEnglish: Boolean = false
     @Volatile var enabled: Boolean = true
 
     init {
         try {
             tts = TextToSpeech(appContext) { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    val hiLocale = Locale("hi", "IN")
-                    val res = tts?.setLanguage(hiLocale)
-                    if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                        tts?.setLanguage(Locale.ENGLISH)
-                    }
-                    tts?.setSpeechRate(0.98f)
+                    tts?.setSpeechRate(0.96f)
                     ttsReady = true
+                    val queued = pendingMessage
+                    val useEn = pendingEnglish
+                    pendingMessage = null
+                    if (!queued.isNullOrBlank()) {
+                        if (useEn) speakEnglish(queued) else speak(queued)
+                    }
                 }
             }
         } catch (_: Exception) {
@@ -72,9 +75,40 @@ class SoundEngine(context: Context) {
     }
 
     fun speak(message: String) {
-        if (!enabled || !ttsReady || message.isBlank()) return
+        if (!enabled || message.isBlank()) return
+        if (!ttsReady) {
+            pendingMessage = message
+            pendingEnglish = false
+            return
+        }
         try {
+            val hiLocale = Locale("hi", "IN")
+            val res = tts?.setLanguage(hiLocale)
+            if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
+                tts?.setLanguage(Locale.ENGLISH)
+            }
             tts?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "tse_${System.currentTimeMillis()}")
+        } catch (_: Exception) {
+        }
+    }
+
+    fun speakEnglish(message: String) {
+        if (!enabled || message.isBlank()) return
+        if (!ttsReady) {
+            pendingMessage = message
+            pendingEnglish = true
+            return
+        }
+        try {
+            val enIn = Locale("en", "IN")
+            val res = tts?.setLanguage(enIn)
+            if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
+                val usRes = tts?.setLanguage(Locale.US)
+                if (usRes == TextToSpeech.LANG_MISSING_DATA || usRes == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    tts?.setLanguage(Locale.ENGLISH)
+                }
+            }
+            tts?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "tse_en_${System.currentTimeMillis()}")
         } catch (_: Exception) {
         }
     }

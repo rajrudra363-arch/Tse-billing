@@ -27,11 +27,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -65,7 +68,9 @@ import com.example.data.InvoiceItemJson
 import com.example.data.PaymentMode
 import com.example.data.UpiSettings
 import com.example.ui.BillDraft
+import com.example.ui.components.bringIntoViewOnFocus
 import com.example.ui.components.clearFocusAndHideToolbar
+import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.GreenPaidBg
 import com.example.ui.theme.NavyPrimary
@@ -89,7 +94,8 @@ fun SavedBillsScreen(
     onPrintBill: (BillEntity) -> Unit,
     onSavePdf: (BillEntity) -> Unit,
     onSharePdf: (BillEntity) -> Unit,
-    onDeleteBill: (String) -> Unit
+    onDeleteBill: (String) -> Unit,
+    onOpenPaymentReview: (BillEntity) -> Unit = {}
 ) {
     val dueBills = allBills.filter { it.dueAmount > 0.009 }
     val totalDue = dueBills.sumOf { it.dueAmount }
@@ -128,7 +134,7 @@ fun SavedBillsScreen(
                         placeholder = { Text("Search invoice / customer / staff...") },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth().testTag("bill_search_input")
+                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("bill_search_input")
                     )
 
                     FlowRow(
@@ -234,10 +240,72 @@ fun SavedBillsScreen(
                         }
 
                         Text(
-                            text = "Grand Total: ₹${String.format(Locale.US, "%.2f", bill.grandTotal)} · Paid: ₹${String.format(Locale.US, "%.2f", bill.paidAmount)}",
+                            text = buildString {
+                                append("Grand Total: ₹${String.format(Locale.US, "%.2f", bill.grandTotal)}")
+                                if (bill.discount > 0.009) {
+                                    append(" · Disc: ₹${String.format(Locale.US, "%.2f", bill.discount)}")
+                                }
+                                append(" · Paid: ₹${String.format(Locale.US, "%.2f", bill.paidAmount)}")
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold
                         )
+
+                        if (bill.staffRating > 0 || bill.staffReviewNote.isNotBlank()) {
+                            Surface(
+                                color = Color(0xFFFFF8E1),
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, GoldAccent.copy(alpha = 0.5f)),
+                                modifier = Modifier.fillMaxWidth().testTag("saved_bill_review_${bill.invoiceNo}")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    if (bill.staffRating > 0) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                Icons.Default.Star,
+                                                contentDescription = null,
+                                                tint = GoldAccent,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Spacer(Modifier.width(2.dp))
+                                            Text(
+                                                text = "${bill.staffRating}/5",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.Black,
+                                                color = NavyPrimary
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Icon(
+                                                Icons.Default.Lock,
+                                                contentDescription = "Rating Locked",
+                                                tint = NavyPrimary,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                        }
+                                    }
+                                    if (bill.staffReviewNote.isNotBlank()) {
+                                        Text(
+                                            text = "“${bill.staffReviewNote}”",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color(0xFF334155),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                    if (bill.staffRating > 0) {
+                                        Text(
+                                            text = "Locked",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = NavyPrimary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
 
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -295,6 +363,19 @@ fun SavedBillsScreen(
                                 Button(
                                     onClick = {
                                         clearFocusAndHideToolbar(focusManager, textToolbar)
+                                        onOpenPaymentReview(bill)
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
+                                    modifier = Modifier.testTag("review_bill_${bill.invoiceNo}")
+                                ) {
+                                    Icon(Icons.Default.Payments, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text(if (bill.staffRating > 0) "Pay / View ★" else "Pay / 5★")
+                                }
+
+                                Button(
+                                    onClick = {
+                                        clearFocusAndHideToolbar(focusManager, textToolbar)
                                         onOpenBill(bill)
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
@@ -305,14 +386,16 @@ fun SavedBillsScreen(
                                     Text("Open / Edit")
                                 }
 
-                                Button(
-                                    onClick = { onDeleteBill(bill.id) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = RedDue),
-                                    modifier = Modifier.testTag("delete_saved_${bill.invoiceNo}")
-                                ) {
-                                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(Modifier.width(4.dp))
-                                    Text("Delete")
+                                if (bill.staffRating == 0) {
+                                    Button(
+                                        onClick = { onDeleteBill(bill.id) },
+                                        colors = ButtonDefaults.buttonColors(containerColor = RedDue),
+                                        modifier = Modifier.testTag("delete_saved_${bill.invoiceNo}")
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("Delete")
+                                    }
                                 }
                             } else {
                                 Text(

@@ -66,6 +66,7 @@ import com.example.data.BillingRepository
 import com.example.data.CustomerEntity
 import com.example.data.CustomerHelpEntity
 import com.example.data.UserSession
+import com.example.ui.components.bringIntoViewOnFocus
 import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.theme.AmberWarn
 import com.example.ui.theme.GreenPaid
@@ -244,7 +245,7 @@ fun CustomerHelpScreen(
                             leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth().testTag("help_phone_input")
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("help_phone_input")
                         )
 
                         if (matchedCustomers.isNotEmpty()) {
@@ -290,7 +291,7 @@ fun CustomerHelpScreen(
                             label = { Text("Customer Name") },
                             leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth().testTag("help_name_input")
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("help_name_input")
                         )
 
                         OutlinedTextField(
@@ -298,7 +299,7 @@ fun CustomerHelpScreen(
                             onValueChange = { address = it },
                             label = { Text("Customer Address") },
                             minLines = 2,
-                            modifier = Modifier.fillMaxWidth().testTag("help_address_input")
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("help_address_input")
                         )
 
                         OutlinedTextField(
@@ -307,7 +308,7 @@ fun CustomerHelpScreen(
                             label = { Text("Google Maps Location Link / Coordinates") },
                             leadingIcon = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = TealAccent) },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth().testTag("help_location_input")
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("help_location_input")
                         )
 
                         FlowRow(
@@ -363,7 +364,7 @@ fun CustomerHelpScreen(
                             label = { Text("Customer Need Help / Issue Description") },
                             placeholder = { Text("e.g. Camera 2 no signal, DVR beep sound, mobile app view setup...") },
                             minLines = 3,
-                            modifier = Modifier.fillMaxWidth().testTag("help_description_input")
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("help_description_input")
                         )
 
                         FlowRow(
@@ -474,7 +475,7 @@ fun CustomerHelpScreen(
                 placeholder = { Text("Search help by name, last 5 digits, address or issue...") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth().testTag("help_search_input")
+                modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("help_search_input")
             )
         }
 

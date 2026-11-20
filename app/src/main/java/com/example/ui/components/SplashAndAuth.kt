@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -21,10 +23,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,18 +38,22 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -55,6 +63,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -66,6 +75,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
@@ -184,13 +194,23 @@ fun AuthScreen(
     authError: String,
     onClearError: () -> Unit,
     onSetupAdmin: (username: String, password: String, confirm: String, finalCode: String) -> Unit,
-    onLogin: (username: String, password: String) -> Unit
+    onLogin: (username: String, password: String) -> Unit,
+    onImportBackup: (String) -> Unit = {},
+    onResetAdminPassword: (
+        recoveryPassword: String,
+        targetAdminUsername: String?,
+        newPassword: String,
+        confirmPassword: String,
+        newFinalCode: String,
+        onResult: (Boolean, String) -> Unit
+    ) -> Unit = { _, _, _, _, _, _ -> }
 ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Brush.linearGradient(listOf(NavyDeep, Color(0xFF0B5968))))
             .safeDrawingPadding()
+            .imePadding()
             .padding(16.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -278,14 +298,16 @@ fun AuthScreen(
                             false -> FirstTimeAdminSetupForm(
                                 authError = authError,
                                 onClearError = onClearError,
-                                onSetupAdmin = onSetupAdmin
+                                onSetupAdmin = onSetupAdmin,
+                                onImportBackup = onImportBackup
                             )
 
                             true -> StaffAdminLoginForm(
                                 accounts = accounts,
                                 authError = authError,
                                 onClearError = onClearError,
-                                onLogin = onLogin
+                                onLogin = onLogin,
+                                onResetAdminPassword = onResetAdminPassword
                             )
                         }
                     }
@@ -299,15 +321,29 @@ fun AuthScreen(
 private fun FirstTimeAdminSetupForm(
     authError: String,
     onClearError: () -> Unit,
-    onSetupAdmin: (String, String, String, String) -> Unit
+    onSetupAdmin: (String, String, String, String) -> Unit,
+    onImportBackup: (String) -> Unit
 ) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var finalCode by remember { mutableStateOf("") }
     var showPass by remember { mutableStateOf(false) }
+    val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
+
+    val importBackupLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+            }.getOrNull()?.let { text ->
+                onImportBackup(text)
+            }
+        }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -326,7 +362,7 @@ private fun FirstTimeAdminSetupForm(
             label = { Text("Admin Username (min 3 chars)") },
             leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
             singleLine = true,
-            modifier = Modifier.fillMaxWidth().testTag("setup_admin_username")
+            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_username")
         )
 
         OutlinedTextField(
@@ -342,7 +378,7 @@ private fun FirstTimeAdminSetupForm(
             visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             singleLine = true,
-            modifier = Modifier.fillMaxWidth().testTag("setup_admin_password")
+            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_password")
         )
 
         OutlinedTextField(
@@ -353,7 +389,7 @@ private fun FirstTimeAdminSetupForm(
             visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             singleLine = true,
-            modifier = Modifier.fillMaxWidth().testTag("setup_admin_confirm")
+            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_confirm")
         )
 
         OutlinedTextField(
@@ -364,7 +400,7 @@ private fun FirstTimeAdminSetupForm(
             visualTransformation = PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
             singleLine = true,
-            modifier = Modifier.fillMaxWidth().testTag("setup_final_code")
+            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_final_code")
         )
 
         if (authError.isNotEmpty()) {
@@ -389,6 +425,28 @@ private fun FirstTimeAdminSetupForm(
         ) {
             Text("Create Admin Account", fontWeight = FontWeight.Bold)
         }
+
+        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+        Text(
+            text = "Purane phone/version ka data (.json backup) hai to bina naya account banaye seedhe restore karein:",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedButton(
+            onClick = {
+                clearFocusAndHideToolbar(focusManager, textToolbar)
+                importBackupLauncher.launch(arrayOf("application/json", "*/*"))
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .testTag("setup_import_backup_button")
+        ) {
+            Icon(Icons.Default.CloudUpload, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text("Restore Full Backup (.json)", fontWeight = FontWeight.SemiBold)
+        }
     }
 }
 
@@ -397,7 +455,15 @@ private fun StaffAdminLoginForm(
     accounts: List<UserAccountEntity>,
     authError: String,
     onClearError: () -> Unit,
-    onLogin: (String, String) -> Unit
+    onLogin: (String, String) -> Unit,
+    onResetAdminPassword: (
+        recoveryPassword: String,
+        targetAdminUsername: String?,
+        newPassword: String,
+        confirmPassword: String,
+        newFinalCode: String,
+        onResult: (Boolean, String) -> Unit
+    ) -> Unit
 ) {
     var selectedUsername by remember(accounts) {
         mutableStateOf("")
@@ -405,6 +471,8 @@ private fun StaffAdminLoginForm(
     var dropdownExpanded by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf("") }
     var showPass by remember { mutableStateOf(false) }
+    var showForgotDialog by remember { mutableStateOf(false) }
+    var recoverySuccessMsg by remember { mutableStateOf("") }
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
 
@@ -496,8 +564,17 @@ private fun StaffAdminLoginForm(
                 onLogin(selectedUsername, password)
             }),
             singleLine = true,
-            modifier = Modifier.fillMaxWidth().testTag("login_password_input")
+            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("login_password_input")
         )
+
+        if (recoverySuccessMsg.isNotEmpty()) {
+            Text(
+                text = recoverySuccessMsg,
+                color = GreenPaid,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
 
         if (authError.isNotEmpty()) {
             Text(
@@ -522,6 +599,214 @@ private fun StaffAdminLoginForm(
             Text("Login", fontWeight = FontWeight.Bold)
         }
 
+        TextButton(
+            onClick = {
+                clearFocusAndHideToolbar(focusManager, textToolbar)
+                onClearError()
+                recoverySuccessMsg = ""
+                showForgotDialog = true
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("forgot_password_button")
+        ) {
+            Icon(Icons.Default.LockReset, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Forgot Admin Password?", fontWeight = FontWeight.SemiBold)
+        }
+
         Spacer(modifier = Modifier.height(4.dp))
     }
+
+    if (showForgotDialog) {
+        ForgotAdminPasswordDialog(
+            adminAccounts = accounts.filter { it.role.equals("admin", ignoreCase = true) },
+            onDismiss = { showForgotDialog = false },
+            onResetAdminPassword = { recoveryPass, targetUsername, newPass, confirmPass, newCode, onResult ->
+                onResetAdminPassword(recoveryPass, targetUsername, newPass, confirmPass, newCode) { ok, msg ->
+                    if (ok) {
+                        password = ""
+                        recoverySuccessMsg = msg
+                        showForgotDialog = false
+                    }
+                    onResult(ok, msg)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ForgotAdminPasswordDialog(
+    adminAccounts: List<UserAccountEntity>,
+    onDismiss: () -> Unit,
+    onResetAdminPassword: (
+        recoveryPassword: String,
+        targetAdminUsername: String?,
+        newPassword: String,
+        confirmPassword: String,
+        newFinalCode: String,
+        onResult: (Boolean, String) -> Unit
+    ) -> Unit
+) {
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
+    var targetUsername by remember(adminAccounts) {
+        mutableStateOf(adminAccounts.firstOrNull()?.username.orEmpty())
+    }
+    var recoveryPassword by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var newFinalCode by remember { mutableStateOf("") }
+    var showRecoveryPass by remember { mutableStateOf(false) }
+    var showNewPass by remember { mutableStateOf(false) }
+    var errorMsg by remember { mutableStateOf("") }
+
+    DisposableEffect(Unit) {
+        onDispose { clearFocusAndHideToolbar(focusManager, textToolbar) }
+    }
+
+    AlertDialog(
+        onDismissRequest = {
+            clearFocusAndHideToolbar(focusManager, textToolbar)
+            onDismiss()
+        },
+        modifier = Modifier.testTag("forgot_password_dialog"),
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.LockReset, contentDescription = null, tint = TealAccent)
+                Text("Forgot Admin Password", fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            ProvideSafeTextToolbar {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Admin password bhul gaye hain to Default Recovery Password enter karke naya Admin password set karein.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (targetUsername.isNotBlank()) {
+                        Text(
+                            text = "Admin Account: @$targetUsername",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = NavyPrimary
+                        )
+                    }
+                    OutlinedTextField(
+                        value = recoveryPassword,
+                        onValueChange = { recoveryPassword = it; errorMsg = "" },
+                        label = { Text("Default Recovery Password") },
+                        leadingIcon = { Icon(Icons.Default.Security, contentDescription = null) },
+                        trailingIcon = {
+                            IconButton(onClick = { showRecoveryPass = !showRecoveryPass }) {
+                                Icon(
+                                    if (showRecoveryPass) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = "Toggle recovery password"
+                                )
+                            }
+                        },
+                        visualTransformation = if (showRecoveryPass) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .bringIntoViewOnFocus()
+                            .testTag("forgot_master_password_input")
+                    )
+                    OutlinedTextField(
+                        value = newPassword,
+                        onValueChange = { newPassword = it; errorMsg = "" },
+                        label = { Text("New Admin Password (min 6 chars)") },
+                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                        trailingIcon = {
+                            IconButton(onClick = { showNewPass = !showNewPass }) {
+                                Icon(
+                                    if (showNewPass) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = "Toggle new password"
+                                )
+                            }
+                        },
+                        visualTransformation = if (showNewPass) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .bringIntoViewOnFocus()
+                            .testTag("forgot_new_password_input")
+                    )
+                    OutlinedTextField(
+                        value = confirmPassword,
+                        onValueChange = { confirmPassword = it; errorMsg = "" },
+                        label = { Text("Confirm New Password") },
+                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                        visualTransformation = if (showNewPass) VisualTransformation.None else PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .bringIntoViewOnFocus()
+                            .testTag("forgot_confirm_password_input")
+                    )
+                    OutlinedTextField(
+                        value = newFinalCode,
+                        onValueChange = { newFinalCode = it; errorMsg = "" },
+                        label = { Text("New Final Bill Code (Optional)") },
+                        leadingIcon = { Icon(Icons.Default.Security, contentDescription = null) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .bringIntoViewOnFocus()
+                            .testTag("forgot_new_final_code_input")
+                    )
+                    if (errorMsg.isNotEmpty()) {
+                        Text(
+                            text = errorMsg,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.testTag("forgot_password_error")
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                    onResetAdminPassword(
+                        recoveryPassword,
+                        targetUsername.ifBlank { null },
+                        newPassword,
+                        confirmPassword,
+                        newFinalCode
+                    ) { ok, msg ->
+                        if (!ok) errorMsg = msg
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                modifier = Modifier.testTag("reset_admin_password_button")
+            ) {
+                Text("Reset Admin Password", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                clearFocusAndHideToolbar(focusManager, textToolbar)
+                onDismiss()
+            }) {
+                Text("Cancel")
+            }
+        }
+    )
 }

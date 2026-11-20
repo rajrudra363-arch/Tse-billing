@@ -1,5 +1,6 @@
 package com.example.data
 
+import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
@@ -7,6 +8,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
 import java.util.Locale
+
+data class BackupImportSummary(
+    val billsCount: Int,
+    val customersCount: Int,
+    val productsCount: Int,
+    val accountsCount: Int,
+    val helpCount: Int
+)
 
 object AuthHasher {
     fun sha256(value: String): String {
@@ -38,7 +47,8 @@ class BillingRepository(private val db: AppDatabase) {
             companyName = m[KEY_COMPANY_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_NAME,
             mobile = m[KEY_COMPANY_MOBILE]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_MOBILE,
             email = m[KEY_COMPANY_EMAIL]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_EMAIL,
-            address = m[KEY_COMPANY_ADDRESS]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_ADDRESS
+            address = m[KEY_COMPANY_ADDRESS]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_ADDRESS,
+            authorisedSignatureBase64 = m[KEY_AUTHORISED_SIGNATURE] ?: ""
         )
     }
 
@@ -144,8 +154,51 @@ class BillingRepository(private val db: AppDatabase) {
         userDao.deleteByUsername(username)
     }
 
+    suspend fun resetAdminPasswordWithRecovery(
+        recoveryPassword: String,
+        targetAdminUsername: String? = null,
+        newPassword: String,
+        newFinalCode: String? = null
+    ): Result<String> {
+        if (AuthHasher.sha256(recoveryPassword.trim()) != AuthHasher.sha256(DEFAULT_ADMIN_RECOVERY_PASSWORD)) {
+            return Result.failure(IllegalArgumentException("Default recovery password galat hai."))
+        }
+        val cleanNewPass = newPassword
+        if (cleanNewPass.length < 6) {
+            return Result.failure(IllegalArgumentException("New Admin password kam se kam 6 characters ka hona chahiye."))
+        }
+        if (!newFinalCode.isNullOrBlank() && newFinalCode.length < 4) {
+            return Result.failure(IllegalArgumentException("Final Bill Code kam se kam 4 characters ka rakhein."))
+        }
+        val allUsers = userDao.getAll()
+        val adminAccount = targetAdminUsername
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { uname -> allUsers.firstOrNull { it.username.equals(uname, ignoreCase = true) && it.role.equals("admin", ignoreCase = true) } }
+            ?: allUsers.firstOrNull { it.role.equals("admin", ignoreCase = true) }
+            ?: return Result.failure(IllegalStateException("Admin account nahi mila."))
+
+        userDao.upsert(
+            adminAccount.copy(passwordHash = AuthHasher.sha256(cleanNewPass))
+        )
+        if (!newFinalCode.isNullOrBlank()) {
+            configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, AuthHasher.sha256(newFinalCode)))
+        }
+        return Result.success(adminAccount.username)
+    }
+
     suspend fun saveBill(bill: BillEntity, customerLocationUrl: String = "") {
-        billDao.upsert(bill)
+        val existing = billDao.findById(bill.id)
+        val safeBill = if (existing != null && existing.staffRating in 1..5) {
+            // Once a star rating is saved, nobody can edit or erase it
+            bill.copy(
+                staffRating = existing.staffRating,
+                staffReviewNote = existing.staffReviewNote
+            )
+        } else {
+            bill
+        }
+        billDao.upsert(safeBill)
         val custName = bill.customerName.trim()
         if (custName.isNotEmpty()) {
             val old = customerDao.findByName(custName)
@@ -174,7 +227,40 @@ class BillingRepository(private val db: AppDatabase) {
         }
     }
 
-    suspend fun deleteBill(id: String) = billDao.deleteById(id)
+    suspend fun deleteBill(id: String): Boolean {
+        val existing = billDao.findById(id)
+        if (existing != null && existing.staffRating in 1..5) {
+            return false
+        }
+        billDao.deleteById(id)
+        return true
+    }
+
+    suspend fun getBillById(id: String): BillEntity? = billDao.findById(id)
+
+    suspend fun updateBillSettlementAndReview(
+        billId: String,
+        discount: Double,
+        grandTotal: Double,
+        paidAmount: Double,
+        dueAmount: Double,
+        staffRating: Int,
+        staffReviewNote: String
+    ): BillEntity? {
+        val existing = billDao.findById(billId) ?: return null
+        val lockedRating = existing.staffRating in 1..5
+        val updated = existing.copy(
+            discount = discount.coerceAtLeast(0.0),
+            grandTotal = grandTotal.coerceAtLeast(0.0),
+            paidAmount = paidAmount.coerceAtLeast(0.0),
+            dueAmount = dueAmount.coerceAtLeast(0.0),
+            staffRating = if (lockedRating) existing.staffRating else staffRating.coerceIn(0, 5),
+            staffReviewNote = if (lockedRating) existing.staffReviewNote else staffReviewNote.trim(),
+            updatedAt = System.currentTimeMillis()
+        )
+        billDao.upsert(updated)
+        return updated
+    }
 
     suspend fun saveCustomer(
         name: String,
@@ -347,6 +433,10 @@ class BillingRepository(private val db: AppDatabase) {
         configDao.setValue(AppConfigEntity(KEY_FALLBACK_QR, base64))
     }
 
+    suspend fun saveAuthorisedSignatureBase64(base64: String) {
+        configDao.setValue(AppConfigEntity(KEY_AUTHORISED_SIGNATURE, base64))
+    }
+
     suspend fun setSoundEnabled(enabled: Boolean) {
         configDao.setValue(AppConfigEntity(KEY_SOUND_ENABLED, if (enabled) "1" else "0"))
     }
@@ -374,9 +464,12 @@ class BillingRepository(private val db: AppDatabase) {
         val customers = customerDao.getAll()
         val products = productDao.getAll()
         val users = userDao.getAll()
-        val cfg = configDao.getValue(KEY_COMPANY_NAME)
+        val allConfigs = configDao.getAll()
+        val cfgMap = allConfigs.associate { it.key to it.value }
 
         val root = JSONObject()
+        root.put("schemaVersion", 4)
+        root.put("exportedAt", System.currentTimeMillis())
         root.put("bills", JSONArray().apply {
             bills.forEach { b ->
                 put(JSONObject().apply {
@@ -398,6 +491,8 @@ class BillingRepository(private val db: AppDatabase) {
                     put("updatedAt", b.updatedAt)
                     put("extraChargeType", b.extraChargeType)
                     put("extraChargeAmount", b.extraChargeAmount)
+                    put("staffRating", b.staffRating)
+                    put("staffReviewNote", b.staffReviewNote)
                 })
             }
         })
@@ -422,16 +517,22 @@ class BillingRepository(private val db: AppDatabase) {
             }
         })
         root.put("settings", JSONObject().apply {
-            put("company", cfg ?: DEFAULT_COMPANY_NAME)
-            put("mobile", configDao.getValue(KEY_COMPANY_MOBILE) ?: DEFAULT_COMPANY_MOBILE)
-            put("email", configDao.getValue(KEY_COMPANY_EMAIL) ?: DEFAULT_COMPANY_EMAIL)
-            put("address", configDao.getValue(KEY_COMPANY_ADDRESS) ?: DEFAULT_COMPANY_ADDRESS)
+            put("company", cfgMap[KEY_COMPANY_NAME] ?: DEFAULT_COMPANY_NAME)
+            put("mobile", cfgMap[KEY_COMPANY_MOBILE] ?: DEFAULT_COMPANY_MOBILE)
+            put("email", cfgMap[KEY_COMPANY_EMAIL] ?: DEFAULT_COMPANY_EMAIL)
+            put("address", cfgMap[KEY_COMPANY_ADDRESS] ?: DEFAULT_COMPANY_ADDRESS)
+            put("authorisedSignature", cfgMap[KEY_AUTHORISED_SIGNATURE] ?: "")
         })
         root.put("upi", JSONObject().apply {
-            put("id", configDao.getValue(KEY_UPI_ID) ?: "")
-            put("name", configDao.getValue(KEY_UPI_NAME) ?: DEFAULT_PAYEE_NAME)
+            put("id", cfgMap[KEY_UPI_ID] ?: "")
+            put("name", cfgMap[KEY_UPI_NAME] ?: DEFAULT_PAYEE_NAME)
         })
-        root.put("qr", configDao.getValue(KEY_FALLBACK_QR) ?: "")
+        root.put("qr", cfgMap[KEY_FALLBACK_QR] ?: "")
+        root.put("appConfig", JSONObject().apply {
+            allConfigs.forEach { entry ->
+                put(entry.key, entry.value)
+            }
+        })
         root.put("accounts", JSONArray().apply {
             users.forEach { u ->
                 put(JSONObject().apply {
@@ -460,140 +561,181 @@ class BillingRepository(private val db: AppDatabase) {
         return root.toString(2)
     }
 
-    suspend fun importBackupJson(rawJson: String): Result<Unit> {
+    suspend fun importBackupJson(rawJson: String): Result<BackupImportSummary> {
         return try {
             val root = JSONObject(rawJson)
             val billsArr = root.optJSONArray("bills") ?: return Result.failure(IllegalArgumentException("Missing bills"))
             val productsArr = root.optJSONArray("products") ?: return Result.failure(IllegalArgumentException("Missing products"))
 
-            billDao.deleteAll()
-            for (i in 0 until billsArr.length()) {
-                val obj = billsArr.getJSONObject(i)
-                val itemsStr = obj.optJSONArray("items")?.toString() ?: "[]"
-                val sub = obj.optDouble("subtotal", 0.0)
-                val disc = obj.optDouble("discount", 0.0)
-                val grand = if (obj.has("grandTotal")) obj.optDouble("grandTotal", 0.0) else maxOf(0.0, sub - disc)
-                val paid = if (obj.has("paid")) obj.optDouble("paid", 0.0) else obj.optDouble("advance", 0.0)
-                val due = if (obj.has("due")) obj.optDouble("due", 0.0) else maxOf(0.0, grand - paid)
-                billDao.upsert(
-                    BillEntity(
-                        id = obj.optString("id", "b${System.currentTimeMillis()}_$i"),
-                        invoiceNo = obj.optString("no", "TSE-${i + 1}"),
-                        date = obj.optString("date", ""),
-                        customerName = obj.optString("customer", ""),
-                        customerDetails = obj.optString("details", ""),
-                        itemsJson = itemsStr,
-                        subtotal = sub,
-                        discount = disc,
-                        grandTotal = grand,
-                        paidAmount = paid,
-                        dueAmount = due,
-                        paymentMode = obj.optString("paymentMode", PaymentMode.ONLINE.label),
-                        signatureBase64 = obj.optString("signature", ""),
-                        customQrText = obj.optString("customQrText", ""),
-                        createdBy = obj.optString("createdBy", "Admin"),
-                        updatedAt = obj.optLong("updatedAt", System.currentTimeMillis()),
-                        extraChargeType = obj.optString("extraChargeType", "NONE"),
-                        extraChargeAmount = obj.optDouble("extraChargeAmount", 0.0)
-                    )
-                )
-            }
+            var billsCount = 0
+            var customersCount = 0
+            var productsCount = 0
+            var accountsCount = 0
+            var helpCount = 0
 
-            root.optJSONArray("customers")?.let { custArr ->
-                customerDao.deleteAll()
-                for (i in 0 until custArr.length()) {
-                    val obj = custArr.getJSONObject(i)
+            db.withTransaction {
+                billDao.deleteAll()
+                for (i in 0 until billsArr.length()) {
+                    val obj = billsArr.getJSONObject(i)
+                    val itemsStr = obj.optJSONArray("items")?.toString() ?: "[]"
+                    val sub = obj.optDouble("subtotal", 0.0)
+                    val disc = obj.optDouble("discount", 0.0)
+                    val grand = if (obj.has("grandTotal")) obj.optDouble("grandTotal", 0.0) else maxOf(0.0, sub - disc)
+                    val paid = if (obj.has("paid")) obj.optDouble("paid", 0.0) else obj.optDouble("advance", 0.0)
+                    val due = if (obj.has("due")) obj.optDouble("due", 0.0) else maxOf(0.0, grand - paid)
+                    billDao.upsert(
+                        BillEntity(
+                            id = obj.optString("id", "b${System.currentTimeMillis()}_$i"),
+                            invoiceNo = obj.optString("no", "TSE-${i + 1}"),
+                            date = obj.optString("date", ""),
+                            customerName = obj.optString("customer", ""),
+                            customerDetails = obj.optString("details", ""),
+                            itemsJson = itemsStr,
+                            subtotal = sub,
+                            discount = disc,
+                            grandTotal = grand,
+                            paidAmount = paid,
+                            dueAmount = due,
+                            paymentMode = obj.optString("paymentMode", PaymentMode.ONLINE.label),
+                            signatureBase64 = obj.optString("signature", ""),
+                            customQrText = obj.optString("customQrText", ""),
+                            createdBy = obj.optString("createdBy", "Admin"),
+                            updatedAt = obj.optLong("updatedAt", System.currentTimeMillis()),
+                            extraChargeType = obj.optString("extraChargeType", "NONE"),
+                            extraChargeAmount = obj.optDouble("extraChargeAmount", 0.0),
+                            staffRating = obj.optInt("staffRating", 0).coerceIn(0, 5),
+                            staffReviewNote = obj.optString("staffReviewNote", "")
+                        )
+                    )
+                    billsCount++
+                }
+
+                root.optJSONArray("customers")?.let { custArr ->
+                    customerDao.deleteAll()
+                    for (i in 0 until custArr.length()) {
+                        val obj = custArr.getJSONObject(i)
+                        val name = obj.optString("name", "").trim()
+                        if (name.isNotEmpty()) {
+                            customerDao.upsert(
+                                CustomerEntity(
+                                    name = name,
+                                    details = obj.optString("details", ""),
+                                    phone = obj.optString("phone", ""),
+                                    address = obj.optString("address", ""),
+                                    locationUrl = obj.optString("locationUrl", "")
+                                )
+                            )
+                            customersCount++
+                        }
+                    }
+                }
+
+                productDao.deleteAll()
+                val importedProducts = mutableListOf<ProductEntity>()
+                for (i in 0 until productsArr.length()) {
+                    val obj = productsArr.getJSONObject(i)
                     val name = obj.optString("name", "").trim()
                     if (name.isNotEmpty()) {
-                        customerDao.upsert(
-                            CustomerEntity(
+                        importedProducts.add(
+                            ProductEntity(
                                 name = name,
-                                details = obj.optString("details", ""),
-                                phone = obj.optString("phone", ""),
-                                address = obj.optString("address", ""),
-                                locationUrl = obj.optString("locationUrl", "")
+                                unit = obj.optString("unit", "Nos"),
+                                defaultRate = obj.optDouble("rate", 0.0)
                             )
                         )
                     }
                 }
-            }
+                if (importedProducts.isNotEmpty()) {
+                    productDao.insertAll(importedProducts)
+                    productsCount = importedProducts.size
+                }
 
-            productDao.deleteAll()
-            val importedProducts = mutableListOf<ProductEntity>()
-            for (i in 0 until productsArr.length()) {
-                val obj = productsArr.getJSONObject(i)
-                val name = obj.optString("name", "").trim()
-                if (name.isNotEmpty()) {
-                    importedProducts.add(
-                        ProductEntity(
-                            name = name,
-                            unit = obj.optString("unit", "Nos"),
-                            defaultRate = obj.optDouble("rate", 0.0)
+                root.optJSONObject("settings")?.let { s ->
+                    saveCompanySettings(
+                        CompanySettings(
+                            companyName = s.optString("company", DEFAULT_COMPANY_NAME),
+                            mobile = s.optString("mobile", DEFAULT_COMPANY_MOBILE),
+                            email = s.optString("email", DEFAULT_COMPANY_EMAIL),
+                            address = s.optString("address", DEFAULT_COMPANY_ADDRESS)
                         )
+                    )
+                    if (s.has("authorisedSignature")) {
+                        saveAuthorisedSignatureBase64(s.optString("authorisedSignature", ""))
+                    }
+                }
+
+                root.optJSONObject("upi")?.let { u ->
+                    saveUpiSettings(
+                        upiId = u.optString("id", ""),
+                        payeeName = u.optString("name", DEFAULT_PAYEE_NAME)
                     )
                 }
-            }
-            if (importedProducts.isNotEmpty()) productDao.insertAll(importedProducts)
 
-            root.optJSONObject("settings")?.let { s ->
-                saveCompanySettings(
-                    CompanySettings(
-                        companyName = s.optString("company", DEFAULT_COMPANY_NAME),
-                        mobile = s.optString("mobile", DEFAULT_COMPANY_MOBILE),
-                        email = s.optString("email", DEFAULT_COMPANY_EMAIL),
-                        address = s.optString("address", DEFAULT_COMPANY_ADDRESS)
-                    )
-                )
-            }
+                if (root.has("qr")) {
+                    saveFallbackQrBase64(root.optString("qr", ""))
+                }
 
-            root.optJSONObject("upi")?.let { u ->
-                saveUpiSettings(
-                    upiId = u.optString("id", ""),
-                    payeeName = u.optString("name", DEFAULT_PAYEE_NAME)
-                )
-            }
+                // Restore full appConfig map (includes final_code_hash, sound_enabled, language, seeded, etc.)
+                root.optJSONObject("appConfig")?.let { cfgObj ->
+                    val entries = mutableListOf<AppConfigEntity>()
+                    val keys = cfgObj.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        entries.add(AppConfigEntity(key = k, value = cfgObj.optString(k, "")))
+                    }
+                    if (entries.isNotEmpty()) {
+                        configDao.setAll(entries)
+                    }
+                }
 
-            if (root.has("qr")) {
-                saveFallbackQrBase64(root.optString("qr", ""))
-            }
+                root.optJSONArray("accounts")?.let { accArr ->
+                    if (accArr.length() > 0) {
+                        userDao.deleteAll()
+                        for (i in 0 until accArr.length()) {
+                            val u = accArr.getJSONObject(i)
+                            userDao.upsert(
+                                UserAccountEntity(
+                                    username = u.getString("username"),
+                                    displayName = u.optString("displayName", u.getString("username")),
+                                    passwordHash = u.getString("passwordHash"),
+                                    role = u.optString("role", "staff")
+                                )
+                            )
+                            accountsCount++
+                        }
+                    }
+                }
 
-            root.optJSONArray("accounts")?.let { accArr ->
-                if (accArr.length() > 0) {
-                    userDao.deleteAll()
-                    for (i in 0 until accArr.length()) {
-                        val u = accArr.getJSONObject(i)
-                        userDao.upsert(
-                            UserAccountEntity(
-                                username = u.getString("username"),
-                                displayName = u.optString("displayName", u.getString("username")),
-                                passwordHash = u.getString("passwordHash"),
-                                role = u.optString("role", "staff")
+                root.optJSONArray("helpRequests")?.let { helpArr ->
+                    helpDao.deleteAll()
+                    for (i in 0 until helpArr.length()) {
+                        val h = helpArr.getJSONObject(i)
+                        helpDao.upsert(
+                            CustomerHelpEntity(
+                                customerName = h.optString("customerName", ""),
+                                phone = h.optString("phone", ""),
+                                address = h.optString("address", ""),
+                                locationUrl = h.optString("locationUrl", ""),
+                                helpDescription = h.optString("helpDescription", ""),
+                                status = h.optString("status", "OPEN"),
+                                createdAt = h.optLong("createdAt", System.currentTimeMillis()),
+                                updatedAt = h.optLong("updatedAt", System.currentTimeMillis())
                             )
                         )
+                        helpCount++
                     }
                 }
             }
 
-            root.optJSONArray("helpRequests")?.let { helpArr ->
-                helpDao.deleteAll()
-                for (i in 0 until helpArr.length()) {
-                    val h = helpArr.getJSONObject(i)
-                    helpDao.upsert(
-                        CustomerHelpEntity(
-                            customerName = h.optString("customerName", ""),
-                            phone = h.optString("phone", ""),
-                            address = h.optString("address", ""),
-                            locationUrl = h.optString("locationUrl", ""),
-                            helpDescription = h.optString("helpDescription", ""),
-                            status = h.optString("status", "OPEN"),
-                            createdAt = h.optLong("createdAt", System.currentTimeMillis()),
-                            updatedAt = h.optLong("updatedAt", System.currentTimeMillis())
-                        )
-                    )
-                }
-            }
-
-            Result.success(Unit)
+            Result.success(
+                BackupImportSummary(
+                    billsCount = billsCount,
+                    customersCount = customersCount,
+                    productsCount = productsCount,
+                    accountsCount = accountsCount,
+                    helpCount = helpCount
+                )
+            )
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -605,6 +747,7 @@ class BillingRepository(private val db: AppDatabase) {
         const val KEY_COMPANY_MOBILE = "company_mobile"
         const val KEY_COMPANY_EMAIL = "company_email"
         const val KEY_COMPANY_ADDRESS = "company_address"
+        const val KEY_AUTHORISED_SIGNATURE = "authorised_signature_b64"
         const val KEY_UPI_ID = "upi_id"
         const val KEY_UPI_NAME = "upi_name"
         const val KEY_FALLBACK_QR = "fallback_qr"
@@ -612,6 +755,7 @@ class BillingRepository(private val db: AppDatabase) {
         const val KEY_SOUND_ENABLED = "sound_enabled"
         const val KEY_LANGUAGE = "language"
 
+        const val DEFAULT_ADMIN_RECOVERY_PASSWORD = "Manoj2007"
         const val DEFAULT_COMPANY_NAME = "TOTAL SOLUTION ENTERPRISES"
         const val DEFAULT_COMPANY_MOBILE = "7083805120"
         const val DEFAULT_COMPANY_EMAIL = "totalsolution7020@gmail.com"

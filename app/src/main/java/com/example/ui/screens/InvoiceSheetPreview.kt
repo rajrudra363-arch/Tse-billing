@@ -60,7 +60,7 @@ fun InvoiceSheetPreview(
 ) {
     val uriHandler = LocalUriHandler.current
     val waUri = remember(company.mobile) { QrGenerator.buildWhatsAppSupportUri(company.mobile) }
-    val qrPayAmt = if (draft.dueAmount > 0.009) draft.dueAmount else draft.grandTotal
+    val qrPayAmt = if (draft.grandTotal > 0.009) draft.grandTotal else draft.subtotal
     val upiUri = remember(upi.upiId, upi.payeeName, qrPayAmt, draft.invoiceNo) {
         if (upi.upiId.isNotBlank()) QrGenerator.buildUpiUri(upi.upiId, upi.payeeName, qrPayAmt, draft.invoiceNo)
         else ""
@@ -68,11 +68,13 @@ fun InvoiceSheetPreview(
     val signatureBmp = remember(draft.signatureBase64) {
         InvoicePdfPrinter.decodeBase64Bitmap(draft.signatureBase64)
     }
+    val authSignatureBmp = remember(company.authorisedSignatureBase64) {
+        InvoicePdfPrinter.decodeBase64Bitmap(company.authorisedSignatureBase64)
+    }
 
     val sheetBorder = Color(0xFF111111)
     val softFill = Color(0xFFF6F9FB)
     val headerFill = Color(0xFFEDF4F7)
-    val dueActive = draft.dueAmount > 0.009
 
     Column(
         modifier = modifier
@@ -100,9 +102,9 @@ fun InvoiceSheetPreview(
                     Text(
                         text = company.companyName.uppercase(Locale.ROOT),
                         color = NavyPrimary,
-                        fontSize = 15.sp,
+                        fontSize = 19.sp,
                         fontWeight = FontWeight.Black,
-                        lineHeight = 18.sp
+                        lineHeight = 22.sp
                     )
                     Text(
                         text = stringResource(R.string.company_tagline),
@@ -241,23 +243,32 @@ fun InvoiceSheetPreview(
                     draft.items,
                     draft.extraChargeType,
                     draft.extraChargeAmount
-                ).ifEmpty { draft.items }
+                )
             }
-            previewItems.forEachIndexed { idx, item ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp, horizontal = 3.dp)
-                ) {
-                    TableCell("${idx + 1}", 0.55f, align = TextAlign.Center)
-                    TableCell(item.description.ifBlank { "—" }, 2.5f)
-                    val qtyStr = if (item.qty % 1.0 == 0.0) item.qty.toInt().toString() else String.format(Locale.US, "%.1f", item.qty)
-                    TableCell(qtyStr, 0.65f, align = TextAlign.Center)
-                    TableCell(item.unit.ifBlank { "Nos" }, 0.7f, align = TextAlign.Center)
-                    TableCell(String.format(Locale.US, "%.2f", item.rate), 1.0f, align = TextAlign.End)
-                    TableCell(String.format(Locale.US, "%.2f", item.amount), 1.1f, bold = true, align = TextAlign.End)
+            if (previewItems.isEmpty()) {
+                Text(
+                    text = "No filled products yet — only filled items will print.",
+                    fontSize = 8.5.sp,
+                    color = Color(0xFF64748B),
+                    modifier = Modifier.padding(8.dp)
+                )
+            } else {
+                previewItems.forEachIndexed { idx, item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp, horizontal = 3.dp)
+                    ) {
+                        TableCell("${idx + 1}", 0.55f, align = TextAlign.Center)
+                        TableCell(item.description, 2.5f)
+                        val qtyStr = if (item.qty % 1.0 == 0.0) item.qty.toInt().toString() else String.format(Locale.US, "%.1f", item.qty)
+                        TableCell(qtyStr, 0.65f, align = TextAlign.Center)
+                        TableCell(item.unit.ifBlank { "Nos" }, 0.7f, align = TextAlign.Center)
+                        TableCell(String.format(Locale.US, "%.2f", item.rate), 1.0f, align = TextAlign.End)
+                        TableCell(String.format(Locale.US, "%.2f", item.amount), 1.1f, bold = true, align = TextAlign.End)
+                    }
+                    HorizontalDivider(color = Color(0xFFD5DCE0), thickness = 0.7.dp)
                 }
-                HorizontalDivider(color = Color(0xFFD5DCE0), thickness = 0.7.dp)
             }
         }
 
@@ -305,20 +316,11 @@ fun InvoiceSheetPreview(
 
             VerticalDivider(color = sheetBorder, thickness = 1.2.dp)
 
-            // Right: Totals Table (SubTotal -> Discount -> GrandTotal -> Paid -> Due)
+            // Right: Totals Table (SUB TOTAL -> ADVANCE -> GRAND TOTAL)
             Column(modifier = Modifier.weight(0.95f)) {
                 SummaryLine("SUB TOTAL", draft.subtotal)
-                SummaryLine("DISCOUNT", draft.discount)
-                SummaryLine("GRAND TOTAL", draft.grandTotal, bg = headerFill, bold = true)
-                SummaryLine("PAID AMOUNT", draft.paidAmount)
-                SummaryLine(
-                    label = if (dueActive) "DUE AMOUNT [DUE]" else "DUE AMOUNT",
-                    value = draft.dueAmount,
-                    bg = if (dueActive) RedDueBg else Color.White,
-                    textColor = if (dueActive) RedDueDark else Color.Black,
-                    bold = true,
-                    isLast = true
-                )
+                SummaryLine("ADVANCE", draft.paidAmount)
+                SummaryLine("GRAND TOTAL", draft.grandTotal, bg = headerFill, bold = true, isLast = true)
             }
         }
 
@@ -388,7 +390,16 @@ fun InvoiceSheetPreview(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Bottom
             ) {
-                Spacer(Modifier.height(34.dp))
+                if (authSignatureBmp != null) {
+                    Image(
+                        bitmap = authSignatureBmp.asImageBitmap(),
+                        contentDescription = "Authorised Signatory",
+                        modifier = Modifier.height(34.dp).fillMaxWidth(),
+                        contentScale = ContentScale.Fit
+                    )
+                } else {
+                    Spacer(Modifier.height(34.dp))
+                }
                 HorizontalDivider(color = sheetBorder, thickness = 1.dp)
                 Spacer(Modifier.height(2.dp))
                 Text("Authorised Signatory", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color.Black, textAlign = TextAlign.Center)

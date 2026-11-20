@@ -12,13 +12,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
@@ -63,6 +66,7 @@ import com.example.data.CustomerEntity
 import com.example.data.ProductEntity
 import com.example.data.UserSession
 import com.example.ui.components.ProvideSafeTextToolbar
+import com.example.ui.components.bringIntoViewOnFocus
 import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.RedDue
@@ -142,7 +146,7 @@ fun CustomersScreen(
                             onValueChange = { name = it },
                             label = { Text("Customer Name") },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth().testTag("new_customer_name")
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_customer_name")
                         )
                         OutlinedTextField(
                             value = phone,
@@ -151,14 +155,14 @@ fun CustomersScreen(
                             leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth().testTag("new_customer_phone")
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_customer_phone")
                         )
                         OutlinedTextField(
                             value = address,
                             onValueChange = { address = it },
                             label = { Text("Customer Address") },
                             minLines = 2,
-                            modifier = Modifier.fillMaxWidth().testTag("new_customer_address")
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_customer_address")
                         )
                         OutlinedTextField(
                             value = locationUrl,
@@ -166,7 +170,7 @@ fun CustomersScreen(
                             label = { Text("Google Maps Location Link / Coordinates") },
                             leadingIcon = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = TealAccent) },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth().testTag("new_customer_location")
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_customer_location")
                         )
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -289,7 +293,7 @@ fun CustomersScreen(
                         placeholder = { Text("Type name or last 5 digits (e.g. 54321)") },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth().testTag("customer_search_input")
+                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("customer_search_input")
                     )
                     Text(
                         text = if (activeQuery.isBlank()) {
@@ -478,7 +482,7 @@ fun ProductsScreen(
                             onValueChange = { name = it },
                             label = { Text("Product Name (e.g. 4 Channel DVR)") },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth().testTag("new_product_name")
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_product_name")
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             OutlinedTextField(
@@ -486,7 +490,7 @@ fun ProductsScreen(
                                 onValueChange = { unit = it },
                                 label = { Text("Unit") },
                                 singleLine = true,
-                                modifier = Modifier.weight(1f).testTag("new_product_unit")
+                                modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("new_product_unit")
                             )
                             OutlinedTextField(
                                 value = rate,
@@ -494,7 +498,7 @@ fun ProductsScreen(
                                 label = { Text("Default Rate (₹)") },
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                                 singleLine = true,
-                                modifier = Modifier.weight(1.2f).testTag("new_product_rate")
+                                modifier = Modifier.weight(1.2f).bringIntoViewOnFocus().testTag("new_product_rate")
                             )
                         }
                         Button(
@@ -633,13 +637,16 @@ private fun EditProductDialog(
             ProvideSafeTextToolbar {
                 val dialogFocus = LocalFocusManager.current
                 val dialogToolbar = LocalTextToolbar.current
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(
+                    modifier = Modifier.imePadding().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     OutlinedTextField(
                         value = editName,
                         onValueChange = { editName = it },
                         label = { Text("Product Name") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth().testTag("edit_product_name_input")
+                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("edit_product_name_input")
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
@@ -647,7 +654,7 @@ private fun EditProductDialog(
                             onValueChange = { editUnit = it },
                             label = { Text("Unit") },
                             singleLine = true,
-                            modifier = Modifier.weight(1f).testTag("edit_product_unit_input")
+                            modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("edit_product_unit_input")
                         )
                         OutlinedTextField(
                             value = editRate,
@@ -655,7 +662,7 @@ private fun EditProductDialog(
                             label = { Text("Rate (₹)") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                             singleLine = true,
-                            modifier = Modifier.weight(1.2f).testTag("edit_product_rate_input")
+                            modifier = Modifier.weight(1.2f).bringIntoViewOnFocus().testTag("edit_product_rate_input")
                         )
                     }
                     DisposableEffect(dialogFocus, dialogToolbar) {

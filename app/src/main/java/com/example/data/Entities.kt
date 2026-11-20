@@ -22,7 +22,9 @@ data class BillEntity(
     val createdBy: String,
     val updatedAt: Long = System.currentTimeMillis(),
     val extraChargeType: String = "NONE",
-    val extraChargeAmount: Double = 0.0
+    val extraChargeAmount: Double = 0.0,
+    val staffRating: Int = 0,
+    val staffReviewNote: String = ""
 )
 
 @Entity(tableName = "customers")

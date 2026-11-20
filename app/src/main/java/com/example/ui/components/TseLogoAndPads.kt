@@ -1,35 +1,37 @@
 package com.example.ui.components
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.Canvas as AndroidCanvas
-import android.graphics.Color as AndroidColor
-import android.graphics.Paint as AndroidPaint
-import android.graphics.Path as AndroidPath
+import android.graphics.BitmapFactory
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.Draw
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -41,22 +43,22 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.example.ui.theme.CyanGlow
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.NavyDeep
 import com.example.ui.theme.TealAccent
 import com.example.util.InvoicePdfPrinter
 import com.example.util.QrGenerator
+import java.io.File
 
 @Composable
 fun TseShieldLogo(modifier: Modifier = Modifier) {
@@ -164,19 +166,64 @@ fun QrCodeImage(
 }
 
 @Composable
-fun SignaturePadBox(
-    hasSavedSignature: Boolean,
+fun CameraSignatureBox(
+    signatureBase64: String,
     onSignatureChanged: (Bitmap?) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val strokes = remember { mutableStateListOf<List<Offset>>() }
-    var activeStroke by remember { mutableStateOf<List<Offset>>(emptyList()) }
-    var padSize by remember { mutableStateOf(IntSize(600, 200)) }
+    val context = LocalContext.current
+    val decodedBitmap = remember(signatureBase64) {
+        InvoicePdfPrinter.decodeBase64Bitmap(signatureBase64)
+    }
+    var pendingCaptureFile by remember { mutableStateOf<File?>(null) }
 
-    LaunchedEffect(hasSavedSignature) {
-        if (!hasSavedSignature) {
-            strokes.clear()
-            activeStroke = emptyList()
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success ->
+        val file = pendingCaptureFile
+        pendingCaptureFile = null
+        if (success && file != null && file.exists()) {
+            val bmp = decodeScaledSignatureFile(file, maxDim = 800)
+            file.delete()
+            if (bmp != null) {
+                onSignatureChanged(bmp)
+            } else {
+                Toast.makeText(context, "Could not read scanned signature photo", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            file?.delete()
+        }
+    }
+
+    fun startCameraFlow() {
+        val dir = File(context.cacheDir, "signatures").apply { mkdirs() }
+        val photoFile = File(dir, "cust_sig_${System.currentTimeMillis()}.jpg")
+        val uri = runCatching {
+            FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                photoFile
+            )
+        }.getOrNull()
+        if (uri == null) {
+            Toast.makeText(context, "Camera storage error", Toast.LENGTH_SHORT).show()
+            return
+        }
+        pendingCaptureFile = photoFile
+        takePictureLauncher.launch(uri)
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            startCameraFlow()
+        } else {
+            Toast.makeText(
+                context,
+                "Camera permission required to scan customer signature",
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
@@ -186,24 +233,30 @@ fun SignaturePadBox(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Icon(Icons.Default.Draw, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(
+                    Icons.Default.PhotoCamera,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
                 Text(
-                    text = "Customer Signature (Draw with finger)",
+                    text = "Customer Signature (Camera Scan)",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            OutlinedButton(
-                onClick = {
-                    strokes.clear()
-                    activeStroke = emptyList()
-                    onSignatureChanged(null)
-                },
-                modifier = Modifier.testTag("clear_signature_button")
-            ) {
-                Icon(Icons.Default.Clear, contentDescription = null)
-                Text("Clear")
+            if (signatureBase64.isNotBlank()) {
+                OutlinedButton(
+                    onClick = { onSignatureChanged(null) },
+                    modifier = Modifier.testTag("clear_signature_button")
+                ) {
+                    Icon(Icons.Default.Clear, contentDescription = null)
+                    Text("Clear")
+                }
             }
         }
 
@@ -214,91 +267,89 @@ fun SignaturePadBox(
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color.White)
                 .border(1.5.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
-                .onSizeChanged { padSize = it }
-                .pointerInput(Unit) {
-                    detectDragGestures(
-                        onDragStart = { offset ->
-                            activeStroke = listOf(offset)
-                        },
-                        onDrag = { change, _ ->
-                            change.consume()
-                            activeStroke = activeStroke + change.position
-                        },
-                        onDragEnd = {
-                            if (activeStroke.isNotEmpty()) {
-                                strokes.add(activeStroke)
-                                activeStroke = emptyList()
-                                onSignatureChanged(renderStrokesToBitmap(strokes, padSize))
-                            }
-                        },
-                        onDragCancel = {
-                            activeStroke = emptyList()
-                        }
+                .testTag("signature_scan_preview")
+        ) {
+            if (decodedBitmap != null) {
+                Image(
+                    bitmap = decodedBitmap.asImageBitmap(),
+                    contentDescription = "Scanned Customer Signature",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(6.dp),
+                    contentScale = ContentScale.Fit
+                )
+            } else {
+                Column(
+                    modifier = Modifier.align(Alignment.Center).padding(horizontal = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        Icons.Default.PhotoCamera,
+                        contentDescription = null,
+                        tint = Color(0xFF94A3B8)
+                    )
+                    Text(
+                        text = "Scan customer's paper signature using Camera",
+                        color = Color(0xFF64748B),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium
                     )
                 }
-                .testTag("signature_pad_canvas")
-        ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                // Baseline guide
-                drawLine(
-                    color = Color(0xFFDDE5EB),
-                    start = Offset(16f, size.height * 0.78f),
-                    end = Offset(size.width - 16f, size.height * 0.78f),
-                    strokeWidth = 2f
-                )
+            }
+        }
 
-                val allStrokes = if (activeStroke.isNotEmpty()) strokes + listOf(activeStroke) else strokes
-                allStrokes.forEach { pts ->
-                    if (pts.size > 1) {
-                        val path = Path().apply {
-                            moveTo(pts.first().x, pts.first().y)
-                            for (i in 1 until pts.size) lineTo(pts[i].x, pts[i].y)
-                        }
-                        drawPath(
-                            path = path,
-                            color = Color(0xFF111111),
-                            style = Stroke(width = 5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                        )
-                    } else if (pts.size == 1) {
-                        drawCircle(color = Color(0xFF111111), radius = 2.5f, center = pts.first())
-                    }
+        Button(
+            onClick = {
+                val hasPermission = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+                if (hasPermission) {
+                    startCameraFlow()
+                } else {
+                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                 }
-            }
-            if (strokes.isEmpty() && activeStroke.isEmpty()) {
-                Text(
-                    text = if (hasSavedSignature) "Saved signature attached (draw to replace)" else "Sign here...",
-                    color = Color(0xFF94A3B8),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.align(Alignment.Center)
-                )
-            }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .testTag("scan_signature_camera_button")
+        ) {
+            Icon(Icons.Default.PhotoCamera, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = if (decodedBitmap != null) "Re-scan Customer Signature (Camera)" else "Scan Customer Signature (Camera)",
+                fontWeight = FontWeight.Bold
+            )
         }
     }
 }
 
-private fun renderStrokesToBitmap(strokes: List<List<Offset>>, size: IntSize): Bitmap? {
-    if (strokes.isEmpty() || size.width <= 0 || size.height <= 0) return null
-    val bmp = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888)
-    val canvas = AndroidCanvas(bmp)
-    canvas.drawColor(AndroidColor.TRANSPARENT)
-    val paint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
-        color = AndroidColor.BLACK
-        style = AndroidPaint.Style.STROKE
-        strokeWidth = 5f
-        strokeCap = AndroidPaint.Cap.ROUND
-        strokeJoin = AndroidPaint.Join.ROUND
-    }
-    strokes.forEach { pts ->
-        if (pts.size > 1) {
-            val path = AndroidPath().apply {
-                moveTo(pts.first().x, pts.first().y)
-                for (i in 1 until pts.size) lineTo(pts[i].x, pts[i].y)
-            }
-            canvas.drawPath(path, paint)
-        } else if (pts.size == 1) {
-            canvas.drawCircle(pts.first().x, pts.first().y, 2.5f, paint)
+private fun decodeScaledSignatureFile(file: File, maxDim: Int): Bitmap? {
+    return runCatching {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        var sample = 1
+        while (bounds.outWidth / sample > maxDim || bounds.outHeight / sample > maxDim) {
+            sample *= 2
         }
-    }
-    return bmp
+        val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+        val decoded = BitmapFactory.decodeFile(file.absolutePath, opts) ?: return null
+        val scale = minOf(
+            maxDim.toFloat() / decoded.width.coerceAtLeast(1),
+            maxDim.toFloat() / decoded.height.coerceAtLeast(1),
+            1f
+        )
+        if (scale < 1f) {
+            Bitmap.createScaledBitmap(
+                decoded,
+                (decoded.width * scale).toInt().coerceAtLeast(1),
+                (decoded.height * scale).toInt().coerceAtLeast(1),
+                true
+            )
+        } else {
+            decoded
+        }
+    }.getOrNull()
 }

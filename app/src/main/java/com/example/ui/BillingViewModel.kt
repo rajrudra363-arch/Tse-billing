@@ -51,6 +51,18 @@ enum class MainTab(val route: String) {
     SETTINGS("settings")
 }
 
+data class StaffPerformanceSummary(
+    val username: String,
+    val displayName: String,
+    val role: String,
+    val billCount: Int,
+    val totalBilledAmount: Double,
+    val totalDueAmount: Double,
+    val ratedCount: Int,
+    val averageRating: Double,
+    val latestReviewNote: String
+)
+
 data class BillDraft(
     val editingId: String? = null,
     val openedFromSaved: Boolean = false,
@@ -68,6 +80,8 @@ data class BillDraft(
     val paymentMode: PaymentMode = PaymentMode.ONLINE,
     val signatureBase64: String = "",
     val customQrText: String = "",
+    val staffRating: Int = 0,
+    val staffReviewNote: String = "",
     val showSheetPreview: Boolean = false
 ) {
     val itemsSubtotal: Double get() = items.sumOf { it.amount }
@@ -120,6 +134,9 @@ class BillingViewModel(
     private val _exportOptionsPayload = MutableStateFlow<InvoicePrintPayload?>(null)
     val exportOptionsPayload: StateFlow<InvoicePrintPayload?> = _exportOptionsPayload.asStateFlow()
 
+    private val _settlementDialogBill = MutableStateFlow<BillEntity?>(null)
+    val settlementDialogBill: StateFlow<BillEntity?> = _settlementDialogBill.asStateFlow()
+
     private val _events = MutableSharedFlow<BillingEvent>(extraBufferCapacity = 8)
     val events: SharedFlow<BillingEvent> = _events.asSharedFlow()
 
@@ -132,6 +149,33 @@ class BillingViewModel(
 
     val bills: StateFlow<List<BillEntity>> = repository.bills
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val staffPerformance: StateFlow<List<StaffPerformanceSummary>> = combine(accounts, bills) { accList, billList ->
+        val knownUsernames = accList.map { it.username.lowercase(Locale.ROOT) }.toSet()
+        val extraCreators = billList
+            .map { it.createdBy.trim() }
+            .filter { it.isNotBlank() && it.lowercase(Locale.ROOT) !in knownUsernames }
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .map { uname -> UserAccountEntity(username = uname, displayName = uname, passwordHash = "", role = "staff") }
+
+        (accList + extraCreators).map { acc ->
+            val userBills = billList.filter { it.createdBy.equals(acc.username, ignoreCase = true) }
+            val ratedBills = userBills.filter { it.staffRating in 1..5 }
+            val avg = if (ratedBills.isNotEmpty()) ratedBills.map { it.staffRating }.average() else 0.0
+            val latestNote = ratedBills.firstOrNull { it.staffReviewNote.isNotBlank() }?.staffReviewNote ?: ""
+            StaffPerformanceSummary(
+                username = acc.username,
+                displayName = acc.displayName.ifBlank { acc.username },
+                role = acc.role,
+                billCount = userBills.size,
+                totalBilledAmount = userBills.sumOf { it.grandTotal },
+                totalDueAmount = userBills.sumOf { it.dueAmount },
+                ratedCount = ratedBills.size,
+                averageRating = avg,
+                latestReviewNote = latestNote
+            )
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val filteredBills: StateFlow<List<BillEntity>> = combine(bills, _billSearchQuery) { all, q ->
         val query = q.trim().lowercase(Locale.ROOT)
@@ -302,6 +346,54 @@ class BillingViewModel(
         soundEngine.play(SoundCue.CLICK)
     }
 
+    fun resetAdminPassword(
+        recoveryPassword: String,
+        targetAdminUsername: String?,
+        newPassword: String,
+        confirmPassword: String,
+        newFinalCode: String,
+        onResult: (ok: Boolean, message: String) -> Unit
+    ) {
+        if (recoveryPassword.isBlank()) {
+            soundEngine.play(SoundCue.ERROR)
+            onResult(false, "Default recovery password enter karein.")
+            return
+        }
+        if (newPassword.length < 6) {
+            soundEngine.play(SoundCue.ERROR)
+            onResult(false, "New password kam se kam 6 characters ka hona chahiye.")
+            return
+        }
+        if (newPassword != confirmPassword) {
+            soundEngine.play(SoundCue.ERROR)
+            onResult(false, "Dono naye password match nahi kar rahe.")
+            return
+        }
+        if (newFinalCode.isNotBlank() && newFinalCode.length < 4) {
+            soundEngine.play(SoundCue.ERROR)
+            onResult(false, "Final Bill Code kam se kam 4 characters ka rakhein.")
+            return
+        }
+        viewModelScope.launch {
+            val res = repository.resetAdminPasswordWithRecovery(
+                recoveryPassword = recoveryPassword,
+                targetAdminUsername = targetAdminUsername,
+                newPassword = newPassword,
+                newFinalCode = newFinalCode.takeIf { it.isNotBlank() }
+            )
+            if (res.isSuccess) {
+                val adminName = res.getOrNull() ?: "Admin"
+                soundEngine.play(SoundCue.SAVE)
+                val msg = "Admin (@$adminName) ka naya password save ho gaya! Ab login karein."
+                emitToast(msg)
+                onResult(true, msg)
+            } else {
+                soundEngine.play(SoundCue.ERROR)
+                onResult(false, res.exceptionOrNull()?.message ?: "Recovery failed")
+            }
+        }
+    }
+
     /* ===== Bill Editor ===== */
     fun updateCustomerName(name: String) {
         val matched = customers.value.firstOrNull { it.name.equals(name.trim(), ignoreCase = true) }
@@ -394,9 +486,9 @@ class BillingViewModel(
 
     fun addItem() {
         val current = _billDraft.value.items
-        if (current.size >= 11) {
+        if (current.size >= 15) {
             soundEngine.play(SoundCue.ERROR)
-            emitToast("Maximum 11 items allowed in one bill", isError = true)
+            emitToast("Maximum 15 items allowed in one bill", isError = true)
             return
         }
         soundEngine.play(SoundCue.ADD)
@@ -497,7 +589,9 @@ class BillingViewModel(
             createdBy = billCreator,
             updatedAt = System.currentTimeMillis(),
             extraChargeType = draft.extraChargeType.name,
-            extraChargeAmount = draft.extraChargeAmount
+            extraChargeAmount = draft.extraChargeAmount,
+            staffRating = draft.staffRating,
+            staffReviewNote = draft.staffReviewNote
         )
         viewModelScope.launch {
             repository.saveBill(entity, draft.customerLocationUrl)
@@ -544,7 +638,9 @@ class BillingViewModel(
             paidAmountText = formatInputNum(bill.paidAmount),
             paymentMode = PaymentMode.fromString(bill.paymentMode),
             signatureBase64 = bill.signatureBase64,
-            customQrText = bill.customQrText
+            customQrText = bill.customQrText,
+            staffRating = bill.staffRating,
+            staffReviewNote = bill.staffReviewNote
         )
         _activeTab.value = MainTab.BILL
         soundEngine.play(SoundCue.CLICK)
@@ -595,7 +691,12 @@ class BillingViewModel(
             return
         }
         viewModelScope.launch {
-            repository.deleteBill(id)
+            val deleted = repository.deleteBill(id)
+            if (!deleted) {
+                soundEngine.play(SoundCue.ERROR)
+                emitToast("Star rating locked hai — rated bill delete nahi ho sakta", isError = true)
+                return@launch
+            }
             if (_billDraft.value.editingId == id) {
                 _billDraft.update { it.copy(editingId = null) }
             }
@@ -689,20 +790,95 @@ class BillingViewModel(
 
     fun triggerPrintA4(payload: InvoicePrintPayload) {
         soundEngine.play(SoundCue.CLICK)
-        _exportOptionsPayload.value = null
         _events.tryEmit(BillingEvent.PrintPdf(payload))
     }
 
     fun triggerSavePdf(payload: InvoicePrintPayload) {
         soundEngine.play(SoundCue.CLICK)
-        _exportOptionsPayload.value = null
         _events.tryEmit(BillingEvent.SavePdf(payload))
     }
 
     fun triggerSharePdf(payload: InvoicePrintPayload) {
         soundEngine.play(SoundCue.CLICK)
-        _exportOptionsPayload.value = null
         _events.tryEmit(BillingEvent.SharePdf(payload))
+    }
+
+    fun openSettlementReviewForExport(payload: InvoicePrintPayload) {
+        soundEngine.play(SoundCue.CLICK)
+        _exportOptionsPayload.value = null
+        val editingId = _billDraft.value.editingId
+        viewModelScope.launch {
+            val matched = (if (!editingId.isNullOrBlank()) repository.getBillById(editingId) else null)
+                ?: bills.value.firstOrNull { it.invoiceNo == payload.invoiceNo }
+            if (matched != null) {
+                _settlementDialogBill.value = matched
+            } else {
+                emitToast("Bill record not found", isError = true)
+            }
+        }
+    }
+
+    fun openSettlementReviewDialog(bill: BillEntity) {
+        soundEngine.play(SoundCue.CLICK)
+        _settlementDialogBill.value = bill
+    }
+
+    fun dismissSettlementReviewDialog() {
+        _settlementDialogBill.value = null
+    }
+
+    fun saveBillSettlementAndReview(
+        billId: String,
+        discountText: String,
+        paidText: String,
+        rating: Int,
+        reviewNote: String
+    ) {
+        viewModelScope.launch {
+            val existing = repository.getBillById(billId) ?: bills.value.firstOrNull { it.id == billId }
+            if (existing == null) {
+                soundEngine.play(SoundCue.ERROR)
+                emitToast("Bill not found", isError = true)
+                return@launch
+            }
+            val disc = (discountText.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
+            val grand = (existing.subtotal - disc).coerceAtLeast(0.0)
+            val paid = (paidText.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
+            val due = (grand - paid).coerceAtLeast(0.0)
+            val ratingAlreadyLocked = existing.staffRating in 1..5
+            val finalRating = if (ratingAlreadyLocked) existing.staffRating else rating.coerceIn(0, 5)
+            val finalNote = if (ratingAlreadyLocked) existing.staffReviewNote else reviewNote
+            val updated = repository.updateBillSettlementAndReview(
+                billId = billId,
+                discount = disc,
+                grandTotal = grand,
+                paidAmount = paid,
+                dueAmount = due,
+                staffRating = finalRating,
+                staffReviewNote = finalNote
+            )
+            _settlementDialogBill.value = null
+            if (updated != null && _billDraft.value.editingId == billId) {
+                _billDraft.update {
+                    it.copy(
+                        discountText = formatInputNum(updated.discount),
+                        paidAmountText = formatInputNum(updated.paidAmount),
+                        staffRating = updated.staffRating,
+                        staffReviewNote = updated.staffReviewNote
+                    )
+                }
+            }
+            soundEngine.play(SoundCue.SAVE)
+            val statusMsg = if (due > 0.009) {
+                "Updated · Due ₹${String.format(Locale.US, "%.2f", due)} highlighted in Bill History"
+            } else {
+                "Payment settled in full"
+            }
+            val ratingMsg = if (finalRating > 0) {
+                " · ${finalRating}★ for @${existing.createdBy}${if (ratingAlreadyLocked) " (Rating locked)" else ""}"
+            } else ""
+            emitToast("$statusMsg$ratingMsg")
+        }
     }
 
     fun notifyPdfSaved(success: Boolean) {
@@ -1003,9 +1179,7 @@ class BillingViewModel(
         }
     }
 
-    suspend fun exportBackupJson(): String = repository.exportBackupJson()
-
-    fun importBackupJson(json: String) {
+    fun saveAuthorisedSignatureBitmap(bitmap: Bitmap?) {
         val current = _session.value
         if (current == null || current.isStaff || !current.isAdmin) {
             soundEngine.play(SoundCue.ERROR)
@@ -1013,10 +1187,64 @@ class BillingViewModel(
             return
         }
         viewModelScope.launch {
+            val b64 = if (bitmap != null) {
+                val maxW = 700f
+                val scale = minOf(maxW / bitmap.width.coerceAtLeast(1), 1f)
+                val finalBmp = if (scale < 1f) {
+                    Bitmap.createScaledBitmap(
+                        bitmap,
+                        (bitmap.width * scale).toInt().coerceAtLeast(1),
+                        (bitmap.height * scale).toInt().coerceAtLeast(1),
+                        true
+                    )
+                } else {
+                    bitmap
+                }
+                val out = ByteArrayOutputStream()
+                finalBmp.compress(Bitmap.CompressFormat.PNG, 92, out)
+                Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+            } else {
+                ""
+            }
+            repository.saveAuthorisedSignatureBase64(b64)
+            soundEngine.play(if (b64.isNotEmpty()) SoundCue.SAVE else SoundCue.DELETE)
+            emitToast(if (b64.isNotEmpty()) "Authorised Signatory image saved" else "Authorised Signatory cleared")
+        }
+    }
+
+    suspend fun exportBackupJson(): String = repository.exportBackupJson()
+
+    fun notifyBackupExported() {
+        soundEngine.play(SoundCue.SAVE)
+        emitToast("Full backup exported (Bills, Admin password, Staff & Settings)")
+    }
+
+    fun importBackupJson(json: String, allowPreSetupRestore: Boolean = false) {
+        val current = _session.value
+        val canPreSetupRestore = allowPreSetupRestore && current == null && isAdminConfigured.value != true
+        val canAdminRestore = current != null && !current.isStaff && current.isAdmin
+        if (!canPreSetupRestore && !canAdminRestore) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Admin access only", isError = true)
+            return
+        }
+        viewModelScope.launch {
             val res = repository.importBackupJson(json)
             if (res.isSuccess) {
+                val summary = res.getOrNull()
+                val latestBills = repository.bills.first()
+                _billDraft.update { d ->
+                    if (d.editingId == null) d.copy(invoiceNo = repository.computeNextInvoiceNo(latestBills))
+                    else d
+                }
                 soundEngine.play(SoundCue.SAVE)
-                emitToast("Backup imported successfully")
+                val msg = if (summary != null) {
+                    "Restored ${summary.billsCount} bills, ${summary.customersCount} customers, ${summary.productsCount} products, ${summary.accountsCount} accounts"
+                } else {
+                    "Backup imported successfully"
+                }
+                _authError.value = ""
+                emitToast(msg)
             } else {
                 soundEngine.play(SoundCue.ERROR)
                 emitToast("Invalid backup file", isError = true)

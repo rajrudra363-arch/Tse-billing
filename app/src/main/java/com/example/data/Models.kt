@@ -85,7 +85,8 @@ data class CompanySettings(
     val companyName: String = "TOTAL SOLUTION ENTERPRISES",
     val mobile: String = "7083805120",
     val email: String = "totalsolution7020@gmail.com",
-    val address: String = "B1, Santa Anna Holiday Homes, Naika Vaddo, Calangute, North Goa 403516."
+    val address: String = "B1, Santa Anna Holiday Homes, Naika Vaddo, Calangute, North Goa 403516.",
+    val authorisedSignatureBase64: String = ""
 )
 
 data class UpiSettings(

@@ -196,25 +196,26 @@ object InvoicePdfPrinter {
         // Outer A4 border
         canvas.drawRect(left, top, right, bottom, borderPaint)
 
-        // 1. TOP HEADER: 2/3 Company Details + 1/3 Customer Care & Support QR (y: 18 -> 122)
-        val headerH = 104f
+        // 1. TOP HEADER: 2/3 Company Details + 1/3 Customer Care & Support QR (y: 18 -> 126)
+        val headerH = 108f
         val splitX = left + width * 0.67f
         val headerBottom = top + headerH
         canvas.drawLine(left, headerBottom, right, headerBottom, borderPaint)
         canvas.drawLine(splitX, top, splitX, headerBottom, borderPaint)
 
         // Draw TSE Shield Logo
-        drawShieldLogo(canvas, RectF(left + 8f, top + 16f, left + 74f, top + 86f))
+        drawShieldLogo(canvas, RectF(left + 8f, top + 18f, left + 74f, top + 88f))
 
         // Company Details (2/3 left)
         val infoX = left + 82f
         val infoW = (splitX - infoX - 8f).toInt().coerceAtLeast(100)
         val companyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#102F4B")
-            textSize = 17f
+            textSize = 21f
+            isFakeBoldText = true
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
-        var curY = top + 9f
+        var curY = top + 7f
         curY += drawWrappedText(
             canvas = canvas,
             text = p.company.companyName.uppercase(Locale.ROOT),
@@ -298,9 +299,9 @@ object InvoicePdfPrinter {
         }
         canvas.drawText("TAX INVOICE", left + width / 2f, bannerTop + 16.5f, titlePaint)
 
-        // 3. META ROW (M/S | DATE & INVOICE NO) (y: 156 -> 214)
+        // 3. META ROW (M/S | DATE & INVOICE NO) (y: 160 -> 216)
         val metaTop = bannerTop + bannerH + 5f
-        val metaH = 58f
+        val metaH = 56f
         val metaBottom = metaTop + metaH
         val metaSplitX = left + width * 0.58f
         canvas.drawRect(left + 5f, metaTop, right - 5f, metaBottom, borderPaint)
@@ -327,14 +328,14 @@ object InvoicePdfPrinter {
         canvas.drawText("DATE: ${p.date}", metaSplitX + 8f, metaTop + 20f, labelPaint)
         canvas.drawText("INVOICE NO. : ${p.invoiceNo}", metaSplitX + 8f, metaTop + 40f, labelPaint)
 
-        // 4. ITEMS TABLE (Header + 11+ Fixed Rows, y: 219 -> 522.5)
+        // 4. ITEMS TABLE (Header + 15+ Fixed Rows)
         val effectiveItems = buildEffectivePrintItems(p.items, p.extraChargeType, p.extraChargeAmount)
         val tableTop = metaBottom + 5f
         val tableLeft = left + 5f
         val tableRight = right - 5f
         val tableW = tableRight - tableLeft
-        val headerRowH = 23f
-        val totalRows = maxOf(11, effectiveItems.size)
+        val headerRowH = 22f
+        val totalRows = maxOf(15, effectiveItems.size)
         val itemRowH = (25.5f * 11f) / totalRows.toFloat()
         val tableBottom = tableTop + headerRowH + (itemRowH * totalRows)
 
@@ -349,22 +350,22 @@ object InvoicePdfPrinter {
             if (c > 0) canvas.drawLine(xCursor, tableTop, xCursor, tableBottom, thinBorder)
             val hPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.BLACK
-                textSize = 8.5f
+                textSize = 8.2f
                 textAlign = Paint.Align.CENTER
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             }
-            canvas.drawText(colHeaders[c], xCursor + colWidths[c] / 2f, tableTop + 15f, hPaint)
+            canvas.drawText(colHeaders[c], xCursor + colWidths[c] / 2f, tableTop + 14.5f, hPaint)
             xCursor += colWidths[c]
         }
         canvas.drawLine(tableLeft, tableTop + headerRowH, tableRight, tableTop + headerRowH, borderPaint)
 
-        val cellLeftPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; textSize = 8.5f }
-        val cellCenterPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; textSize = 8.5f; textAlign = Paint.Align.CENTER }
-        val cellRightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; textSize = 8.5f; textAlign = Paint.Align.RIGHT }
+        val cellLeftPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; textSize = 7.8f }
+        val cellCenterPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; textSize = 7.8f; textAlign = Paint.Align.CENTER }
+        val cellRightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK; textSize = 7.8f; textAlign = Paint.Align.RIGHT }
 
         for (r in 0 until totalRows) {
             val rowTop = tableTop + headerRowH + r * itemRowH
-            val rowBase = rowTop + (itemRowH * 0.65f)
+            val rowBase = rowTop + (itemRowH * 0.68f)
             if (r > 0) canvas.drawLine(tableLeft, rowTop, tableRight, rowTop, thinBorder)
 
             val item = effectiveItems.getOrNull(r)
@@ -391,37 +392,21 @@ object InvoicePdfPrinter {
             }
         }
 
-        // 5. AMOUNT SUMMARY & TOTALS ROW (y: 522.5 -> 646.5)
+        // 5. AMOUNT SUMMARY & TOTALS ROW
         val sumTop = tableBottom
-        val sumH = 124f
+        val sumH = 114f
         val sumBottom = sumTop + sumH
         val sumSplitX = tableLeft + tableW * 0.57f
         canvas.drawRect(tableLeft, sumTop, tableRight, sumBottom, borderPaint)
         canvas.drawLine(sumSplitX, sumTop, sumSplitX, sumBottom, borderPaint)
 
-        // Left side: Words + Payment Mode + Online Payment QR
+        // Left side: Words + Payment Mode + Online Payment QR (using full bill amount)
         val wordsAreaW = (sumSplitX - tableLeft) * 0.42f
         val modeAreaW = (sumSplitX - tableLeft) * 0.24f
         val wordsX = tableLeft + 6f
         canvas.drawText("Rupees (Amount in Words):", wordsX, sumTop + 14f, labelPaint)
         val wordsText = RupeesWords.convert(p.grandTotal)
         drawWrappedText(canvas, wordsText, wordsX, sumTop + 20f, (wordsAreaW - 10f).toInt(), bodyPaint, maxLines = 5)
-        if (p.dueAmount > 0.009) {
-            val dueTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.parseColor("#991B1B")
-                textSize = 8f
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            }
-            drawWrappedText(
-                canvas,
-                "Balance Due: ₹${String.format(Locale.US, "%.2f", p.dueAmount)}",
-                wordsX,
-                sumTop + 86f,
-                (wordsAreaW - 10f).toInt(),
-                dueTextPaint,
-                maxLines = 2
-            )
-        }
 
         val modeX = tableLeft + wordsAreaW + 4f
         canvas.drawText("Payment Mode", modeX, sumTop + 14f, labelPaint)
@@ -441,7 +426,7 @@ object InvoicePdfPrinter {
         }
         canvas.drawText("Online QR Payment :-", qrColCenterX, sumTop + 13f, smallBold)
 
-        val qrAmt = if (p.dueAmount > 0.009) p.dueAmount else p.grandTotal
+        val qrAmt = if (p.grandTotal > 0.009) p.grandTotal else p.subtotal
         val payQrBitmap = when {
             p.upi.upiId.isNotBlank() -> QrGenerator.generateQrBitmap(
                 QrGenerator.buildUpiUri(p.upi.upiId, p.upi.payeeName, qrAmt, p.invoiceNo),
@@ -451,7 +436,7 @@ object InvoicePdfPrinter {
             else -> null
         }
         if (payQrBitmap != null) {
-            val qrRect = RectF(qrColCenterX - 32f, sumTop + 18f, qrColCenterX + 32f, sumTop + 82f)
+            val qrRect = RectF(qrColCenterX - 31f, sumTop + 17f, qrColCenterX + 31f, sumTop + 79f)
             canvas.drawBitmap(payQrBitmap, null, qrRect, null)
             canvas.drawRect(qrRect, thinBorder)
         }
@@ -462,49 +447,45 @@ object InvoicePdfPrinter {
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
         if (p.upi.upiId.isNotBlank()) {
-            canvas.drawText(ellipsizeText("UPI: ${p.upi.upiId}", smallCenter, qrColW - 6f), qrColCenterX, sumTop + 95f, smallCenter)
+            canvas.drawText(ellipsizeText("UPI: ${p.upi.upiId}", smallCenter, qrColW - 6f), qrColCenterX, sumTop + 91f, smallCenter)
         }
-        canvas.drawText(ellipsizeText("A/c: ${p.upi.payeeName}", smallCenter, qrColW - 6f), qrColCenterX, sumTop + 106f, smallCenter)
+        canvas.drawText(ellipsizeText("A/c: ${p.upi.payeeName}", smallCenter, qrColW - 6f), qrColCenterX, sumTop + 102f, smallCenter)
 
-        // Right side: Totals 5 rows (SUB TOTAL, DISCOUNT, GRAND TOTAL, PAID AMOUNT, DUE AMOUNT)
+        // Right side: Totals 3 rows (SUB TOTAL, ADVANCE, GRAND TOTAL) — Discount & Due removed from Print
         val totLeft = sumSplitX
-        val totRowH = sumH / 5f
+        val totRowH = sumH / 3f
         val totValSplit = tableRight - 84f
 
-        val totLabels = arrayOf("SUB TOTAL", "DISCOUNT", "GRAND TOTAL", "PAID AMOUNT", "DUE AMOUNT")
-        val totValues = arrayOf(p.subtotal, p.discount, p.grandTotal, p.paidAmount, p.dueAmount)
+        val totLabels = arrayOf("SUB TOTAL", "ADVANCE", "GRAND TOTAL")
+        val totValues = arrayOf(p.subtotal, p.paidAmount, p.grandTotal)
 
-        for (i in 0 until 5) {
+        for (i in 0 until 3) {
             val rTop = sumTop + i * totRowH
             val rBot = rTop + totRowH
-            if (i == 2) {
+            val isGrand = (i == 2)
+            if (isGrand) {
                 canvas.drawRect(totLeft, rTop, tableRight, rBot, fillGrand)
-            } else if (i == 4 && p.dueAmount > 0.009) {
-                canvas.drawRect(totLeft, rTop, tableRight, rBot, fillDue)
             }
             if (i > 0) canvas.drawLine(totLeft, rTop, tableRight, rTop, thinBorder)
             canvas.drawLine(totValSplit, rTop, totValSplit, rBot, thinBorder)
 
-            val isDueHighlighted = (i == 4 && p.dueAmount > 0.009)
             val lPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = if (isDueHighlighted) Color.parseColor("#991B1B") else Color.BLACK
-                textSize = if (i == 2 || isDueHighlighted) 8.8f else 8.3f
+                color = Color.BLACK
+                textSize = if (isGrand) 9.6f else 8.8f
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             }
             val vPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = if (isDueHighlighted) Color.parseColor("#991B1B") else Color.BLACK
-                textSize = if (i == 2 || isDueHighlighted) 9.2f else 8.5f
+                color = Color.BLACK
+                textSize = if (isGrand) 10.2f else 9.0f
                 textAlign = Paint.Align.RIGHT
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             }
-            canvas.drawText(totLabels[i], totLeft + 6f, rTop + 16f, lPaint)
-            if (isDueHighlighted) {
-                canvas.drawRect(totLeft + 0.5f, rTop + 0.5f, tableRight - 0.5f, rBot - 0.5f, dueBorder)
-            }
-            canvas.drawText("₹${String.format(Locale.US, "%.2f", totValues[i])}", tableRight - 6f, rTop + 16f, vPaint)
+            val baselineY = rTop + (totRowH * 0.60f)
+            canvas.drawText(totLabels[i], totLeft + 6f, baselineY, lPaint)
+            canvas.drawText("₹${String.format(Locale.US, "%.2f", totValues[i])}", tableRight - 6f, baselineY, vPaint)
         }
 
-        // 6. BOTTOM SECTION (y: 646.5 -> 820)
+        // 6. BOTTOM SECTION
         val footTop = sumBottom
         val footRow1H = 92f
         val footRow2H = 38f
@@ -516,10 +497,10 @@ object InvoicePdfPrinter {
         canvas.drawLine(col1X, footTop, col1X, row1Bot, thinBorder)
         canvas.drawLine(col2X, footTop, col2X, row1Bot, thinBorder)
 
-        // Left: Customer Signature
+        // Left: Customer Scanned Signature
         val sigBitmap = decodeBase64Bitmap(p.signatureBase64)
         if (sigBitmap != null) {
-            canvas.drawBitmap(sigBitmap, null, RectF(tableLeft + 14f, footTop + 10f, col1X - 14f, row1Bot - 24f), null)
+            canvas.drawBitmap(sigBitmap, null, RectF(tableLeft + 14f, footTop + 8f, col1X - 14f, row1Bot - 24f), null)
         }
         canvas.drawLine(tableLeft + 10f, row1Bot - 20f, col1X - 10f, row1Bot - 20f, thinBorder)
         canvas.drawText("Customer Signature", tableLeft + (col1X - tableLeft) / 2f, row1Bot - 8f, smallBold)
@@ -541,7 +522,11 @@ object InvoicePdfPrinter {
             canvas.drawText("No extra info QR added", midCenterX, footTop + 50f, emptyInfo)
         }
 
-        // Right: Authorised Signatory
+        // Right: Authorised Signatory (Admin uploaded photo + company name)
+        val authSigBitmap = decodeBase64Bitmap(p.company.authorisedSignatureBase64)
+        if (authSigBitmap != null) {
+            canvas.drawBitmap(authSigBitmap, null, RectF(col2X + 14f, footTop + 6f, tableRight - 14f, row1Bot - 31f), null)
+        }
         val rightCenterX = col2X + (tableRight - col2X) / 2f
         canvas.drawLine(col2X + 10f, row1Bot - 28f, tableRight - 10f, row1Bot - 28f, thinBorder)
         canvas.drawText("Authorised Signatory", rightCenterX, row1Bot - 16f, smallBold)

@@ -1,16 +1,25 @@
 package com.example.ui.components
 
 import android.view.View
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.focus.FocusManager
+import androidx.compose.ui.focus.onFocusEvent
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.TextToolbar
 import androidx.compose.ui.platform.TextToolbarStatus
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class SafeTextToolbar(
     private val defaultToolbar: TextToolbar,
@@ -70,6 +79,23 @@ fun ProvideSafeTextToolbar(content: @Composable () -> Unit) {
     CompositionLocalProvider(LocalTextToolbar provides safeToolbar) {
         content()
     }
+}
+
+@Suppress("DEPRECATION")
+@OptIn(ExperimentalFoundationApi::class)
+fun Modifier.bringIntoViewOnFocus(): Modifier = composed {
+    val requester = remember { BringIntoViewRequester() }
+    val scope = rememberCoroutineScope()
+    this
+        .bringIntoViewRequester(requester)
+        .onFocusEvent { focusState ->
+            if (focusState.isFocused) {
+                scope.launch {
+                    delay(180)
+                    runCatching { requester.bringIntoView() }
+                }
+            }
+        }
 }
 
 fun clearFocusAndHideToolbar(focusManager: FocusManager, textToolbar: TextToolbar) {

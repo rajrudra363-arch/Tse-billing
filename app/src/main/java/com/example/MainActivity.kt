@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -92,6 +93,7 @@ import com.example.ui.BillingEvent
 import com.example.ui.BillingViewModel
 import com.example.ui.MainTab
 import com.example.ui.components.AuthScreen
+import com.example.ui.components.PaymentAndReviewDialog
 import com.example.ui.components.ProvideSafeTextToolbar
 import com.example.ui.components.SplashOverlay
 import com.example.ui.components.TseShieldLogo
@@ -179,6 +181,8 @@ fun TseBillingApp(viewModel: BillingViewModel) {
     val finalModalVisible by viewModel.finalModalVisible.collectAsStateWithLifecycle()
     val finalModalError by viewModel.finalModalError.collectAsStateWithLifecycle()
     val exportOptionsPayload by viewModel.exportOptionsPayload.collectAsStateWithLifecycle()
+    val settlementDialogBill by viewModel.settlementDialogBill.collectAsStateWithLifecycle()
+    val staffPerformance by viewModel.staffPerformance.collectAsStateWithLifecycle()
 
     val scope = rememberCoroutineScope()
     var pendingSavePayload by remember { mutableStateOf<InvoicePrintPayload?>(null) }
@@ -259,7 +263,16 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                 authError = authError,
                 onClearError = viewModel::clearAuthError,
                 onSetupAdmin = viewModel::setupAdmin,
-                onLogin = viewModel::login
+                onLogin = viewModel::login,
+                onImportBackup = { json -> viewModel.importBackupJson(json, allowPreSetupRestore = true) },
+                onResetAdminPassword = viewModel::resetAdminPassword
+            )
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .imePadding()
             )
         } else {
             val currentSession = session!!
@@ -267,7 +280,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                 val useRail = maxWidth >= 700.dp
 
                 Scaffold(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().imePadding(),
                     contentWindowInsets = WindowInsets(0, 0, 0, 0),
                     snackbarHost = {
                         SnackbarHost(
@@ -434,7 +447,8 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                     onDismissExportOptions = viewModel::dismissExportOptions,
                                     onPrintA4 = viewModel::triggerPrintA4,
                                     onSavePdf = viewModel::triggerSavePdf,
-                                    onSharePdf = viewModel::triggerSharePdf
+                                    onSharePdf = viewModel::triggerSharePdf,
+                                    onOpenPaymentAndReview = viewModel::openSettlementReviewForExport
                                 )
 
                                 MainTab.SAVED -> SavedBillsScreen(
@@ -446,6 +460,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                     isAdmin = currentSession.isAdmin && !currentSession.isStaff,
                                     onSearchChange = viewModel::updateBillSearch,
                                     onOpenBill = viewModel::openBillForEdit,
+                                    onOpenPaymentReview = viewModel::openSettlementReviewDialog,
                                     onPrintBill = viewModel::printBillDirect,
                                     onSavePdf = viewModel::saveBillPdfDirect,
                                     onSharePdf = viewModel::shareBillPdfDirect,
@@ -499,6 +514,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                 MainTab.ADMIN -> AdminPanelScreen(
                                     upiSettings = upi,
                                     accounts = accounts,
+                                    staffPerformance = staffPerformance,
                                     onSaveUpi = viewModel::saveUpiSettings,
                                     onClearUpi = viewModel::clearUpiId,
                                     onChangeFinalCode = viewModel::changeFinalCode,
@@ -511,14 +527,25 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                     user = currentSession,
                                     onSaveSettings = viewModel::saveCompanySettings,
                                     onPickFallbackQrBitmap = viewModel::saveFallbackQrBitmap,
+                                    onPickAuthorisedSignatureBitmap = viewModel::saveAuthorisedSignatureBitmap,
                                     onExportBackup = viewModel::exportBackupJson,
-                                    onImportBackup = viewModel::importBackupJson
+                                    onImportBackup = viewModel::importBackupJson,
+                                    onBackupExported = viewModel::notifyBackupExported
                                 )
                             }
                         }
                     }
                 }
             }
+        }
+
+        val activeSettlementBill = settlementDialogBill
+        if (activeSettlementBill != null) {
+            PaymentAndReviewDialog(
+                bill = activeSettlementBill,
+                onDismiss = viewModel::dismissSettlementReviewDialog,
+                onSave = viewModel::saveBillSettlementAndReview
+            )
         }
 
         // Non-blocking Animated Splash Overlay

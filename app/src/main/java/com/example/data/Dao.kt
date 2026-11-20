@@ -14,6 +14,9 @@ interface BillDao {
     @Query("SELECT * FROM bills ORDER BY updatedAt DESC")
     suspend fun getAll(): List<BillEntity>
 
+    @Query("SELECT * FROM bills WHERE id = :id LIMIT 1")
+    suspend fun findById(id: String): BillEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(bill: BillEntity)
 
@@ -91,6 +94,9 @@ interface UserAccountDao {
 interface AppConfigDao {
     @Query("SELECT * FROM app_config")
     fun observeAll(): Flow<List<AppConfigEntity>>
+
+    @Query("SELECT * FROM app_config")
+    suspend fun getAll(): List<AppConfigEntity>
 
     @Query("SELECT value FROM app_config WHERE `key` = :key LIMIT 1")
     suspend fun getValue(key: String): String?

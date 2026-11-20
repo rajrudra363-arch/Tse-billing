@@ -66,6 +66,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -302,6 +304,8 @@ private fun FirstTimeAdminSetupForm(
     var confirm by remember { mutableStateOf("") }
     var finalCode by remember { mutableStateOf("") }
     var showPass by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -371,7 +375,10 @@ private fun FirstTimeAdminSetupForm(
         }
 
         Button(
-            onClick = { onSetupAdmin(username, password, confirm, finalCode) },
+            onClick = {
+                clearFocusAndHideToolbar(focusManager, textToolbar)
+                onSetupAdmin(username, password, confirm, finalCode)
+            },
             colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
             modifier = Modifier
                 .fillMaxWidth()
@@ -396,6 +403,8 @@ private fun StaffAdminLoginForm(
     var dropdownExpanded by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf("") }
     var showPass by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
 
     val selectedAccount = accounts.firstOrNull { it.username == selectedUsername }
 
@@ -407,7 +416,10 @@ private fun StaffAdminLoginForm(
 
         Box(modifier = Modifier.fillMaxWidth()) {
             OutlinedButton(
-                onClick = { dropdownExpanded = true },
+                onClick = {
+                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                    dropdownExpanded = true
+                },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp)
@@ -471,7 +483,10 @@ private fun StaffAdminLoginForm(
             },
             visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { onLogin(selectedUsername, password) }),
+            keyboardActions = KeyboardActions(onDone = {
+                clearFocusAndHideToolbar(focusManager, textToolbar)
+                onLogin(selectedUsername, password)
+            }),
             singleLine = true,
             modifier = Modifier.fillMaxWidth().testTag("login_password_input")
         )
@@ -486,7 +501,10 @@ private fun StaffAdminLoginForm(
         }
 
         Button(
-            onClick = { onLogin(selectedUsername, password) },
+            onClick = {
+                clearFocusAndHideToolbar(focusManager, textToolbar)
+                onLogin(selectedUsername, password)
+            },
             colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
             modifier = Modifier
                 .fillMaxWidth()

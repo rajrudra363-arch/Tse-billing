@@ -48,6 +48,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -57,6 +59,7 @@ import com.example.data.UpiSettings
 import com.example.data.UserAccountEntity
 import com.example.data.UserSession
 import com.example.ui.components.QrCodeImage
+import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.theme.AmberWarn
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.RedDue
@@ -84,6 +87,8 @@ fun AdminPanelScreen(
     var staffName by remember { mutableStateOf("") }
     var staffUsername by remember { mutableStateOf("") }
     var staffPassword by remember { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
 
     val staffList = accounts.filter { it.role.equals("staff", ignoreCase = true) }
 
@@ -127,7 +132,10 @@ fun AdminPanelScreen(
                     )
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
-                            onClick = { onSaveUpi(upiId, payeeName) },
+                            onClick = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                onSaveUpi(upiId, payeeName)
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
                             modifier = Modifier.testTag("save_upi_button")
                         ) {
@@ -137,6 +145,7 @@ fun AdminPanelScreen(
                         }
                         OutlinedButton(
                             onClick = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
                                 upiId = ""
                                 onClearUpi()
                             },
@@ -203,6 +212,7 @@ fun AdminPanelScreen(
                     )
                     Button(
                         onClick = {
+                            clearFocusAndHideToolbar(focusManager, textToolbar)
                             onChangeFinalCode(newFinalCode, confirmFinalCode)
                             newFinalCode = ""
                             confirmFinalCode = ""
@@ -262,6 +272,7 @@ fun AdminPanelScreen(
                     )
                     Button(
                         onClick = {
+                            clearFocusAndHideToolbar(focusManager, textToolbar)
                             onAddStaff(staffName, staffUsername, staffPassword) {
                                 staffName = ""
                                 staffUsername = ""
@@ -326,6 +337,8 @@ fun SettingsScreen(
     val canEditSettings = !user.isStaff && user.isAdmin
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
 
     var company by remember(settings.companyName) { mutableStateOf(settings.companyName) }
     var mobile by remember(settings.mobile) { mutableStateOf(settings.mobile) }
@@ -425,6 +438,7 @@ fun SettingsScreen(
                         )
                         Button(
                             onClick = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
                                 onSaveSettings(
                                     CompanySettings(
                                         companyName = company,
@@ -475,6 +489,7 @@ fun SettingsScreen(
                         ) {
                             OutlinedButton(
                                 onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
                                     photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                                 },
                                 modifier = Modifier.testTag("pick_qr_image_button")
@@ -484,7 +499,10 @@ fun SettingsScreen(
                                 Text("Upload Fallback QR")
                             }
                             Button(
-                                onClick = { exportDocLauncher.launch("TSE-Billing-Backup.json") },
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    exportDocLauncher.launch("TSE-Billing-Backup.json")
+                                },
                                 colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
                                 modifier = Modifier.testTag("export_backup_button")
                             ) {
@@ -493,7 +511,10 @@ fun SettingsScreen(
                                 Text("Export Backup")
                             }
                             OutlinedButton(
-                                onClick = { importDocLauncher.launch(arrayOf("application/json", "*/*")) },
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    importDocLauncher.launch(arrayOf("application/json", "*/*"))
+                                },
                                 modifier = Modifier.testTag("import_backup_button")
                             ) {
                                 Icon(Icons.Default.CloudUpload, contentDescription = null)

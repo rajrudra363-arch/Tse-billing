@@ -53,6 +53,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -62,6 +64,7 @@ import com.example.data.InvoiceItemJson
 import com.example.data.PaymentMode
 import com.example.data.UpiSettings
 import com.example.ui.BillDraft
+import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.GreenPaidBg
 import com.example.ui.theme.NavyPrimary
@@ -91,6 +94,8 @@ fun SavedBillsScreen(
     val totalDue = dueBills.sumOf { it.dueAmount }
     val settledCount = allBills.size - dueBills.size
     var previewBill by remember { mutableStateOf<BillEntity?>(null) }
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
 
     val pulseTransition = rememberInfiniteTransition(label = "duePulse")
     val pulseAlpha by pulseTransition.animateFloat(
@@ -238,7 +243,10 @@ fun SavedBillsScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             OutlinedButton(
-                                onClick = { previewBill = bill },
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    previewBill = bill
+                                },
                                 modifier = Modifier.testTag("preview_saved_${bill.invoiceNo}")
                             ) {
                                 Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -247,7 +255,10 @@ fun SavedBillsScreen(
                             }
 
                             OutlinedButton(
-                                onClick = { onPrintBill(bill) },
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    onPrintBill(bill)
+                                },
                                 modifier = Modifier.testTag("print_saved_${bill.invoiceNo}")
                             ) {
                                 Icon(Icons.Default.Print, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -256,7 +267,10 @@ fun SavedBillsScreen(
                             }
 
                             OutlinedButton(
-                                onClick = { onSavePdf(bill) },
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    onSavePdf(bill)
+                                },
                                 modifier = Modifier.testTag("save_pdf_saved_${bill.invoiceNo}")
                             ) {
                                 Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -265,7 +279,10 @@ fun SavedBillsScreen(
                             }
 
                             OutlinedButton(
-                                onClick = { onSharePdf(bill) },
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    onSharePdf(bill)
+                                },
                                 modifier = Modifier.testTag("share_pdf_saved_${bill.invoiceNo}")
                             ) {
                                 Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -275,7 +292,10 @@ fun SavedBillsScreen(
 
                             if (isAdmin) {
                                 Button(
-                                    onClick = { onOpenBill(bill) },
+                                    onClick = {
+                                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                                        onOpenBill(bill)
+                                    },
                                     colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
                                     modifier = Modifier.testTag("open_saved_${bill.invoiceNo}")
                                 ) {
@@ -329,7 +349,10 @@ fun SavedBillsScreen(
             )
         }
         AlertDialog(
-            onDismissRequest = { previewBill = null },
+            onDismissRequest = {
+                clearFocusAndHideToolbar(focusManager, textToolbar)
+                previewBill = null
+            },
             title = { Text("A4 Preview (${billToPreview.invoiceNo})") },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
@@ -342,6 +365,7 @@ fun SavedBillsScreen(
             },
             confirmButton = {
                 Button(onClick = {
+                    clearFocusAndHideToolbar(focusManager, textToolbar)
                     onPrintBill(billToPreview)
                     previewBill = null
                 }) {
@@ -349,7 +373,10 @@ fun SavedBillsScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { previewBill = null }) {
+                TextButton(onClick = {
+                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                    previewBill = null
+                }) {
                     Text("Close")
                 }
             }

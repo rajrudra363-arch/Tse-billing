@@ -60,6 +60,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,12 +69,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.example.ui.components.ProvideSafeTextToolbar
+import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.data.AppLanguage
 import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
@@ -138,6 +143,8 @@ fun BillScreen(
     val isAdmin = currentUser.isAdmin && !currentUser.isStaff
     val isHi = language == AppLanguage.HI
     var customerDropdownOpen by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
 
     LazyColumn(
         modifier = Modifier
@@ -179,7 +186,10 @@ fun BillScreen(
                         }
                         FilterChip(
                             selected = draft.showSheetPreview,
-                            onClick = { onToggleSheetPreview(!draft.showSheetPreview) },
+                            onClick = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                onToggleSheetPreview(!draft.showSheetPreview)
+                            },
                             label = { Text(if (draft.showSheetPreview) "Hide A4 Preview" else "A4 Preview") },
                             leadingIcon = {
                                 Icon(
@@ -197,7 +207,10 @@ fun BillScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Button(
-                            onClick = onAddItem,
+                            onClick = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                onAddItem()
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
                             modifier = Modifier.testTag("add_item_button")
                         ) {
@@ -207,7 +220,10 @@ fun BillScreen(
                         }
 
                         Button(
-                            onClick = onResetBill,
+                            onClick = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                onResetBill()
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = AmberWarn),
                             modifier = Modifier.testTag("new_bill_button")
                         ) {
@@ -217,7 +233,10 @@ fun BillScreen(
                         }
 
                         Button(
-                            onClick = onSaveBill,
+                            onClick = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                onSaveBill()
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
                             modifier = Modifier.testTag("save_bill_button")
                         ) {
@@ -227,7 +246,10 @@ fun BillScreen(
                         }
 
                         Button(
-                            onClick = onOpenFinalCodeModal,
+                            onClick = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                onOpenFinalCodeModal()
+                            },
                             colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
                             modifier = Modifier.testTag("final_print_button")
                         ) {
@@ -280,7 +302,10 @@ fun BillScreen(
                             label = { Text(if (isHi) "ग्राहक का नाम" else "Customer Name") },
                             trailingIcon = {
                                 if (customers.isNotEmpty()) {
-                                    IconButton(onClick = { customerDropdownOpen = true }) {
+                                    IconButton(onClick = {
+                                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                                        customerDropdownOpen = true
+                                    }) {
                                         Icon(Icons.Default.ArrowDropDown, contentDescription = "Pick saved customer")
                                     }
                                 }
@@ -584,11 +609,25 @@ private fun InvoiceItemEditorCard(
     onDelete: () -> Unit
 ) {
     var productMenuOpen by remember { mutableStateOf(false) }
-    var qtyText by remember(item.localId, item.qty) {
+    val itemFocusManager = LocalFocusManager.current
+    val itemTextToolbar = LocalTextToolbar.current
+    var qtyText by remember(item.localId) {
         mutableStateOf(if (item.qty % 1.0 == 0.0) item.qty.toInt().toString() else item.qty.toString())
     }
-    var rateText by remember(item.localId, item.rate) {
+    LaunchedEffect(item.localId, item.qty) {
+        val currentParsed = qtyText.toDoubleOrNull()
+        if (currentParsed != item.qty && !(qtyText.isEmpty() && item.qty == 0.0)) {
+            qtyText = if (item.qty % 1.0 == 0.0) item.qty.toInt().toString() else item.qty.toString()
+        }
+    }
+    var rateText by remember(item.localId) {
         mutableStateOf(if (item.rate == 0.0) "0" else if (item.rate % 1.0 == 0.0) item.rate.toInt().toString() else item.rate.toString())
+    }
+    LaunchedEffect(item.localId, item.rate) {
+        val currentParsed = rateText.toDoubleOrNull()
+        if (currentParsed != item.rate && !(rateText.isEmpty() && item.rate == 0.0)) {
+            rateText = if (item.rate == 0.0) "0" else if (item.rate % 1.0 == 0.0) item.rate.toInt().toString() else item.rate.toString()
+        }
     }
 
     Card(
@@ -611,7 +650,13 @@ private fun InvoiceItemEditorCard(
                         fontWeight = FontWeight.Black,
                         color = TealAccent
                     )
-                    IconButton(onClick = onDelete, modifier = Modifier.testTag("delete_item_$index")) {
+                    IconButton(
+                        onClick = {
+                            clearFocusAndHideToolbar(itemFocusManager, itemTextToolbar)
+                            onDelete()
+                        },
+                        modifier = Modifier.testTag("delete_item_$index")
+                    ) {
                         Icon(Icons.Default.Delete, contentDescription = "Remove item", tint = RedDue)
                     }
                 }
@@ -619,7 +664,10 @@ private fun InvoiceItemEditorCard(
 
             Box(modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
-                    onClick = { productMenuOpen = true },
+                    onClick = {
+                        clearFocusAndHideToolbar(itemFocusManager, itemTextToolbar)
+                        productMenuOpen = true
+                    },
                     modifier = Modifier.fillMaxWidth().height(48.dp),
                     shape = RoundedCornerShape(10.dp)
                 ) {
@@ -747,54 +795,69 @@ private fun FinalCodeDialog(
         icon = { Icon(Icons.Default.Lock, contentDescription = null, tint = TealAccent) },
         title = { Text("Admin Final Bill Verification") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Surface(
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .semantics(mergeDescendants = true) {}
-                        .testTag("final_dialog_staff_info")
-                ) {
-                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            ProvideSafeTextToolbar {
+                val dialogFocusManager = LocalFocusManager.current
+                val dialogTextToolbar = LocalTextToolbar.current
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics(mergeDescendants = true) {}
+                            .testTag("final_dialog_staff_info")
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = "Generated By: ${currentUser.displayName} (@${currentUser.username})",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Text(
+                                text = "Role: ${if (currentUser.isAdmin) "Admin" else "Staff"} · Yeh username saved bill record me dikhega (bill print me nahi aayega).",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
+                    Text(
+                        text = "Bill final karne aur A4 PDF print karne ke liye Admin ka Final Bill Code enter karein.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { code = it },
+                        label = { Text("Final Bill Code") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("final_code_input")
+                    )
+                    if (error.isNotEmpty()) {
                         Text(
-                            text = "Generated By: ${currentUser.displayName} (@${currentUser.username})",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                        Text(
-                            text = "Role: ${if (currentUser.isAdmin) "Admin" else "Staff"} · Yeh username saved bill record me dikhega (bill print me nahi aayega).",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                            text = error,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold
                         )
                     }
-                }
-                Text(
-                    text = "Bill final karne aur A4 PDF print karne ke liye Admin ka Final Bill Code enter karein.",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { code = it },
-                    label = { Text("Final Bill Code") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().testTag("final_code_input")
-                )
-                if (error.isNotEmpty()) {
-                    Text(
-                        text = error,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Bold
-                    )
+                    // Keep focus cleanup tied to dialog composition scope when buttons below run
+                    androidx.compose.runtime.DisposableEffect(dialogFocusManager, dialogTextToolbar) {
+                        onDispose {
+                            clearFocusAndHideToolbar(dialogFocusManager, dialogTextToolbar)
+                        }
+                    }
                 }
             }
         },
         confirmButton = {
+            val btnFocus = LocalFocusManager.current
+            val btnToolbar = LocalTextToolbar.current
             Button(
-                onClick = { onConfirm(code) },
+                onClick = {
+                    clearFocusAndHideToolbar(btnFocus, btnToolbar)
+                    onConfirm(code)
+                },
                 colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
                 modifier = Modifier.testTag("confirm_final_bill_button")
             ) {
@@ -802,7 +865,12 @@ private fun FinalCodeDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            val btnFocus = LocalFocusManager.current
+            val btnToolbar = LocalTextToolbar.current
+            TextButton(onClick = {
+                clearFocusAndHideToolbar(btnFocus, btnToolbar)
+                onDismiss()
+            }) {
                 Text("Cancel")
             }
         }

@@ -31,12 +31,15 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -44,6 +47,8 @@ import androidx.compose.ui.unit.dp
 import com.example.data.CustomerEntity
 import com.example.data.ProductEntity
 import com.example.data.UserSession
+import com.example.ui.components.ProvideSafeTextToolbar
+import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.RedDue
 import com.example.ui.theme.TealAccent
@@ -170,6 +175,8 @@ fun ProductsScreen(
     var unit by remember { mutableStateOf("Nos") }
     var rate by remember { mutableStateOf("") }
     var editingProduct by remember { mutableStateOf<ProductEntity?>(null) }
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
 
     LazyColumn(
         modifier = Modifier
@@ -291,7 +298,10 @@ fun ProductsScreen(
                         if (canManageProducts) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 IconButton(
-                                    onClick = { editingProduct = prod },
+                                    onClick = {
+                                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                                        editingProduct = prod
+                                    },
                                     modifier = Modifier.testTag("edit_product_${prod.id}")
                                 ) {
                                     Icon(Icons.Default.Edit, contentDescription = "Edit product", tint = TealAccent)
@@ -346,36 +356,50 @@ private fun EditProductDialog(
         icon = { Icon(Icons.Default.Edit, contentDescription = null, tint = TealAccent) },
         title = { Text("Edit Product & Price") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = editName,
-                    onValueChange = { editName = it },
-                    label = { Text("Product Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().testTag("edit_product_name_input")
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ProvideSafeTextToolbar {
+                val dialogFocus = LocalFocusManager.current
+                val dialogToolbar = LocalTextToolbar.current
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
-                        value = editUnit,
-                        onValueChange = { editUnit = it },
-                        label = { Text("Unit") },
+                        value = editName,
+                        onValueChange = { editName = it },
+                        label = { Text("Product Name") },
                         singleLine = true,
-                        modifier = Modifier.weight(1f).testTag("edit_product_unit_input")
+                        modifier = Modifier.fillMaxWidth().testTag("edit_product_name_input")
                     )
-                    OutlinedTextField(
-                        value = editRate,
-                        onValueChange = { editRate = it },
-                        label = { Text("Rate (₹)") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        singleLine = true,
-                        modifier = Modifier.weight(1.2f).testTag("edit_product_rate_input")
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = editUnit,
+                            onValueChange = { editUnit = it },
+                            label = { Text("Unit") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).testTag("edit_product_unit_input")
+                        )
+                        OutlinedTextField(
+                            value = editRate,
+                            onValueChange = { editRate = it },
+                            label = { Text("Rate (₹)") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true,
+                            modifier = Modifier.weight(1.2f).testTag("edit_product_rate_input")
+                        )
+                    }
+                    DisposableEffect(dialogFocus, dialogToolbar) {
+                        onDispose {
+                            clearFocusAndHideToolbar(dialogFocus, dialogToolbar)
+                        }
+                    }
                 }
             }
         },
         confirmButton = {
+            val btnFocus = LocalFocusManager.current
+            val btnToolbar = LocalTextToolbar.current
             Button(
-                onClick = { onSave(editName, editUnit, editRate) },
+                onClick = {
+                    clearFocusAndHideToolbar(btnFocus, btnToolbar)
+                    onSave(editName, editUnit, editRate)
+                },
                 colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
                 modifier = Modifier.testTag("save_edited_product_button")
             ) {
@@ -383,7 +407,12 @@ private fun EditProductDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            val btnFocus = LocalFocusManager.current
+            val btnToolbar = LocalTextToolbar.current
+            TextButton(onClick = {
+                clearFocusAndHideToolbar(btnFocus, btnToolbar)
+                onDismiss()
+            }) {
                 Text("Cancel")
             }
         }

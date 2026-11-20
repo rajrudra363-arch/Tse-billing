@@ -70,6 +70,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -85,8 +87,10 @@ import com.example.ui.BillingEvent
 import com.example.ui.BillingViewModel
 import com.example.ui.MainTab
 import com.example.ui.components.AuthScreen
+import com.example.ui.components.ProvideSafeTextToolbar
 import com.example.ui.components.SplashOverlay
 import com.example.ui.components.TseShieldLogo
+import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.screens.AdminPanelScreen
 import com.example.ui.screens.BillScreen
 import com.example.ui.screens.CustomersScreen
@@ -141,7 +145,10 @@ private data class NavItem(
 
 @Composable
 fun TseBillingApp(viewModel: BillingViewModel) {
+    ProvideSafeTextToolbar {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
     val snackbarHostState = remember { SnackbarHostState() }
 
     val splashVisible by viewModel.splashVisible.collectAsStateWithLifecycle()
@@ -218,6 +225,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
 
     if (session != null && activeTab != MainTab.BILL) {
         BackHandler {
+            clearFocusAndHideToolbar(focusManager, textToolbar)
             viewModel.selectTab(MainTab.BILL)
         }
     }
@@ -254,10 +262,14 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                             language = language,
                             onToggleSound = viewModel::toggleSound,
                             onToggleLanguage = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
                                 val next = if (language == AppLanguage.EN) AppLanguage.HI else AppLanguage.EN
                                 viewModel.setLanguage(next)
                             },
-                            onLogout = viewModel::logout
+                            onLogout = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                viewModel.logout()
+                            }
                         )
                     },
                     bottomBar = {
@@ -270,7 +282,10 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                     val selected = activeTab == item.tab
                                     NavigationBarItem(
                                         selected = selected,
-                                        onClick = { viewModel.selectTab(item.tab) },
+                                        onClick = {
+                                            clearFocusAndHideToolbar(focusManager, textToolbar)
+                                            viewModel.selectTab(item.tab)
+                                        },
                                         icon = { Icon(item.icon, contentDescription = item.labelEn) },
                                         label = {
                                             Text(
@@ -301,7 +316,10 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                 navItems.forEach { item ->
                                     NavigationRailItem(
                                         selected = activeTab == item.tab,
-                                        onClick = { viewModel.selectTab(item.tab) },
+                                        onClick = {
+                                            clearFocusAndHideToolbar(focusManager, textToolbar)
+                                            viewModel.selectTab(item.tab)
+                                        },
                                         icon = { Icon(item.icon, contentDescription = item.labelEn) },
                                         label = { Text(if (language == AppLanguage.HI) item.labelHi else item.labelEn) },
                                         modifier = Modifier.testTag("rail_${item.tab.route}")
@@ -420,6 +438,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
         ) {
             SplashOverlay(onSkip = viewModel::dismissSplash)
         }
+    }
     }
 }
 

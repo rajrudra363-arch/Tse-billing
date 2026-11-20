@@ -216,4 +216,69 @@ object LocationHelper {
             false
         }
     }
+
+    fun dialPhoneNumber(context: Context, phone: String): Boolean {
+        val cleaned = phone.trim().filter { it.isDigit() || it == '+' }
+        if (cleaned.isEmpty()) return false
+        val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$cleaned")).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return try {
+            context.startActivity(intent)
+            true
+        } catch (_: ActivityNotFoundException) {
+            false
+        }
+    }
+
+    fun buildHelpShareMessage(
+        customerName: String,
+        phone: String,
+        address: String,
+        locationUrl: String,
+        helpDescription: String
+    ): String {
+        return buildString {
+            appendLine("*TOTAL SOLUTION ENTERPRISES - CUSTOMER HELP REQUEST*")
+            if (customerName.isNotBlank()) appendLine("Customer: ${customerName.trim()}")
+            if (phone.isNotBlank()) appendLine("Mobile: ${phone.trim()}")
+            if (address.isNotBlank()) appendLine("Address: ${address.trim()}")
+            if (locationUrl.isNotBlank()) appendLine("Google Location: ${locationUrl.trim()}")
+            if (helpDescription.isNotBlank()) appendLine("Need Help / Issue: ${helpDescription.trim()}")
+        }.trim()
+    }
+
+    fun shareText(context: Context, text: String, preferWhatsApp: Boolean = false): Boolean {
+        if (text.isBlank()) return false
+        if (preferWhatsApp) {
+            val waIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+                setPackage("com.whatsapp")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            try {
+                context.startActivity(waIntent)
+                return true
+            } catch (_: ActivityNotFoundException) {
+                // Fall back to standard chooser
+            } catch (_: SecurityException) {
+            }
+        }
+        val chooser = Intent.createChooser(
+            Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+            },
+            "Share Customer Help Details"
+        ).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return try {
+            context.startActivity(chooser)
+            true
+        } catch (_: ActivityNotFoundException) {
+            false
+        }
+    }
 }

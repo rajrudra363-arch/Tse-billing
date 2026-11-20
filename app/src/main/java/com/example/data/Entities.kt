@@ -56,3 +56,17 @@ data class AppConfigEntity(
     @PrimaryKey val key: String,
     val value: String
 )
+
+@Entity(tableName = "customer_help_requests")
+data class CustomerHelpEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val customerName: String,
+    val phone: String,
+    val address: String,
+    val locationUrl: String,
+    val helpDescription: String,
+    val status: String = "OPEN",
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+

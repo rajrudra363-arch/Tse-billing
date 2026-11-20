@@ -11,6 +11,7 @@ import com.example.data.BillingRepository
 import com.example.data.ChargeType
 import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
+import com.example.data.CustomerHelpEntity
 import com.example.data.InvoiceItem
 import com.example.data.InvoiceItemJson
 import com.example.data.PaymentMode
@@ -44,6 +45,7 @@ enum class MainTab(val route: String) {
     BILL("bill"),
     SAVED("saved"),
     CUSTOMERS("customers"),
+    HELP("help"),
     PRODUCTS("products"),
     ADMIN("admin"),
     SETTINGS("settings")
@@ -145,6 +147,16 @@ class BillingViewModel(
     val customers: StateFlow<List<CustomerEntity>> = repository.customers
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    private val _customerSearchQuery = MutableStateFlow("")
+    val customerSearchQuery: StateFlow<String> = _customerSearchQuery.asStateFlow()
+
+    val filteredCustomers: StateFlow<List<CustomerEntity>> = combine(customers, _customerSearchQuery) { all, q ->
+        BillingRepository.filterCustomers(all, q)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val helpRequests: StateFlow<List<CustomerHelpEntity>> = repository.helpRequests
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val products: StateFlow<List<ProductEntity>> = repository.products
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -211,7 +223,7 @@ class BillingViewModel(
 
     fun selectTab(tab: MainTab) {
         val currentSession = _session.value ?: return
-        val staffAllowed = tab == MainTab.BILL || tab == MainTab.SAVED || tab == MainTab.CUSTOMERS
+        val staffAllowed = tab == MainTab.BILL || tab == MainTab.SAVED || tab == MainTab.CUSTOMERS || tab == MainTab.HELP
         if (!staffAllowed && (currentSession.isStaff || !currentSession.isAdmin)) {
             soundEngine.play(SoundCue.ERROR)
             emitToast("Admin access only", isError = true)
@@ -737,6 +749,10 @@ class BillingViewModel(
         }
     }
 
+    fun updateCustomerSearch(query: String) {
+        _customerSearchQuery.value = query
+    }
+
     fun deleteCustomer(id: Long) {
         val current = _session.value
         if (current == null || current.isStaff || !current.isAdmin) {
@@ -748,6 +764,78 @@ class BillingViewModel(
             repository.deleteCustomer(id)
             soundEngine.play(SoundCue.DELETE)
             emitToast("Customer removed")
+        }
+    }
+
+    /* ===== Customer Help / WhatsApp Service Desk (Admin Edit, Staff View) ===== */
+    fun saveHelpRequest(
+        id: Long = 0L,
+        customerName: String,
+        phone: String,
+        address: String,
+        locationUrl: String,
+        helpDescription: String,
+        status: String = "OPEN",
+        onSaved: ((CustomerHelpEntity) -> Unit)? = null
+    ) {
+        val current = _session.value
+        if (current == null || current.isStaff || !current.isAdmin) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Admin access only — Staff cannot edit Help Requests", isError = true)
+            return
+        }
+        if (helpDescription.isBlank()) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Customer need help description enter karein", isError = true)
+            return
+        }
+        if (customerName.isBlank() && phone.isBlank()) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Customer name ya mobile number enter karein", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            val saved = repository.saveHelpRequest(
+                id = id,
+                customerName = customerName,
+                phone = phone,
+                address = address,
+                locationUrl = locationUrl,
+                helpDescription = helpDescription,
+                status = status
+            )
+            soundEngine.play(SoundCue.SAVE)
+            emitToast(if (id > 0L) "Help request updated" else "Help request saved for Staff")
+            onSaved?.invoke(saved)
+        }
+    }
+
+    fun toggleHelpRequestStatus(request: CustomerHelpEntity) {
+        val current = _session.value
+        if (current == null || current.isStaff || !current.isAdmin) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Admin access only", isError = true)
+            return
+        }
+        val nextStatus = if (request.status == "RESOLVED") "OPEN" else "RESOLVED"
+        viewModelScope.launch {
+            repository.updateHelpStatus(request, nextStatus)
+            soundEngine.play(SoundCue.CLICK)
+            emitToast("Marked as $nextStatus")
+        }
+    }
+
+    fun deleteHelpRequest(id: Long) {
+        val current = _session.value
+        if (current == null || current.isStaff || !current.isAdmin) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Admin access only", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            repository.deleteHelpRequest(id)
+            soundEngine.play(SoundCue.DELETE)
+            emitToast("Help request deleted")
         }
     }
 

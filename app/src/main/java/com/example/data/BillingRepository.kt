@@ -21,11 +21,13 @@ class BillingRepository(private val db: AppDatabase) {
     private val productDao = db.productDao()
     private val userDao = db.userAccountDao()
     private val configDao = db.appConfigDao()
+    private val helpDao = db.customerHelpDao()
 
     val bills: Flow<List<BillEntity>> = billDao.observeAll()
     val customers: Flow<List<CustomerEntity>> = customerDao.observeAll()
     val products: Flow<List<ProductEntity>> = productDao.observeAll()
     val accounts: Flow<List<UserAccountEntity>> = userDao.observeAll()
+    val helpRequests: Flow<List<CustomerHelpEntity>> = helpDao.observeAll()
 
     val configMap: Flow<Map<String, String>> = configDao.observeAll().map { list ->
         list.associate { it.key to it.value }
@@ -243,6 +245,57 @@ class BillingRepository(private val db: AppDatabase) {
 
     suspend fun deleteCustomer(id: Long) = customerDao.deleteById(id)
 
+    suspend fun saveHelpRequest(
+        id: Long = 0L,
+        customerName: String,
+        phone: String,
+        address: String,
+        locationUrl: String,
+        helpDescription: String,
+        status: String = "OPEN"
+    ): CustomerHelpEntity {
+        val existingCustomers = customerDao.getAll()
+        val matched = findMatchingCustomersByPhone(existingCustomers, phone).firstOrNull()
+        val resolvedName = customerName.trim().ifBlank { matched?.name ?: "" }
+        val resolvedPhone = if (matched != null) {
+            val matchedPhone = matched.phone.ifBlank { parsePhoneAndAddress(matched.details).first }
+            val inputDigits = phone.filter { it.isDigit() }
+            if (inputDigits.length <= 5 && matchedPhone.isNotBlank()) matchedPhone else phone.trim().ifBlank { matchedPhone }
+        } else {
+            phone.trim()
+        }
+        val resolvedAddress = address.trim().ifBlank {
+            matched?.let { it.address.ifBlank { parsePhoneAndAddress(it.details).second.ifBlank { it.details } } } ?: ""
+        }
+        val resolvedLocation = locationUrl.trim().ifBlank { matched?.locationUrl ?: "" }
+        val now = System.currentTimeMillis()
+        val existingHelp = if (id > 0L) helpDao.getAll().firstOrNull { it.id == id } else null
+        val entity = CustomerHelpEntity(
+            id = id,
+            customerName = resolvedName,
+            phone = resolvedPhone,
+            address = resolvedAddress,
+            locationUrl = resolvedLocation,
+            helpDescription = helpDescription.trim(),
+            status = status.ifBlank { "OPEN" },
+            createdAt = existingHelp?.createdAt ?: now,
+            updatedAt = now
+        )
+        helpDao.upsert(entity)
+        return entity
+    }
+
+    suspend fun updateHelpStatus(request: CustomerHelpEntity, newStatus: String) {
+        helpDao.upsert(
+            request.copy(
+                status = newStatus,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+    }
+
+    suspend fun deleteHelpRequest(id: Long) = helpDao.deleteById(id)
+
     suspend fun addProduct(name: String, unit: String, rate: Double) {
         productDao.upsert(
             ProductEntity(
@@ -389,6 +442,21 @@ class BillingRepository(private val db: AppDatabase) {
                 })
             }
         })
+        val helpList = helpDao.getAll()
+        root.put("helpRequests", JSONArray().apply {
+            helpList.forEach { h ->
+                put(JSONObject().apply {
+                    put("customerName", h.customerName)
+                    put("phone", h.phone)
+                    put("address", h.address)
+                    put("locationUrl", h.locationUrl)
+                    put("helpDescription", h.helpDescription)
+                    put("status", h.status)
+                    put("createdAt", h.createdAt)
+                    put("updatedAt", h.updatedAt)
+                })
+            }
+        })
         return root.toString(2)
     }
 
@@ -506,6 +574,25 @@ class BillingRepository(private val db: AppDatabase) {
                 }
             }
 
+            root.optJSONArray("helpRequests")?.let { helpArr ->
+                helpDao.deleteAll()
+                for (i in 0 until helpArr.length()) {
+                    val h = helpArr.getJSONObject(i)
+                    helpDao.upsert(
+                        CustomerHelpEntity(
+                            customerName = h.optString("customerName", ""),
+                            phone = h.optString("phone", ""),
+                            address = h.optString("address", ""),
+                            locationUrl = h.optString("locationUrl", ""),
+                            helpDescription = h.optString("helpDescription", ""),
+                            status = h.optString("status", "OPEN"),
+                            createdAt = h.optLong("createdAt", System.currentTimeMillis()),
+                            updatedAt = h.optLong("updatedAt", System.currentTimeMillis())
+                        )
+                    )
+                }
+            }
+
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -540,5 +627,41 @@ class BillingRepository(private val db: AppDatabase) {
             "PVC Junction Box (4x4)", "DVR Rack / Cabinet", "HDMI Cable",
             "Camera Installation & Configuration Charges"
         )
+
+        fun extractCustomerPhonesDigits(customer: CustomerEntity): List<String> {
+            return buildList {
+                val pDigits = customer.phone.filter { it.isDigit() }
+                if (pDigits.isNotEmpty()) add(pDigits)
+                customer.details.lines().forEach { line ->
+                    val d = line.filter { it.isDigit() }
+                    if (d.length >= 5) add(d)
+                }
+            }.distinct()
+        }
+
+        fun filterCustomers(customers: List<CustomerEntity>, rawQuery: String): List<CustomerEntity> {
+            val q = rawQuery.trim()
+            if (q.isEmpty()) return customers
+            val qDigits = q.filter { it.isDigit() }
+            return customers.filter { cust ->
+                cust.name.contains(q, ignoreCase = true) ||
+                    cust.address.contains(q, ignoreCase = true) ||
+                    cust.details.contains(q, ignoreCase = true) ||
+                    cust.phone.contains(q, ignoreCase = true) ||
+                    (qDigits.isNotEmpty() && extractCustomerPhonesDigits(cust).any { digits ->
+                        digits.endsWith(qDigits) || digits.contains(qDigits)
+                    })
+            }
+        }
+
+        fun findMatchingCustomersByPhone(customers: List<CustomerEntity>, phoneInput: String): List<CustomerEntity> {
+            val qDigits = phoneInput.filter { it.isDigit() }
+            if (qDigits.length < 5) return emptyList()
+            return customers.filter { cust ->
+                extractCustomerPhonesDigits(cust).any { digits ->
+                    digits == qDigits || digits.endsWith(qDigits) || (qDigits.length >= 7 && digits.contains(qDigits))
+                }
+            }
+        }
     }
 }

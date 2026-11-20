@@ -11,6 +11,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performTextInput
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.AppDatabase
@@ -19,6 +20,7 @@ import com.example.data.BillingRepository
 import com.example.data.ChargeType
 import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
+import com.example.data.CustomerHelpEntity
 import com.example.data.InvoiceItem
 import com.example.data.InvoiceItemJson
 import com.example.data.PaymentMode
@@ -29,6 +31,7 @@ import com.example.ui.BillDraft
 import com.example.ui.BillingViewModel
 import com.example.ui.MainTab
 import com.example.ui.screens.BillScreen
+import com.example.ui.screens.CustomerHelpScreen
 import com.example.ui.screens.CustomersScreen
 import com.example.ui.screens.ProductsScreen
 import com.example.ui.screens.SavedBillsScreen
@@ -36,6 +39,7 @@ import com.example.ui.screens.SettingsScreen
 import com.example.ui.theme.TseBillingTheme
 import com.example.util.InvoicePdfPrinter
 import com.example.util.InvoicePrintPayload
+import com.example.util.LocationHelper
 import com.example.util.QrGenerator
 import com.example.util.SoundEngine
 import kotlinx.coroutines.flow.first
@@ -424,13 +428,149 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("customers_lazy_list").performScrollToIndex(1)
         composeTestRule.onNodeWithTag("save_customer_button").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("customers_lazy_list").performScrollToIndex(2)
+        composeTestRule.onNodeWithTag("customers_lazy_list").performScrollToIndex(3)
         composeTestRule.onNodeWithTag("edit_customer_10").assertIsDisplayed()
         composeTestRule.onNodeWithTag("delete_customer_10").assertIsDisplayed()
     }
 
     @Test
-    fun staffViewModel_canAccessSavedBillsAndCustomers_cannotOpenAdminTabs() {
+    fun customerSearch_matchesLast5DigitsOfMobile() {
+        val customers = listOf(
+            CustomerEntity(
+                id = 1L,
+                name = "Suresh Desai",
+                details = "Ponda, Goa\n9988776655",
+                phone = "9988776655",
+                address = "Ponda, Goa",
+                locationUrl = "https://maps.google.com/?q=15.4027,74.0078"
+            ),
+            CustomerEntity(
+                id = 2L,
+                name = "Amit Verma",
+                details = "Panaji, Goa\n9123454321",
+                phone = "9123454321",
+                address = "Panaji, Goa"
+            )
+        )
+        val staffUser = UserSession(username = "staff1", displayName = "Staff One", role = "staff")
+        composeTestRule.setContent {
+            TseBillingTheme {
+                CustomersScreen(
+                    customers = customers,
+                    user = staffUser,
+                    onSaveCustomer = { _, _, _, _, _ -> },
+                    onDeleteCustomer = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("customer_search_input").performTextInput("54321")
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithText("Amit Verma").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Suresh Desai").assertDoesNotExist()
+    }
+
+    @Test
+    fun helpRequest_autoFillsFromCustomerListByLast5Digits_andFormatsShare() = runTest {
+        repo.saveCustomer(
+            name = "Rakesh Naik",
+            details = "",
+            phone = "9876543210",
+            address = "Calangute, North Goa",
+            locationUrl = "https://maps.google.com/?q=15.5439,73.7553"
+        )
+
+        val savedHelp = repo.saveHelpRequest(
+            customerName = "",
+            phone = "43210",
+            address = "",
+            locationUrl = "",
+            helpDescription = "Camera 3 showing no video signal"
+        )
+        assertEquals("Rakesh Naik", savedHelp.customerName)
+        assertEquals("9876543210", savedHelp.phone)
+        assertEquals("Calangute, North Goa", savedHelp.address)
+        assertEquals("https://maps.google.com/?q=15.5439,73.7553", savedHelp.locationUrl)
+        assertEquals("Camera 3 showing no video signal", savedHelp.helpDescription)
+
+        val msg = LocationHelper.buildHelpShareMessage(
+            customerName = savedHelp.customerName,
+            phone = savedHelp.phone,
+            address = savedHelp.address,
+            locationUrl = savedHelp.locationUrl,
+            helpDescription = savedHelp.helpDescription
+        )
+        assertTrue(msg.contains("Rakesh Naik"))
+        assertTrue(msg.contains("9876543210"))
+        assertTrue(msg.contains("Calangute, North Goa"))
+        assertTrue(msg.contains("https://maps.google.com/?q=15.5439,73.7553"))
+        assertTrue(msg.contains("Camera 3 showing no video signal"))
+    }
+
+    @Test
+    fun customerHelpScreen_hidesAdminFormForStaff_autoFillsForAdmin() {
+        val customers = listOf(
+            CustomerEntity(
+                id = 5L,
+                name = "Rohan Kamat",
+                details = "Mapusa, Goa\n9822012345",
+                phone = "9822012345",
+                address = "Mapusa, Goa",
+                locationUrl = "https://maps.google.com/?q=15.5915,73.8100"
+            )
+        )
+        val requests = listOf(
+            CustomerHelpEntity(
+                id = 21L,
+                customerName = "Rohan Kamat",
+                phone = "9822012345",
+                address = "Mapusa, Goa",
+                locationUrl = "https://maps.google.com/?q=15.5915,73.8100",
+                helpDescription = "DVR hard disk beep issue"
+            )
+        )
+        val staffUser = UserSession(username = "staff1", displayName = "Staff One", role = "staff")
+        val adminUser = UserSession(username = "admin1", displayName = "Admin", role = "admin")
+
+        var currentUser by mutableStateOf(staffUser)
+        composeTestRule.setContent {
+            TseBillingTheme {
+                CustomerHelpScreen(
+                    helpRequests = requests,
+                    customers = customers,
+                    user = currentUser,
+                    onSaveHelpRequest = { _, _, _, _, _, _, _ -> },
+                    onToggleStatus = {},
+                    onDeleteHelpRequest = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("help_lazy_list").performScrollToIndex(3)
+        composeTestRule.onNodeWithText("DVR hard disk beep issue").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("call_help_21").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("map_help_21").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("help_phone_input").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("save_help_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("edit_help_21").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("delete_help_21").assertDoesNotExist()
+
+        currentUser = adminUser
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("help_lazy_list").performScrollToIndex(1)
+        composeTestRule.onNodeWithTag("help_phone_input").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("help_phone_input").performTextInput("12345")
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("help_customer_matched_badge").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("help_name_input").assertTextContains("Rohan Kamat")
+        composeTestRule.onNodeWithTag("help_lazy_list").performScrollToIndex(3)
+        composeTestRule.onNodeWithTag("edit_help_21").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("delete_help_21").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun staffViewModel_canAccessSavedCustomersAndHelp_cannotEditHelpOrOpenAdminTabs() {
         kotlinx.coroutines.runBlocking {
             repo.setupAdmin("admin1", "pass1234", "9999")
             repo.addStaff("Staff One", "staff1", "pass1234")
@@ -453,8 +593,23 @@ class ExampleRobolectricTest {
         vm.selectTab(MainTab.CUSTOMERS)
         assertEquals(MainTab.CUSTOMERS, vm.activeTab.value)
 
+        vm.selectTab(MainTab.HELP)
+        assertEquals(MainTab.HELP, vm.activeTab.value)
+
         vm.selectTab(MainTab.PRODUCTS)
-        assertEquals(MainTab.CUSTOMERS, vm.activeTab.value)
+        assertEquals(MainTab.HELP, vm.activeTab.value)
+
+        vm.saveHelpRequest(
+            customerName = "Test",
+            phone = "9876543210",
+            address = "Goa",
+            locationUrl = "",
+            helpDescription = "Staff should not save"
+        )
+        org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+        kotlinx.coroutines.runBlocking {
+            assertEquals(0, repo.helpRequests.first().size)
+        }
         soundEngine.release()
     }
 

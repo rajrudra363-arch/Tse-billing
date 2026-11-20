@@ -16,6 +16,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -32,6 +33,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
@@ -42,6 +45,7 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.HorizontalDivider
@@ -55,6 +59,7 @@ import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -93,6 +98,7 @@ import com.example.ui.components.TseShieldLogo
 import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.screens.AdminPanelScreen
 import com.example.ui.screens.BillScreen
+import com.example.ui.screens.CustomerHelpScreen
 import com.example.ui.screens.CustomersScreen
 import com.example.ui.screens.ProductsScreen
 import com.example.ui.screens.SavedBillsScreen
@@ -163,6 +169,8 @@ fun TseBillingApp(viewModel: BillingViewModel) {
     val filteredBills by viewModel.filteredBills.collectAsStateWithLifecycle()
     val billSearch by viewModel.billSearchQuery.collectAsStateWithLifecycle()
     val customers by viewModel.customers.collectAsStateWithLifecycle()
+    val customerSearch by viewModel.customerSearchQuery.collectAsStateWithLifecycle()
+    val helpRequests by viewModel.helpRequests.collectAsStateWithLifecycle()
     val products by viewModel.products.collectAsStateWithLifecycle()
     val company by viewModel.companySettings.collectAsStateWithLifecycle()
     val upi by viewModel.upiSettings.collectAsStateWithLifecycle()
@@ -227,6 +235,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
             add(NavItem(MainTab.BILL, "New Bill", "नया बिल", Icons.Default.Receipt))
             add(NavItem(MainTab.SAVED, "Saved", "सेव बिल", Icons.Default.ReceiptLong))
             add(NavItem(MainTab.CUSTOMERS, "Customers", "ग्राहक", Icons.Default.People))
+            add(NavItem(MainTab.HELP, "Help Desk", "ग्राहक हेल्प", Icons.Default.SupportAgent))
             if (session?.isAdmin == true && session?.isStaff == false) {
                 add(NavItem(MainTab.PRODUCTS, "Products", "प्रोडक्ट", Icons.Default.Inventory2))
                 add(NavItem(MainTab.ADMIN, "Admin", "एडमिन", Icons.Default.AdminPanelSettings))
@@ -286,28 +295,66 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     },
                     bottomBar = {
                         if (!useRail && navItems.size > 1) {
-                            NavigationBar(
-                                modifier = Modifier.navigationBarsPadding(),
-                                containerColor = MaterialTheme.colorScheme.surface
-                            ) {
-                                navItems.forEach { item ->
-                                    val selected = activeTab == item.tab
-                                    NavigationBarItem(
-                                        selected = selected,
-                                        onClick = {
-                                            clearFocusAndHideToolbar(focusManager, textToolbar)
-                                            viewModel.selectTab(item.tab)
-                                        },
-                                        icon = { Icon(item.icon, contentDescription = item.labelEn) },
-                                        label = {
-                                            Text(
-                                                text = if (language == AppLanguage.HI) item.labelHi else item.labelEn,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
+                            if (navItems.size <= 5) {
+                                NavigationBar(
+                                    modifier = Modifier.navigationBarsPadding(),
+                                    containerColor = MaterialTheme.colorScheme.surface
+                                ) {
+                                    navItems.forEach { item ->
+                                        val selected = activeTab == item.tab
+                                        NavigationBarItem(
+                                            selected = selected,
+                                            onClick = {
+                                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                                viewModel.selectTab(item.tab)
+                                            },
+                                            icon = { Icon(item.icon, contentDescription = item.labelEn) },
+                                            label = {
+                                                Text(
+                                                    text = if (language == AppLanguage.HI) item.labelHi else item.labelEn,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            },
+                                            modifier = Modifier.testTag("nav_${item.tab.route}")
+                                        )
+                                    }
+                                }
+                            } else {
+                                Surface(
+                                    tonalElevation = 3.dp,
+                                    color = MaterialTheme.colorScheme.surface,
+                                    modifier = Modifier.fillMaxWidth().navigationBarsPadding()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .horizontalScroll(rememberScrollState())
+                                            .padding(horizontal = 4.dp, vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        navItems.forEach { item ->
+                                            val selected = activeTab == item.tab
+                                            NavigationBarItem(
+                                                selected = selected,
+                                                onClick = {
+                                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                                    viewModel.selectTab(item.tab)
+                                                },
+                                                icon = { Icon(item.icon, contentDescription = item.labelEn) },
+                                                label = {
+                                                    Text(
+                                                        text = if (language == AppLanguage.HI) item.labelHi else item.labelEn,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                },
+                                                modifier = Modifier
+                                                    .widthIn(min = 76.dp)
+                                                    .testTag("nav_${item.tab.route}")
                                             )
-                                        },
-                                        modifier = Modifier.testTag("nav_${item.tab.route}")
-                                    )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -408,6 +455,8 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                 MainTab.CUSTOMERS -> CustomersScreen(
                                     customers = customers,
                                     user = currentSession,
+                                    searchQuery = customerSearch,
+                                    onSearchChange = viewModel::updateCustomerSearch,
                                     onSaveCustomer = { id, name, phone, address, locationUrl ->
                                         viewModel.saveCustomer(
                                             name = name,
@@ -418,6 +467,25 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         )
                                     },
                                     onDeleteCustomer = viewModel::deleteCustomer
+                                )
+
+                                MainTab.HELP -> CustomerHelpScreen(
+                                    helpRequests = helpRequests,
+                                    customers = customers,
+                                    user = currentSession,
+                                    onSaveHelpRequest = { id, name, phone, address, locationUrl, desc, status ->
+                                        viewModel.saveHelpRequest(
+                                            id = id,
+                                            customerName = name,
+                                            phone = phone,
+                                            address = address,
+                                            locationUrl = locationUrl,
+                                            helpDescription = desc,
+                                            status = status
+                                        )
+                                    },
+                                    onToggleStatus = viewModel::toggleHelpRequestStatus,
+                                    onDeleteHelpRequest = viewModel::deleteHelpRequest
                                 )
 
                                 MainTab.PRODUCTS -> ProductsScreen(

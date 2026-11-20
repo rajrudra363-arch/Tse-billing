@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Inventory2
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -56,6 +58,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.example.data.BillingRepository
 import com.example.data.CustomerEntity
 import com.example.data.ProductEntity
 import com.example.data.UserSession
@@ -72,6 +75,8 @@ import java.util.Locale
 fun CustomersScreen(
     customers: List<CustomerEntity>,
     user: UserSession,
+    searchQuery: String = "",
+    onSearchChange: ((String) -> Unit)? = null,
     onSaveCustomer: (id: Long, name: String, phone: String, address: String, locationUrl: String) -> Unit,
     onDeleteCustomer: (Long) -> Unit
 ) {
@@ -79,6 +84,12 @@ fun CustomersScreen(
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
+
+    var localSearch by remember { mutableStateOf(searchQuery) }
+    val activeQuery = if (onSearchChange != null) searchQuery else localSearch
+    val filteredCustomers = remember(customers, activeQuery) {
+        BillingRepository.filterCustomers(customers, activeQuery)
+    }
 
     var editingId by remember { mutableStateOf(0L) }
     var name by remember { mutableStateOf("") }
@@ -263,7 +274,37 @@ fun CustomersScreen(
             }
         }
 
-        if (customers.isEmpty()) {
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = activeQuery,
+                        onValueChange = { q ->
+                            if (onSearchChange != null) onSearchChange(q) else localSearch = q
+                        },
+                        label = { Text("Search Customer / Last 5 Digits of Mobile") },
+                        placeholder = { Text("Type name or last 5 digits (e.g. 54321)") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("customer_search_input")
+                    )
+                    Text(
+                        text = if (activeQuery.isBlank()) {
+                            "Total Customers: ${customers.size} · Mobile ke last 5 digits dalkar bhi details search kar sakte hain."
+                        } else {
+                            "Showing ${filteredCustomers.size} of ${customers.size} customers"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        if (filteredCustomers.isEmpty()) {
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -275,12 +316,15 @@ fun CustomersScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(Icons.Default.People, contentDescription = null, modifier = Modifier.size(44.dp), tint = MaterialTheme.colorScheme.primary)
-                        Text("No customers saved yet", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = if (activeQuery.isBlank()) "No customers saved yet" else "No matching customer found",
+                            style = MaterialTheme.typography.titleMedium
+                        )
                     }
                 }
             }
         } else {
-            items(customers, key = { it.id }) { cust ->
+            items(filteredCustomers, key = { it.id }) { cust ->
                 val displayPhone = cust.phone.ifBlank { "" }
                 val displayAddress = cust.address.ifBlank { cust.details }
                 val mapTarget = cust.locationUrl.ifBlank { displayAddress }
@@ -348,20 +392,39 @@ fun CustomersScreen(
                             }
                         }
 
-                        if (mapTarget.isNotBlank()) {
-                            OutlinedButton(
-                                onClick = {
-                                    clearFocusAndHideToolbar(focusManager, textToolbar)
-                                    val opened = LocationHelper.openInGoogleMaps(context, mapTarget)
-                                    if (!opened) {
-                                        Toast.makeText(context, "No Google Maps or browser app found", Toast.LENGTH_SHORT).show()
-                                    }
-                                },
-                                modifier = Modifier.testTag("open_customer_map_${cust.id}")
-                            ) {
-                                Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text(if (cust.locationUrl.isNotBlank()) "View Saved Location on Maps" else "Search Address on Maps")
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (displayPhone.isNotBlank()) {
+                                OutlinedButton(
+                                    onClick = {
+                                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                                        LocationHelper.dialPhoneNumber(context, displayPhone)
+                                    },
+                                    modifier = Modifier.testTag("call_customer_${cust.id}")
+                                ) {
+                                    Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Call")
+                                }
+                            }
+
+                            if (mapTarget.isNotBlank()) {
+                                OutlinedButton(
+                                    onClick = {
+                                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                                        val opened = LocationHelper.openInGoogleMaps(context, mapTarget)
+                                        if (!opened) {
+                                            Toast.makeText(context, "No Google Maps or browser app found", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("open_customer_map_${cust.id}")
+                                ) {
+                                    Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(if (cust.locationUrl.isNotBlank()) "View Saved Location on Maps" else "Search Address on Maps")
+                                }
                             }
                         }
                     }

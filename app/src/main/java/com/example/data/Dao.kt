@@ -101,3 +101,22 @@ interface AppConfigDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun setAll(entries: List<AppConfigEntity>)
 }
+
+@Dao
+interface CustomerHelpDao {
+    @Query("SELECT * FROM customer_help_requests ORDER BY CASE WHEN status = 'OPEN' THEN 0 ELSE 1 END, updatedAt DESC")
+    fun observeAll(): Flow<List<CustomerHelpEntity>>
+
+    @Query("SELECT * FROM customer_help_requests ORDER BY updatedAt DESC")
+    suspend fun getAll(): List<CustomerHelpEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(request: CustomerHelpEntity)
+
+    @Query("DELETE FROM customer_help_requests WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
+    @Query("DELETE FROM customer_help_requests")
+    suspend fun deleteAll()
+}
+

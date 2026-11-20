@@ -13,9 +13,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CustomerEntity::class,
         ProductEntity::class,
         UserAccountEntity::class,
-        AppConfigEntity::class
+        AppConfigEntity::class,
+        CustomerHelpEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -24,6 +25,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun productDao(): ProductDao
     abstract fun userAccountDao(): UserAccountDao
     abstract fun appConfigDao(): AppConfigDao
+    abstract fun customerHelpDao(): CustomerHelpDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -36,6 +38,26 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `customer_help_requests` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `customerName` TEXT NOT NULL,
+                        `phone` TEXT NOT NULL,
+                        `address` TEXT NOT NULL,
+                        `locationUrl` TEXT NOT NULL,
+                        `helpDescription` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -45,7 +67,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "tse_billing.db"
-                ).addMigrations(MIGRATION_1_2).build().also { INSTANCE = it }
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { INSTANCE = it }
             }
         }
     }

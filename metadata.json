@@ -1,0 +1,6 @@
+{
+  "name": "TSE Billing",
+  "description": "CCTV security billing, tax invoice PDF printing, dynamic UPI QR payment, due amount highlighting, and customer & product management for Total Solution Enterprises.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

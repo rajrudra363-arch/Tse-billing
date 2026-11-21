@@ -7,7 +7,6 @@ import android.graphics.BitmapFactory
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -38,92 +37,53 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import com.example.ui.theme.CyanGlow
+import com.example.R
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.NavyDeep
-import com.example.ui.theme.TealAccent
 import com.example.util.InvoicePdfPrinter
 import com.example.util.QrGenerator
 import java.io.File
 
 @Composable
-fun TseShieldLogo(modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-        fun sx(v: Float) = (v / 120f) * w
-        fun sy(v: Float) = (v / 120f) * h
-
-        val shieldPath = Path().apply {
-            moveTo(sx(60f), sy(5f))
-            lineTo(sx(108f), sy(23f))
-            lineTo(sx(108f), sy(57f))
-            cubicTo(sx(108f), sy(86f), sx(88f), sy(104f), sx(60f), sy(115f))
-            cubicTo(sx(32f), sy(104f), sx(12f), sy(86f), sx(12f), sy(57f))
-            lineTo(sx(12f), sy(23f))
-            close()
+fun TseShieldLogo(
+    logoBase64: String = "",
+    modifier: Modifier = Modifier
+) {
+    val customBitmap = remember(logoBase64) {
+        if (logoBase64.isNotBlank()) InvoicePdfPrinter.decodeBase64Bitmap(logoBase64) else null
+    }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(NavyDeep)
+            .border(1.5.dp, GoldAccent, RoundedCornerShape(12.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (customBitmap != null) {
+            Image(
+                bitmap = customBitmap.asImageBitmap(),
+                contentDescription = "Company Logo",
+                modifier = Modifier.fillMaxSize().padding(2.dp),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Image(
+                painter = painterResource(id = R.drawable.img_tse_logo),
+                contentDescription = "Total Solution Enterprises Logo",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
         }
-
-        drawPath(
-            path = shieldPath,
-            brush = Brush.linearGradient(listOf(Color(0xFF174F70), NavyDeep))
-        )
-        drawPath(
-            path = shieldPath,
-            brush = Brush.linearGradient(listOf(Color(0xFFFFF0A8), GoldAccent, Color(0xFFA96B12))),
-            style = Stroke(width = w * 0.042f)
-        )
-
-        // Camera housing & lens
-        drawCircle(
-            color = Color(0xFFF5FBFF),
-            radius = w * 0.16f,
-            center = Offset(sx(60f), sy(52f))
-        )
-        drawCircle(
-            color = TealAccent,
-            radius = w * 0.16f,
-            center = Offset(sx(60f), sy(52f)),
-            style = Stroke(width = w * 0.025f)
-        )
-        drawCircle(
-            color = Color(0xFF0D2C48),
-            radius = w * 0.11f,
-            center = Offset(sx(60f), sy(52f))
-        )
-        drawCircle(
-            color = CyanGlow,
-            radius = w * 0.055f,
-            center = Offset(sx(60f), sy(52f))
-        )
-        drawCircle(
-            color = Color.White,
-            radius = w * 0.02f,
-            center = Offset(sx(56f), sy(48f))
-        )
-
-        // Gold accent divider bar
-        drawLine(
-            color = GoldAccent.copy(alpha = 0.85f),
-            start = Offset(sx(24f), sy(82f)),
-            end = Offset(sx(96f), sy(82f)),
-            strokeWidth = h * 0.022f,
-            cap = StrokeCap.Round
-        )
     }
 }
 

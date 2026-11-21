@@ -14,7 +14,8 @@ data class BackupImportSummary(
     val customersCount: Int,
     val productsCount: Int,
     val accountsCount: Int,
-    val helpCount: Int
+    val helpCount: Int,
+    val settlementsCount: Int = 0
 )
 
 object AuthHasher {
@@ -31,12 +32,32 @@ class BillingRepository(private val db: AppDatabase) {
     private val userDao = db.userAccountDao()
     private val configDao = db.appConfigDao()
     private val helpDao = db.customerHelpDao()
+    private val settlementDao = db.technicianSettlementDao()
 
     val bills: Flow<List<BillEntity>> = billDao.observeAll()
     val customers: Flow<List<CustomerEntity>> = customerDao.observeAll()
     val products: Flow<List<ProductEntity>> = productDao.observeAll()
-    val accounts: Flow<List<UserAccountEntity>> = userDao.observeAll()
+
+    // Guarantee at most ONE Admin account is ever surfaced in UI/dropdowns
+    val accounts: Flow<List<UserAccountEntity>> = userDao.observeAll().map { raw ->
+        var adminSeen = false
+        buildList {
+            for (acc in raw) {
+                val normalizedRole = normalizeRole(acc.role)
+                if (normalizedRole == "admin") {
+                    if (!adminSeen) {
+                        adminSeen = true
+                        add(acc.copy(role = "admin"))
+                    }
+                } else {
+                    add(acc.copy(role = normalizedRole))
+                }
+            }
+        }
+    }
+
     val helpRequests: Flow<List<CustomerHelpEntity>> = helpDao.observeAll()
+    val settlements: Flow<List<TechnicianSettlementEntity>> = settlementDao.observeAll()
 
     val configMap: Flow<Map<String, String>> = configDao.observeAll().map { list ->
         list.associate { it.key to it.value }
@@ -48,7 +69,20 @@ class BillingRepository(private val db: AppDatabase) {
             mobile = m[KEY_COMPANY_MOBILE]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_MOBILE,
             email = m[KEY_COMPANY_EMAIL]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_EMAIL,
             address = m[KEY_COMPANY_ADDRESS]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_ADDRESS,
-            authorisedSignatureBase64 = m[KEY_AUTHORISED_SIGNATURE] ?: ""
+            authorisedSignatureBase64 = m[KEY_AUTHORISED_SIGNATURE] ?: "",
+            logoBase64 = m[KEY_COMPANY_LOGO] ?: ""
+        )
+    }
+
+    val voiceAndNoteSettings: Flow<VoiceAndNoteSettings> = configMap.map { m ->
+        val defaults = VoiceAndNoteSettings()
+        VoiceAndNoteSettings(
+            headerNote = m[KEY_HEADER_NOTE] ?: defaults.headerNote,
+            loginVoice = m[KEY_VOICE_LOGIN]?.takeIf { it.isNotBlank() } ?: defaults.loginVoice,
+            postLoginVoice = m[KEY_VOICE_POST_LOGIN]?.takeIf { it.isNotBlank() } ?: defaults.postLoginVoice,
+            billGeneratingVoice = m[KEY_VOICE_BILL_START]?.takeIf { it.isNotBlank() } ?: defaults.billGeneratingVoice,
+            billCompletedVoice = m[KEY_VOICE_BILL_DONE]?.takeIf { it.isNotBlank() } ?: defaults.billCompletedVoice,
+            voiceModelId = m[KEY_VOICE_MODEL_ID]?.takeIf { it.isNotBlank() } ?: defaults.voiceModelId
         )
     }
 
@@ -60,24 +94,36 @@ class BillingRepository(private val db: AppDatabase) {
         )
     }
 
-    val isAdminConfigured: Flow<Boolean> = combine(accounts, configMap) { users, cfg ->
-        val hasAdmin = users.any { it.role.equals("admin", ignoreCase = true) }
-        val hasFinalCode = !cfg[KEY_FINAL_CODE_HASH].isNullOrBlank()
-        hasAdmin && hasFinalCode
+    val deviceAuthEnabledByUser: Flow<Map<String, Boolean>> = configMap.map { m ->
+        m.entries
+            .filter { it.key.startsWith(KEY_DEVICE_AUTH_USER_PREFIX) }
+            .associate {
+                it.key.removePrefix(KEY_DEVICE_AUTH_USER_PREFIX) to (it.value == "1")
+            }
+    }
+
+    val isAdminConfigured: Flow<Boolean> = accounts.map { users ->
+        users.any { it.role.equals("admin", ignoreCase = true) }
     }
 
     val soundEnabled: Flow<Boolean> = configMap.map { m ->
         m[KEY_SOUND_ENABLED] != "0"
     }
 
-    val language: Flow<AppLanguage> = configMap.map { m ->
-        AppLanguage.fromCode(m[KEY_LANGUAGE] ?: "en")
+    val language: Flow<AppLanguage> = configMap.map { AppLanguage.EN }
+
+    val loginSecurityState: Flow<LoginSecurityState> = configMap.map { m ->
+        LoginSecurityState(
+            failedAttempts = m[KEY_LOGIN_FAILED_ATTEMPTS]?.toIntOrNull() ?: 0,
+            lockUntilMillis = m[KEY_LOGIN_LOCK_UNTIL_MS]?.toLongOrNull() ?: 0L
+        )
     }
 
     suspend fun seedDefaultsIfNeeded() {
         val seeded = configDao.getValue(KEY_SEEDED) == "1"
         if (!seeded && productDao.getAll().isEmpty()) {
-            productDao.insertAll(STARTER_PRODUCTS.map { ProductEntity(name = it, unit = "Nos", defaultRate = 0.0) })
+            productDao.insertAll(STARTER_PRODUCTS)
+            val defaults = VoiceAndNoteSettings()
             configDao.setAll(
                 listOf(
                     AppConfigEntity(KEY_SEEDED, "1"),
@@ -87,23 +133,36 @@ class BillingRepository(private val db: AppDatabase) {
                     AppConfigEntity(KEY_COMPANY_ADDRESS, DEFAULT_COMPANY_ADDRESS),
                     AppConfigEntity(KEY_UPI_NAME, DEFAULT_PAYEE_NAME),
                     AppConfigEntity(KEY_SOUND_ENABLED, "1"),
-                    AppConfigEntity(KEY_LANGUAGE, "en")
+                    AppConfigEntity(KEY_LANGUAGE, "en"),
+                    AppConfigEntity(KEY_HEADER_NOTE, defaults.headerNote),
+                    AppConfigEntity(KEY_VOICE_LOGIN, defaults.loginVoice),
+                    AppConfigEntity(KEY_VOICE_POST_LOGIN, defaults.postLoginVoice),
+                    AppConfigEntity(KEY_VOICE_BILL_START, defaults.billGeneratingVoice),
+                    AppConfigEntity(KEY_VOICE_BILL_DONE, defaults.billCompletedVoice),
+                    AppConfigEntity(KEY_VOICE_MODEL_ID, defaults.voiceModelId)
                 )
             )
         }
     }
 
-    suspend fun setupAdmin(username: String, password: String, finalCode: String) {
+    suspend fun setupAdmin(username: String, password: String, finalCode: String = "") {
         val cleanUser = username.trim()
-        userDao.upsert(
-            UserAccountEntity(
-                username = cleanUser,
-                displayName = "Admin",
-                passwordHash = AuthHasher.sha256(password),
-                role = "admin"
+        db.withTransaction {
+            // Strictly enforce single Admin account
+            userDao.deleteAllAdmins()
+            userDao.upsert(
+                UserAccountEntity(
+                    username = cleanUser,
+                    displayName = "Admin",
+                    passwordHash = AuthHasher.sha256(password),
+                    role = "admin",
+                    phone = ""
+                )
             )
-        )
-        configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, AuthHasher.sha256(finalCode)))
+            if (finalCode.isNotBlank()) {
+                configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, AuthHasher.sha256(finalCode)))
+            }
+        }
     }
 
     suspend fun authenticate(username: String, password: String): UserSession? {
@@ -113,11 +172,59 @@ class BillingRepository(private val db: AppDatabase) {
             UserSession(
                 username = account.username,
                 displayName = account.displayName.ifBlank { account.username },
-                role = account.role
+                role = normalizeRole(account.role),
+                phone = account.phone,
+                photoBase64 = account.photoBase64
             )
         } else {
             null
         }
+    }
+
+    suspend fun getLoginSecurityState(): LoginSecurityState {
+        val attempts = configDao.getValue(KEY_LOGIN_FAILED_ATTEMPTS)?.toIntOrNull() ?: 0
+        val lockUntil = configDao.getValue(KEY_LOGIN_LOCK_UNTIL_MS)?.toLongOrNull() ?: 0L
+        return LoginSecurityState(failedAttempts = attempts, lockUntilMillis = lockUntil)
+    }
+
+    suspend fun recordLoginFailure(nowMillis: Long = System.currentTimeMillis()): LoginSecurityState {
+        val current = getLoginSecurityState()
+        if (current.isLocked(nowMillis)) {
+            return current
+        }
+        val baseAttempts = current.effectiveFailedAttempts(nowMillis)
+        val nextAttempts = (baseAttempts + 1).coerceAtMost(LoginSecurityState.MAX_ATTEMPTS)
+        val nextLockUntil = if (nextAttempts >= LoginSecurityState.MAX_ATTEMPTS) {
+            nowMillis + LoginSecurityState.LOCK_DURATION_MS
+        } else {
+            0L
+        }
+        configDao.setAll(
+            listOf(
+                AppConfigEntity(KEY_LOGIN_FAILED_ATTEMPTS, nextAttempts.toString()),
+                AppConfigEntity(KEY_LOGIN_LOCK_UNTIL_MS, nextLockUntil.toString())
+            )
+        )
+        return LoginSecurityState(failedAttempts = nextAttempts, lockUntilMillis = nextLockUntil)
+    }
+
+    suspend fun resetLoginSecurityState() {
+        configDao.setAll(
+            listOf(
+                AppConfigEntity(KEY_LOGIN_FAILED_ATTEMPTS, "0"),
+                AppConfigEntity(KEY_LOGIN_LOCK_UNTIL_MS, "0")
+            )
+        )
+    }
+
+    suspend fun setDeviceAuthEnabled(username: String, enabled: Boolean) {
+        val key = "$KEY_DEVICE_AUTH_USER_PREFIX${username.trim().lowercase(Locale.ROOT)}"
+        configDao.setValue(AppConfigEntity(key, if (enabled) "1" else "0"))
+    }
+
+    suspend fun isDeviceAuthEnabledForUser(username: String): Boolean {
+        val key = "$KEY_DEVICE_AUTH_USER_PREFIX${username.trim().lowercase(Locale.ROOT)}"
+        return configDao.getValue(key) == "1"
     }
 
     suspend fun verifyFinalCode(code: String): Boolean {
@@ -129,28 +236,159 @@ class BillingRepository(private val db: AppDatabase) {
         configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, AuthHasher.sha256(newCode)))
     }
 
-    suspend fun addStaff(displayName: String, username: String, password: String): Result<Unit> {
+    suspend fun addTechnician(
+        displayName: String,
+        phone: String,
+        username: String,
+        password: String,
+        photoBase64: String = ""
+    ): Result<Unit> {
         val existing = userDao.getAll()
-        val staffCount = existing.count { it.role.equals("staff", ignoreCase = true) }
-        if (staffCount >= 5) {
-            return Result.failure(IllegalStateException("Maximum 5 staff accounts allowed"))
-        }
         val cleanUser = username.trim()
+        val cleanName = displayName.trim()
+        val cleanPhone = phone.trim()
+        val cleanPhoto = photoBase64.trim()
+        if (cleanName.length < 2) {
+            return Result.failure(IllegalArgumentException("Enter technician full name"))
+        }
+        if (cleanPhone.filter { it.isDigit() }.length < 7) {
+            return Result.failure(IllegalArgumentException("Enter valid technician mobile number"))
+        }
+        if (cleanUser.length < 3) {
+            return Result.failure(IllegalArgumentException("Technician username must be at least 3 characters"))
+        }
+        if (password.length < 6) {
+            return Result.failure(IllegalArgumentException("Technician password must be at least 6 characters"))
+        }
+        if (cleanPhoto.isBlank()) {
+            return Result.failure(IllegalArgumentException("Please upload or capture Technician photo"))
+        }
         if (existing.any { it.username.equals(cleanUser, ignoreCase = true) }) {
             return Result.failure(IllegalStateException("Username already exists"))
         }
         userDao.upsert(
             UserAccountEntity(
                 username = cleanUser,
-                displayName = displayName.trim(),
+                displayName = cleanName,
                 passwordHash = AuthHasher.sha256(password),
-                role = "staff"
+                role = "technician",
+                phone = cleanPhone,
+                photoBase64 = cleanPhoto
             )
         )
         return Result.success(Unit)
     }
 
-    suspend fun removeStaff(username: String) {
+    suspend fun updateTechnician(
+        oldUsername: String,
+        newUsername: String,
+        displayName: String,
+        phone: String,
+        newPassword: String,
+        newPhotoBase64: String? = null
+    ): Result<Unit> {
+        val cleanOld = oldUsername.trim()
+        val cleanNew = newUsername.trim()
+        val cleanName = displayName.trim()
+        val cleanPhone = phone.trim()
+        if (cleanName.length < 2) {
+            return Result.failure(IllegalArgumentException("Enter technician full name"))
+        }
+        if (cleanPhone.filter { it.isDigit() }.length < 7) {
+            return Result.failure(IllegalArgumentException("Enter valid technician mobile number"))
+        }
+        if (cleanNew.length < 3) {
+            return Result.failure(IllegalArgumentException("Username must be at least 3 characters"))
+        }
+        if (newPassword.isNotEmpty() && newPassword.length < 6) {
+            return Result.failure(IllegalArgumentException("New password must be at least 6 characters"))
+        }
+
+        val existing = userDao.findByUsername(cleanOld)
+            ?: return Result.failure(IllegalStateException("Technician account not found"))
+        if (!cleanNew.equals(cleanOld, ignoreCase = true)) {
+            val conflict = userDao.findByUsername(cleanNew)
+            if (conflict != null) {
+                return Result.failure(IllegalStateException("Target username @$cleanNew already exists"))
+            }
+        }
+
+        val updatedPasswordHash = if (newPassword.isNotBlank()) {
+            AuthHasher.sha256(newPassword)
+        } else {
+            existing.passwordHash
+        }
+        val finalPhoto = if (!newPhotoBase64.isNullOrBlank()) newPhotoBase64.trim() else existing.photoBase64
+
+        db.withTransaction {
+            if (!cleanNew.equals(cleanOld, ignoreCase = true)) {
+                userDao.deleteByUsername(existing.username)
+                billDao.reassignCreator(existing.username, cleanNew)
+                settlementDao.reassignTechnician(existing.username, cleanNew)
+                val oldAuthKey = "$KEY_DEVICE_AUTH_USER_PREFIX${existing.username.lowercase(Locale.ROOT)}"
+                val oldAuthVal = configDao.getValue(oldAuthKey)
+                if (oldAuthVal != null) {
+                    configDao.setValue(
+                        AppConfigEntity(
+                            "$KEY_DEVICE_AUTH_USER_PREFIX${cleanNew.lowercase(Locale.ROOT)}",
+                            oldAuthVal
+                        )
+                    )
+                }
+            }
+            userDao.upsert(
+                UserAccountEntity(
+                    username = cleanNew,
+                    displayName = cleanName,
+                    passwordHash = updatedPasswordHash,
+                    role = normalizeRole(existing.role),
+                    phone = cleanPhone,
+                    photoBase64 = finalPhoto
+                )
+            )
+            helpDao.updateTechnicianInfo(existing.username, cleanNew, cleanName, cleanPhone)
+        }
+        return Result.success(Unit)
+    }
+
+    suspend fun removeTechnician(username: String) {
+        userDao.deleteByUsername(username)
+    }
+
+    suspend fun addSuperAdmin(
+        displayName: String,
+        phone: String,
+        username: String,
+        password: String
+    ): Result<Unit> {
+        val existing = userDao.getAll()
+        val cleanUser = username.trim()
+        val cleanName = displayName.trim()
+        if (cleanName.length < 2) {
+            return Result.failure(IllegalArgumentException("Enter Super Admin full name"))
+        }
+        if (cleanUser.length < 3) {
+            return Result.failure(IllegalArgumentException("Super Admin username must be at least 3 characters"))
+        }
+        if (password.length < 6) {
+            return Result.failure(IllegalArgumentException("Super Admin password must be at least 6 characters"))
+        }
+        if (existing.any { it.username.equals(cleanUser, ignoreCase = true) }) {
+            return Result.failure(IllegalStateException("Username already exists"))
+        }
+        userDao.upsert(
+            UserAccountEntity(
+                username = cleanUser,
+                displayName = cleanName,
+                passwordHash = AuthHasher.sha256(password),
+                role = "super_admin",
+                phone = phone.trim()
+            )
+        )
+        return Result.success(Unit)
+    }
+
+    suspend fun removeSuperAdmin(username: String) {
         userDao.deleteByUsername(username)
     }
 
@@ -161,26 +399,29 @@ class BillingRepository(private val db: AppDatabase) {
         newFinalCode: String? = null
     ): Result<String> {
         if (AuthHasher.sha256(recoveryPassword.trim()) != AuthHasher.sha256(DEFAULT_ADMIN_RECOVERY_PASSWORD)) {
-            return Result.failure(IllegalArgumentException("Default recovery password galat hai."))
+            return Result.failure(IllegalArgumentException("Incorrect default recovery password."))
         }
         val cleanNewPass = newPassword
         if (cleanNewPass.length < 6) {
-            return Result.failure(IllegalArgumentException("New Admin password kam se kam 6 characters ka hona chahiye."))
+            return Result.failure(IllegalArgumentException("New Admin password must be at least 6 characters."))
         }
         if (!newFinalCode.isNullOrBlank() && newFinalCode.length < 4) {
-            return Result.failure(IllegalArgumentException("Final Bill Code kam se kam 4 characters ka rakhein."))
+            return Result.failure(IllegalArgumentException("Code must be at least 4 characters."))
         }
         val allUsers = userDao.getAll()
         val adminAccount = targetAdminUsername
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
-            ?.let { uname -> allUsers.firstOrNull { it.username.equals(uname, ignoreCase = true) && it.role.equals("admin", ignoreCase = true) } }
+            ?.let { uname ->
+                allUsers.firstOrNull { it.username.equals(uname, ignoreCase = true) && it.role.equals("admin", ignoreCase = true) }
+            }
             ?: allUsers.firstOrNull { it.role.equals("admin", ignoreCase = true) }
-            ?: return Result.failure(IllegalStateException("Admin account nahi mila."))
+            ?: return Result.failure(IllegalStateException("Admin account not found."))
 
         userDao.upsert(
             adminAccount.copy(passwordHash = AuthHasher.sha256(cleanNewPass))
         )
+        resetLoginSecurityState()
         if (!newFinalCode.isNullOrBlank()) {
             configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, AuthHasher.sha256(newFinalCode)))
         }
@@ -190,7 +431,6 @@ class BillingRepository(private val db: AppDatabase) {
     suspend fun saveBill(bill: BillEntity, customerLocationUrl: String = "") {
         val existing = billDao.findById(bill.id)
         val safeBill = if (existing != null && existing.staffRating in 1..5) {
-            // Once a star rating is saved, nobody can edit or erase it
             bill.copy(
                 staffRating = existing.staffRating,
                 staffReviewNote = existing.staffReviewNote
@@ -224,6 +464,9 @@ class BillingRepository(private val db: AppDatabase) {
                     )
                 )
             }
+        }
+        if (safeBill.helpRequestId > 0L) {
+            linkBillToHelpRequest(safeBill.helpRequestId, safeBill.id)
         }
     }
 
@@ -260,6 +503,27 @@ class BillingRepository(private val db: AppDatabase) {
         )
         billDao.upsert(updated)
         return updated
+    }
+
+    suspend fun recordTechnicianSettlement(
+        technicianUsername: String,
+        amount: Double,
+        note: String,
+        recordedBy: String
+    ): Result<Unit> {
+        if (amount <= 0.0) {
+            return Result.failure(IllegalArgumentException("Enter a settlement amount greater than zero"))
+        }
+        settlementDao.insert(
+            TechnicianSettlementEntity(
+                technicianUsername = technicianUsername.trim(),
+                amount = amount,
+                note = note.trim(),
+                recordedBy = recordedBy.trim(),
+                createdAt = System.currentTimeMillis()
+            )
+        )
+        return Result.success(Unit)
     }
 
     suspend fun saveCustomer(
@@ -355,7 +619,7 @@ class BillingRepository(private val db: AppDatabase) {
         }
         val resolvedLocation = locationUrl.trim().ifBlank { matched?.locationUrl ?: "" }
         val now = System.currentTimeMillis()
-        val existingHelp = if (id > 0L) helpDao.getAll().firstOrNull { it.id == id } else null
+        val existingHelp = if (id > 0L) helpDao.findById(id) else null
         val entity = CustomerHelpEntity(
             id = id,
             customerName = resolvedName,
@@ -365,10 +629,113 @@ class BillingRepository(private val db: AppDatabase) {
             helpDescription = helpDescription.trim(),
             status = status.ifBlank { "OPEN" },
             createdAt = existingHelp?.createdAt ?: now,
-            updatedAt = now
+            updatedAt = now,
+            acceptedBy = existingHelp?.acceptedBy ?: "",
+            acceptedByName = existingHelp?.acceptedByName ?: "",
+            acceptedByPhone = existingHelp?.acceptedByPhone ?: "",
+            acceptedAt = existingHelp?.acceptedAt ?: 0L,
+            solvedAt = existingHelp?.solvedAt ?: 0L,
+            billId = existingHelp?.billId ?: ""
         )
-        helpDao.upsert(entity)
-        return entity
+        val rowId = helpDao.upsert(entity)
+        return if (entity.id > 0L) entity else entity.copy(id = rowId)
+    }
+
+    suspend fun acceptHelpRequest(
+        requestId: Long,
+        technician: UserSession,
+        acceptedAtMillis: Long = System.currentTimeMillis()
+    ): Result<CustomerHelpEntity> {
+        val current = helpDao.findById(requestId)
+            ?: return Result.failure(IllegalStateException("Help request not found"))
+        if (current.acceptedBy.isNotBlank() &&
+            !current.acceptedBy.equals(technician.username, ignoreCase = true)
+        ) {
+            return Result.failure(IllegalStateException("Request already accepted by another technician"))
+        }
+        val account = userDao.findByUsername(technician.username)
+        val techPhone = account?.phone?.takeIf { it.isNotBlank() } ?: technician.phone
+        val updated = current.copy(
+            status = "ACCEPTED",
+            acceptedBy = technician.username,
+            acceptedByName = technician.displayName.ifBlank { technician.username },
+            acceptedByPhone = techPhone,
+            acceptedAt = if (current.acceptedAt > 0L) current.acceptedAt else acceptedAtMillis,
+            updatedAt = acceptedAtMillis
+        )
+        helpDao.upsert(updated)
+        return Result.success(updated)
+    }
+
+    suspend fun markHelpSolved(
+        requestId: Long,
+        actorUsername: String,
+        isAdmin: Boolean,
+        nowMillis: Long = System.currentTimeMillis(),
+        enforce15MinWait: Boolean = true
+    ): Result<CustomerHelpEntity> {
+        val current = helpDao.findById(requestId)
+            ?: return Result.failure(IllegalStateException("Help request not found"))
+        if (!isAdmin && current.acceptedBy.isNotBlank() &&
+            !current.acceptedBy.equals(actorUsername, ignoreCase = true)
+        ) {
+            return Result.failure(IllegalStateException("Only the assigned technician can resolve this request"))
+        }
+        if (enforce15MinWait && !isAdmin && current.acceptedAt > 0L) {
+            val elapsed = nowMillis - current.acceptedAt
+            if (elapsed < HELP_SOLVE_WAIT_MS) {
+                val remMin = ((HELP_SOLVE_WAIT_MS - elapsed + 59_999L) / 60_000L).coerceAtLeast(1L)
+                return Result.failure(IllegalStateException("Please wait $remMin more min(s) before marking Solved"))
+            }
+        }
+        val updated = current.copy(
+            status = "SOLVED",
+            solvedAt = nowMillis,
+            updatedAt = nowMillis
+        )
+        helpDao.upsert(updated)
+        return Result.success(updated)
+    }
+
+    suspend fun markHelpNotSolved(
+        requestId: Long,
+        actorUsername: String,
+        isAdmin: Boolean,
+        nowMillis: Long = System.currentTimeMillis(),
+        enforce15MinWait: Boolean = true
+    ): Result<CustomerHelpEntity> {
+        val current = helpDao.findById(requestId)
+            ?: return Result.failure(IllegalStateException("Help request not found"))
+        if (!isAdmin && current.acceptedBy.isNotBlank() &&
+            !current.acceptedBy.equals(actorUsername, ignoreCase = true)
+        ) {
+            return Result.failure(IllegalStateException("Only the assigned technician can update this request"))
+        }
+        if (enforce15MinWait && !isAdmin && current.acceptedAt > 0L) {
+            val elapsed = nowMillis - current.acceptedAt
+            if (elapsed < HELP_SOLVE_WAIT_MS) {
+                val remMin = ((HELP_SOLVE_WAIT_MS - elapsed + 59_999L) / 60_000L).coerceAtLeast(1L)
+                return Result.failure(IllegalStateException("Please wait $remMin more min(s) before marking Not Solved"))
+            }
+        }
+        val updated = current.copy(
+            status = "NOT_SOLVED",
+            updatedAt = nowMillis
+        )
+        helpDao.upsert(updated)
+        return Result.success(updated)
+    }
+
+    suspend fun linkBillToHelpRequest(helpRequestId: Long, billId: String) {
+        val current = helpDao.findById(helpRequestId) ?: return
+        helpDao.upsert(
+            current.copy(
+                billId = billId,
+                status = if (current.status == "OPEN" || current.status == "ACCEPTED") "SOLVED" else current.status,
+                solvedAt = if (current.solvedAt == 0L) System.currentTimeMillis() else current.solvedAt,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
     }
 
     suspend fun updateHelpStatus(request: CustomerHelpEntity, newStatus: String) {
@@ -382,23 +749,25 @@ class BillingRepository(private val db: AppDatabase) {
 
     suspend fun deleteHelpRequest(id: Long) = helpDao.deleteById(id)
 
-    suspend fun addProduct(name: String, unit: String, rate: Double) {
+    suspend fun addProduct(name: String, unit: String, rate: Double, folder: String = "General") {
         productDao.upsert(
             ProductEntity(
                 name = name.trim(),
                 unit = unit.trim().ifEmpty { "Nos" },
-                defaultRate = rate.coerceAtLeast(0.0)
+                defaultRate = rate.coerceAtLeast(0.0),
+                folder = folder.trim().ifEmpty { "General" }
             )
         )
     }
 
-    suspend fun updateProduct(id: Long, name: String, unit: String, rate: Double) {
+    suspend fun updateProduct(id: Long, name: String, unit: String, rate: Double, folder: String = "General") {
         productDao.upsert(
             ProductEntity(
                 id = id,
                 name = name.trim(),
                 unit = unit.trim().ifEmpty { "Nos" },
-                defaultRate = rate.coerceAtLeast(0.0)
+                defaultRate = rate.coerceAtLeast(0.0),
+                folder = folder.trim().ifEmpty { "General" }
             )
         )
     }
@@ -406,12 +775,30 @@ class BillingRepository(private val db: AppDatabase) {
     suspend fun deleteProduct(id: Long) = productDao.deleteById(id)
 
     suspend fun saveCompanySettings(settings: CompanySettings) {
+        val entries = mutableListOf(
+            AppConfigEntity(KEY_COMPANY_NAME, settings.companyName.trim().ifEmpty { DEFAULT_COMPANY_NAME }),
+            AppConfigEntity(KEY_COMPANY_MOBILE, settings.mobile.trim().ifEmpty { DEFAULT_COMPANY_MOBILE }),
+            AppConfigEntity(KEY_COMPANY_EMAIL, settings.email.trim().ifEmpty { DEFAULT_COMPANY_EMAIL }),
+            AppConfigEntity(KEY_COMPANY_ADDRESS, settings.address.trim().ifEmpty { DEFAULT_COMPANY_ADDRESS })
+        )
+        if (settings.authorisedSignatureBase64.isNotEmpty()) {
+            entries.add(AppConfigEntity(KEY_AUTHORISED_SIGNATURE, settings.authorisedSignatureBase64))
+        }
+        if (settings.logoBase64.isNotEmpty()) {
+            entries.add(AppConfigEntity(KEY_COMPANY_LOGO, settings.logoBase64))
+        }
+        configDao.setAll(entries)
+    }
+
+    suspend fun saveVoiceAndNoteSettings(settings: VoiceAndNoteSettings) {
         configDao.setAll(
             listOf(
-                AppConfigEntity(KEY_COMPANY_NAME, settings.companyName.trim().ifEmpty { DEFAULT_COMPANY_NAME }),
-                AppConfigEntity(KEY_COMPANY_MOBILE, settings.mobile.trim().ifEmpty { DEFAULT_COMPANY_MOBILE }),
-                AppConfigEntity(KEY_COMPANY_EMAIL, settings.email.trim().ifEmpty { DEFAULT_COMPANY_EMAIL }),
-                AppConfigEntity(KEY_COMPANY_ADDRESS, settings.address.trim().ifEmpty { DEFAULT_COMPANY_ADDRESS })
+                AppConfigEntity(KEY_HEADER_NOTE, settings.headerNote.trim()),
+                AppConfigEntity(KEY_VOICE_LOGIN, settings.loginVoice.trim()),
+                AppConfigEntity(KEY_VOICE_POST_LOGIN, settings.postLoginVoice.trim()),
+                AppConfigEntity(KEY_VOICE_BILL_START, settings.billGeneratingVoice.trim()),
+                AppConfigEntity(KEY_VOICE_BILL_DONE, settings.billCompletedVoice.trim()),
+                AppConfigEntity(KEY_VOICE_MODEL_ID, settings.voiceModelId.trim().ifEmpty { VoicePreset.CLEAR.id })
             )
         )
     }
@@ -437,12 +824,16 @@ class BillingRepository(private val db: AppDatabase) {
         configDao.setValue(AppConfigEntity(KEY_AUTHORISED_SIGNATURE, base64))
     }
 
+    suspend fun saveCompanyLogoBase64(base64: String) {
+        configDao.setValue(AppConfigEntity(KEY_COMPANY_LOGO, base64))
+    }
+
     suspend fun setSoundEnabled(enabled: Boolean) {
         configDao.setValue(AppConfigEntity(KEY_SOUND_ENABLED, if (enabled) "1" else "0"))
     }
 
-    suspend fun setLanguage(language: AppLanguage) {
-        configDao.setValue(AppConfigEntity(KEY_LANGUAGE, language.code))
+    suspend fun setLanguage(@Suppress("UNUSED_PARAMETER") language: AppLanguage) {
+        configDao.setValue(AppConfigEntity(KEY_LANGUAGE, "en"))
     }
 
     fun computeNextInvoiceNo(bills: List<BillEntity>): String {
@@ -466,9 +857,11 @@ class BillingRepository(private val db: AppDatabase) {
         val users = userDao.getAll()
         val allConfigs = configDao.getAll()
         val cfgMap = allConfigs.associate { it.key to it.value }
+        val helpList = helpDao.getAll()
+        val settlementList = settlementDao.getAll()
 
         val root = JSONObject()
-        root.put("schemaVersion", 4)
+        root.put("schemaVersion", 5)
         root.put("exportedAt", System.currentTimeMillis())
         root.put("bills", JSONArray().apply {
             bills.forEach { b ->
@@ -493,6 +886,10 @@ class BillingRepository(private val db: AppDatabase) {
                     put("extraChargeAmount", b.extraChargeAmount)
                     put("staffRating", b.staffRating)
                     put("staffReviewNote", b.staffReviewNote)
+                    put("documentType", b.documentType)
+                    put("isHelpBill", b.isHelpBill)
+                    put("helpRequestId", b.helpRequestId)
+                    put("quotationNote", b.quotationNote)
                 })
             }
         })
@@ -513,6 +910,7 @@ class BillingRepository(private val db: AppDatabase) {
                     put("name", p.name)
                     put("unit", p.unit)
                     put("rate", p.defaultRate)
+                    put("folder", p.folder)
                 })
             }
         })
@@ -522,6 +920,7 @@ class BillingRepository(private val db: AppDatabase) {
             put("email", cfgMap[KEY_COMPANY_EMAIL] ?: DEFAULT_COMPANY_EMAIL)
             put("address", cfgMap[KEY_COMPANY_ADDRESS] ?: DEFAULT_COMPANY_ADDRESS)
             put("authorisedSignature", cfgMap[KEY_AUTHORISED_SIGNATURE] ?: "")
+            put("logo", cfgMap[KEY_COMPANY_LOGO] ?: "")
         })
         root.put("upi", JSONObject().apply {
             put("id", cfgMap[KEY_UPI_ID] ?: "")
@@ -539,14 +938,16 @@ class BillingRepository(private val db: AppDatabase) {
                     put("username", u.username)
                     put("displayName", u.displayName)
                     put("passwordHash", u.passwordHash)
-                    put("role", u.role)
+                    put("role", normalizeRole(u.role))
+                    put("phone", u.phone)
+                    put("photoBase64", u.photoBase64)
                 })
             }
         })
-        val helpList = helpDao.getAll()
         root.put("helpRequests", JSONArray().apply {
             helpList.forEach { h ->
                 put(JSONObject().apply {
+                    put("id", h.id)
                     put("customerName", h.customerName)
                     put("phone", h.phone)
                     put("address", h.address)
@@ -555,6 +956,23 @@ class BillingRepository(private val db: AppDatabase) {
                     put("status", h.status)
                     put("createdAt", h.createdAt)
                     put("updatedAt", h.updatedAt)
+                    put("acceptedBy", h.acceptedBy)
+                    put("acceptedByName", h.acceptedByName)
+                    put("acceptedByPhone", h.acceptedByPhone)
+                    put("acceptedAt", h.acceptedAt)
+                    put("solvedAt", h.solvedAt)
+                    put("billId", h.billId)
+                })
+            }
+        })
+        root.put("settlements", JSONArray().apply {
+            settlementList.forEach { s ->
+                put(JSONObject().apply {
+                    put("technicianUsername", s.technicianUsername)
+                    put("amount", s.amount)
+                    put("note", s.note)
+                    put("recordedBy", s.recordedBy)
+                    put("createdAt", s.createdAt)
                 })
             }
         })
@@ -572,6 +990,7 @@ class BillingRepository(private val db: AppDatabase) {
             var productsCount = 0
             var accountsCount = 0
             var helpCount = 0
+            var settlementsCount = 0
 
             db.withTransaction {
                 billDao.deleteAll()
@@ -604,7 +1023,11 @@ class BillingRepository(private val db: AppDatabase) {
                             extraChargeType = obj.optString("extraChargeType", "NONE"),
                             extraChargeAmount = obj.optDouble("extraChargeAmount", 0.0),
                             staffRating = obj.optInt("staffRating", 0).coerceIn(0, 5),
-                            staffReviewNote = obj.optString("staffReviewNote", "")
+                            staffReviewNote = obj.optString("staffReviewNote", ""),
+                            documentType = obj.optString("documentType", DocumentType.BILL.name),
+                            isHelpBill = obj.optBoolean("isHelpBill", false),
+                            helpRequestId = obj.optLong("helpRequestId", 0L),
+                            quotationNote = obj.optString("quotationNote", "")
                         )
                     )
                     billsCount++
@@ -640,7 +1063,8 @@ class BillingRepository(private val db: AppDatabase) {
                             ProductEntity(
                                 name = name,
                                 unit = obj.optString("unit", "Nos"),
-                                defaultRate = obj.optDouble("rate", 0.0)
+                                defaultRate = obj.optDouble("rate", 0.0),
+                                folder = obj.optString("folder", "").ifBlank { inferFolderForName(name) }
                             )
                         )
                     }
@@ -662,6 +1086,9 @@ class BillingRepository(private val db: AppDatabase) {
                     if (s.has("authorisedSignature")) {
                         saveAuthorisedSignatureBase64(s.optString("authorisedSignature", ""))
                     }
+                    if (s.has("logo")) {
+                        saveCompanyLogoBase64(s.optString("logo", ""))
+                    }
                 }
 
                 root.optJSONObject("upi")?.let { u ->
@@ -675,7 +1102,6 @@ class BillingRepository(private val db: AppDatabase) {
                     saveFallbackQrBase64(root.optString("qr", ""))
                 }
 
-                // Restore full appConfig map (includes final_code_hash, sound_enabled, language, seeded, etc.)
                 root.optJSONObject("appConfig")?.let { cfgObj ->
                     val entries = mutableListOf<AppConfigEntity>()
                     val keys = cfgObj.keys()
@@ -691,14 +1117,22 @@ class BillingRepository(private val db: AppDatabase) {
                 root.optJSONArray("accounts")?.let { accArr ->
                     if (accArr.length() > 0) {
                         userDao.deleteAll()
+                        var adminImported = false
                         for (i in 0 until accArr.length()) {
                             val u = accArr.getJSONObject(i)
+                            val normalizedRole = normalizeRole(u.optString("role", "technician"))
+                            if (normalizedRole == "admin") {
+                                if (adminImported) continue
+                                adminImported = true
+                            }
                             userDao.upsert(
                                 UserAccountEntity(
                                     username = u.getString("username"),
                                     displayName = u.optString("displayName", u.getString("username")),
                                     passwordHash = u.getString("passwordHash"),
-                                    role = u.optString("role", "staff")
+                                    role = normalizedRole,
+                                    phone = u.optString("phone", ""),
+                                    photoBase64 = u.optString("photoBase64", "")
                                 )
                             )
                             accountsCount++
@@ -712,6 +1146,7 @@ class BillingRepository(private val db: AppDatabase) {
                         val h = helpArr.getJSONObject(i)
                         helpDao.upsert(
                             CustomerHelpEntity(
+                                id = h.optLong("id", 0L),
                                 customerName = h.optString("customerName", ""),
                                 phone = h.optString("phone", ""),
                                 address = h.optString("address", ""),
@@ -719,10 +1154,33 @@ class BillingRepository(private val db: AppDatabase) {
                                 helpDescription = h.optString("helpDescription", ""),
                                 status = h.optString("status", "OPEN"),
                                 createdAt = h.optLong("createdAt", System.currentTimeMillis()),
-                                updatedAt = h.optLong("updatedAt", System.currentTimeMillis())
+                                updatedAt = h.optLong("updatedAt", System.currentTimeMillis()),
+                                acceptedBy = h.optString("acceptedBy", ""),
+                                acceptedByName = h.optString("acceptedByName", ""),
+                                acceptedByPhone = h.optString("acceptedByPhone", ""),
+                                acceptedAt = h.optLong("acceptedAt", 0L),
+                                solvedAt = h.optLong("solvedAt", 0L),
+                                billId = h.optString("billId", "")
                             )
                         )
                         helpCount++
+                    }
+                }
+
+                root.optJSONArray("settlements")?.let { setArr ->
+                    settlementDao.deleteAll()
+                    for (i in 0 until setArr.length()) {
+                        val s = setArr.getJSONObject(i)
+                        settlementDao.insert(
+                            TechnicianSettlementEntity(
+                                technicianUsername = s.optString("technicianUsername", ""),
+                                amount = s.optDouble("amount", 0.0),
+                                note = s.optString("note", ""),
+                                recordedBy = s.optString("recordedBy", "Admin"),
+                                createdAt = s.optLong("createdAt", System.currentTimeMillis())
+                            )
+                        )
+                        settlementsCount++
                     }
                 }
             }
@@ -733,7 +1191,8 @@ class BillingRepository(private val db: AppDatabase) {
                     customersCount = customersCount,
                     productsCount = productsCount,
                     accountsCount = accountsCount,
-                    helpCount = helpCount
+                    helpCount = helpCount,
+                    settlementsCount = settlementsCount
                 )
             )
         } catch (e: Exception) {
@@ -742,18 +1201,30 @@ class BillingRepository(private val db: AppDatabase) {
     }
 
     companion object {
+        const val HELP_SOLVE_WAIT_MS = 15 * 60 * 1000L
+
         const val KEY_SEEDED = "seeded_v1"
         const val KEY_COMPANY_NAME = "company_name"
         const val KEY_COMPANY_MOBILE = "company_mobile"
         const val KEY_COMPANY_EMAIL = "company_email"
         const val KEY_COMPANY_ADDRESS = "company_address"
         const val KEY_AUTHORISED_SIGNATURE = "authorised_signature_b64"
+        const val KEY_COMPANY_LOGO = "company_logo_b64"
         const val KEY_UPI_ID = "upi_id"
         const val KEY_UPI_NAME = "upi_name"
         const val KEY_FALLBACK_QR = "fallback_qr"
         const val KEY_FINAL_CODE_HASH = "final_code_hash"
         const val KEY_SOUND_ENABLED = "sound_enabled"
         const val KEY_LANGUAGE = "language"
+        const val KEY_HEADER_NOTE = "header_marquee_note"
+        const val KEY_VOICE_LOGIN = "voice_login_script"
+        const val KEY_VOICE_POST_LOGIN = "voice_post_login_script"
+        const val KEY_VOICE_BILL_START = "voice_bill_start_script"
+        const val KEY_VOICE_BILL_DONE = "voice_bill_done_script"
+        const val KEY_VOICE_MODEL_ID = "voice_model_id"
+        const val KEY_DEVICE_AUTH_USER_PREFIX = "device_auth_user_"
+        const val KEY_LOGIN_FAILED_ATTEMPTS = "login_failed_attempts"
+        const val KEY_LOGIN_LOCK_UNTIL_MS = "login_lock_until_ms"
 
         const val DEFAULT_ADMIN_RECOVERY_PASSWORD = "Manoj2007"
         const val DEFAULT_COMPANY_NAME = "TOTAL SOLUTION ENTERPRISES"
@@ -762,14 +1233,51 @@ class BillingRepository(private val db: AppDatabase) {
         const val DEFAULT_COMPANY_ADDRESS = "B1, Santa Anna Holiday Homes, Naika Vaddo, Calangute, North Goa 403516."
         const val DEFAULT_PAYEE_NAME = "Manoj Kumar Saha"
 
+        fun normalizeRole(raw: String): String {
+            return when (raw.trim().lowercase(Locale.ROOT)) {
+                "admin" -> "admin"
+                "super_admin", "superadmin" -> "super_admin"
+                else -> "technician"
+            }
+        }
+
+        private fun inferFolderForName(name: String): String {
+            val low = name.lowercase(Locale.ROOT)
+            return when {
+                low.contains("camera") -> "CCTV Cameras"
+                low.contains("dvr") || low.contains("nvr") -> "DVR & NVR"
+                low.contains("hard disk") || low.contains("smps") || low.contains("power") -> "Storage & Power"
+                low.contains("cable") || low.contains("connector") || low.contains("box") || low.contains("rack") || low.contains("hdmi") -> "Cables & Accessories"
+                low.contains("installation") || low.contains("service") || low.contains("support") -> "Services"
+                else -> "General"
+            }
+        }
+
         val STARTER_PRODUCTS = listOf(
-            "2MP HD Dome Camera", "2MP HD Bullet Camera", "5MP HD Dome Camera", "5MP HD Bullet Camera",
-            "IP Camera 2MP", "IP Camera 4MP", "4 Channel DVR", "8 Channel DVR", "16 Channel DVR",
-            "4 Channel NVR", "8 Channel NVR", "1TB Surveillance Hard Disk", "2TB Surveillance Hard Disk",
-            "4TB Surveillance Hard Disk", "4 Ch Power Supply (SMPS)", "8 Ch Power Supply (SMPS)",
-            "3+1 CCTV Cable", "CAT6 Networking Cable", "BNC Connector", "DC Pin Connector",
-            "PVC Junction Box (4x4)", "DVR Rack / Cabinet", "HDMI Cable",
-            "Camera Installation & Configuration Charges"
+            ProductEntity(name = "2MP HD Dome Camera", unit = "Nos", defaultRate = 0.0, folder = "CCTV Cameras"),
+            ProductEntity(name = "2MP HD Bullet Camera", unit = "Nos", defaultRate = 0.0, folder = "CCTV Cameras"),
+            ProductEntity(name = "5MP HD Dome Camera", unit = "Nos", defaultRate = 0.0, folder = "CCTV Cameras"),
+            ProductEntity(name = "5MP HD Bullet Camera", unit = "Nos", defaultRate = 0.0, folder = "CCTV Cameras"),
+            ProductEntity(name = "IP Camera 2MP", unit = "Nos", defaultRate = 0.0, folder = "CCTV Cameras"),
+            ProductEntity(name = "IP Camera 4MP", unit = "Nos", defaultRate = 0.0, folder = "CCTV Cameras"),
+            ProductEntity(name = "4 Channel DVR", unit = "Nos", defaultRate = 0.0, folder = "DVR & NVR"),
+            ProductEntity(name = "8 Channel DVR", unit = "Nos", defaultRate = 0.0, folder = "DVR & NVR"),
+            ProductEntity(name = "16 Channel DVR", unit = "Nos", defaultRate = 0.0, folder = "DVR & NVR"),
+            ProductEntity(name = "4 Channel NVR", unit = "Nos", defaultRate = 0.0, folder = "DVR & NVR"),
+            ProductEntity(name = "8 Channel NVR", unit = "Nos", defaultRate = 0.0, folder = "DVR & NVR"),
+            ProductEntity(name = "1TB Surveillance Hard Disk", unit = "Nos", defaultRate = 0.0, folder = "Storage & Power"),
+            ProductEntity(name = "2TB Surveillance Hard Disk", unit = "Nos", defaultRate = 0.0, folder = "Storage & Power"),
+            ProductEntity(name = "4TB Surveillance Hard Disk", unit = "Nos", defaultRate = 0.0, folder = "Storage & Power"),
+            ProductEntity(name = "4 Ch Power Supply (SMPS)", unit = "Nos", defaultRate = 0.0, folder = "Storage & Power"),
+            ProductEntity(name = "8 Ch Power Supply (SMPS)", unit = "Nos", defaultRate = 0.0, folder = "Storage & Power"),
+            ProductEntity(name = "3+1 CCTV Cable", unit = "Mtr", defaultRate = 0.0, folder = "Cables & Accessories"),
+            ProductEntity(name = "CAT6 Networking Cable", unit = "Mtr", defaultRate = 0.0, folder = "Cables & Accessories"),
+            ProductEntity(name = "BNC Connector", unit = "Nos", defaultRate = 0.0, folder = "Cables & Accessories"),
+            ProductEntity(name = "DC Pin Connector", unit = "Nos", defaultRate = 0.0, folder = "Cables & Accessories"),
+            ProductEntity(name = "PVC Junction Box (4x4)", unit = "Nos", defaultRate = 0.0, folder = "Cables & Accessories"),
+            ProductEntity(name = "DVR Rack / Cabinet", unit = "Nos", defaultRate = 0.0, folder = "Cables & Accessories"),
+            ProductEntity(name = "HDMI Cable", unit = "Nos", defaultRate = 0.0, folder = "Cables & Accessories"),
+            ProductEntity(name = "Camera Installation & Configuration Charges", unit = "Job", defaultRate = 0.0, folder = "Services")
         )
 
         fun extractCustomerPhonesDigits(customer: CustomerEntity): List<String> {

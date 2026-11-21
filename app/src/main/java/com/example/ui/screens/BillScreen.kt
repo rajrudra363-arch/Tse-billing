@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -10,6 +11,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -40,17 +42,25 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.Summarize
+import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -72,6 +82,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -93,16 +104,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import com.example.data.AppLanguage
+import com.example.data.BillEntity
+import com.example.data.BillingRepository
 import com.example.data.ChargeType
 import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
+import com.example.data.DocumentType
 import com.example.data.InvoiceItem
 import com.example.data.PaymentMode
 import com.example.data.ProductEntity
@@ -115,9 +126,13 @@ import com.example.ui.components.QrCodeImage
 import com.example.ui.components.bringIntoViewOnFocus
 import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.theme.AmberWarn
+import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.GreenPaid
+import com.example.ui.theme.GreenPaidBg
 import com.example.ui.theme.NavyPrimary
 import com.example.ui.theme.RedDue
+import com.example.ui.theme.RedDueBg
+import com.example.ui.theme.RedDueDark
 import com.example.ui.theme.TealAccent
 import com.example.util.InvoicePrintPayload
 import com.example.util.LocationHelper
@@ -131,13 +146,15 @@ fun BillScreen(
     draft: BillDraft,
     products: List<ProductEntity>,
     customers: List<CustomerEntity>,
+    allBills: List<BillEntity>,
     company: CompanySettings,
     upi: UpiSettings,
-    language: AppLanguage,
     currentUser: UserSession,
-    finalModalVisible: Boolean,
-    finalModalError: String,
+    isNightClosed: Boolean,
+    summaryError: String,
     exportOptionsPayload: InvoicePrintPayload?,
+    onSetDocumentType: (DocumentType) -> Unit,
+    onQuotationNoteChange: (String) -> Unit,
     onCustomerNameChange: (String) -> Unit,
     onCustomerSelected: (CustomerEntity) -> Unit,
     onCustomerDetailsChange: (String) -> Unit,
@@ -145,6 +162,7 @@ fun BillScreen(
     onInvoiceNoChange: (String) -> Unit,
     onInvoiceDateChange: (String) -> Unit,
     onAddItem: () -> Unit,
+    onSelectFolderForRow: (Int, String) -> Unit,
     onSelectProductForRow: (Int, ProductEntity) -> Unit,
     onUpdateItem: (Int, String?, Double?, String?, Double?) -> Unit,
     onRemoveItem: (Int) -> Unit,
@@ -153,28 +171,53 @@ fun BillScreen(
     onDiscountChange: (String) -> Unit,
     onPaidAmountChange: (String) -> Unit,
     onPaymentModeChange: (PaymentMode) -> Unit,
-    onSignatureChanged: (android.graphics.Bitmap?) -> Unit,
+    onSignatureChanged: (Bitmap?) -> Unit,
     onCustomQrTextChange: (String) -> Unit,
+    onStaffRatingChange: (Int) -> Unit,
+    onStaffReviewChange: (String) -> Unit,
     onToggleSheetPreview: (Boolean) -> Unit,
     onResetBill: () -> Unit,
-    onSaveBill: () -> Unit,
-    onOpenFinalCodeModal: () -> Unit,
-    onCloseFinalCodeModal: () -> Unit,
-    onConfirmFinalBill: (String) -> Unit,
+    onOpenSummaryModal: () -> Unit,
+    onCloseSummaryModal: () -> Unit,
+    onRequestGenerateWithDeviceAuth: () -> Unit,
     onDismissExportOptions: () -> Unit,
     onPrintA4: (InvoicePrintPayload) -> Unit,
     onSavePdf: (InvoicePrintPayload) -> Unit,
     onSharePdf: (InvoicePrintPayload) -> Unit,
+    onSavePhoto: (InvoicePrintPayload) -> Unit,
+    onSharePhoto: (InvoicePrintPayload) -> Unit,
     onOpenPaymentAndReview: (InvoicePrintPayload) -> Unit = {}
 ) {
-    val isAdmin = currentUser.isAdmin && !currentUser.isStaff
-    val isHi = language == AppLanguage.HI
+    val isAdmin = currentUser.isAdmin && !currentUser.isSuperAdmin
+    val isQuotation = draft.documentType == DocumentType.QUOTATION
+    var mobileSearchText by remember { mutableStateOf("") }
     var customerDropdownOpen by remember { mutableStateOf(false) }
     var focusNextOnIndex by remember { mutableStateOf<Int?>(null) }
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
     var locationBusy by remember { mutableStateOf(false) }
+
+    val matchedCustomers = remember(mobileSearchText, customers) {
+        if (mobileSearchText.filter { it.isDigit() }.length >= 4 || mobileSearchText.trim().length >= 3) {
+            BillingRepository.findMatchingCustomersByPhone(customers, mobileSearchText)
+        } else emptyList()
+    }
+
+    // Customer history summary based on matched phone / details / customer name
+    val customerHistoryBills = remember(allBills, draft.customerName, draft.customerDetails) {
+        val searchDigits = draft.customerDetails.filter { it.isDigit() }.takeLast(10)
+        val cleanName = draft.customerName.trim()
+        if (cleanName.isBlank() && searchDigits.length < 5) emptyList()
+        else {
+            allBills.filter { b ->
+                DocumentType.fromString(b.documentType) == DocumentType.BILL && (
+                    (searchDigits.length >= 5 && b.customerDetails.filter { it.isDigit() }.endsWith(searchDigits.takeLast(5))) ||
+                        (cleanName.isNotBlank() && b.customerName.equals(cleanName, ignoreCase = true))
+                    )
+            }
+        }
+    }
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -204,7 +247,39 @@ fun BillScreen(
     ) {
         item { Spacer(Modifier.height(4.dp)) }
 
-        // Action Bar Card
+        if (isNightClosed) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = RedDueBg),
+                    border = BorderStroke(1.5.dp, RedDue),
+                    modifier = Modifier.fillMaxWidth().testTag("night_closed_banner")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(Icons.Default.NightsStay, contentDescription = null, tint = RedDueDark)
+                        Column {
+                            Text(
+                                text = "Billing System Closed (12:01 AM – 6:00 AM)",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Black,
+                                color = RedDueDark
+                            )
+                            Text(
+                                text = "Bill and Quotation generation resumes automatically at 6:00 AM.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF7F1D1D)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Action Bar & Document Type Toggle
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -220,15 +295,16 @@ fun BillScreen(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = when {
-                                    draft.editingId != null -> if (isHi) "बिल एडिट करें" else "Edit Invoice"
-                                    isHi -> "नया बिल बनाएं"
-                                    else -> "Create Invoice"
+                                    draft.editingId != null && isQuotation -> "Edit Quotation"
+                                    draft.editingId != null -> "Edit Invoice"
+                                    isQuotation -> "Create Quotation"
+                                    else -> "Create New Bill"
                                 },
                                 style = MaterialTheme.typography.titleLarge,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "Bill by: ${currentUser.displayName} (@${currentUser.username}) · ${if (isAdmin) "Admin" else "Staff"}",
+                                text = "Created by: ${currentUser.displayName} (@${currentUser.username}) · ${currentUser.roleDisplayLabel}",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = TealAccent,
                                 modifier = Modifier.testTag("bill_creator_badge")
@@ -240,7 +316,7 @@ fun BillScreen(
                                 clearFocusAndHideToolbar(focusManager, textToolbar)
                                 onToggleSheetPreview(!draft.showSheetPreview)
                             },
-                            label = { Text(if (draft.showSheetPreview) "Hide A4 Preview" else "A4 Preview") },
+                            label = { Text(if (draft.showSheetPreview) "Hide A4" else "A4 Preview") },
                             leadingIcon = {
                                 Icon(
                                     if (draft.showSheetPreview) Icons.Default.VisibilityOff else Icons.Default.Visibility,
@@ -250,6 +326,49 @@ fun BillScreen(
                             },
                             modifier = Modifier.testTag("toggle_sheet_preview")
                         )
+                    }
+
+                    // Document Type Switch (Tax Invoice vs Quotation)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        DocumentType.entries.forEach { docType ->
+                            FilterChip(
+                                selected = draft.documentType == docType,
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    onSetDocumentType(docType)
+                                },
+                                label = { Text(docType.label, fontWeight = FontWeight.Bold) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("doc_type_${docType.name}")
+                            )
+                        }
+                    }
+
+                    if (draft.isHelpBill && !isQuotation) {
+                        Surface(
+                            color = Color(0xFFE0F2FE),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, TealAccent),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.SupportAgent, contentDescription = null, tint = TealAccent)
+                                Text(
+                                    text = "Customer Care & Support Invoice (#${draft.helpRequestId}) — Special Support Banner applied.",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF0B4F6C)
+                                )
+                            }
+                        }
                     }
 
                     FlowRow(
@@ -269,12 +388,13 @@ fun BillScreen(
                         ) {
                             Icon(Icons.Default.Add, contentDescription = null)
                             Spacer(Modifier.width(4.dp))
-                            Text(if (isHi) "आइटम (${draft.items.size}/15)" else "Add Item (${draft.items.size}/15)")
+                            Text("Add Item (${draft.items.size}/15)")
                         }
 
                         Button(
                             onClick = {
                                 clearFocusAndHideToolbar(focusManager, textToolbar)
+                                mobileSearchText = ""
                                 onResetBill()
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = AmberWarn),
@@ -282,33 +402,7 @@ fun BillScreen(
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null)
                             Spacer(Modifier.width(4.dp))
-                            Text(if (isHi) "नया बिल" else "New Bill")
-                        }
-
-                        Button(
-                            onClick = {
-                                clearFocusAndHideToolbar(focusManager, textToolbar)
-                                onSaveBill()
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
-                            modifier = Modifier.testTag("save_bill_button")
-                        ) {
-                            Icon(Icons.Default.Save, contentDescription = null)
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (isHi) "सेव करें" else "Save Bill")
-                        }
-
-                        Button(
-                            onClick = {
-                                clearFocusAndHideToolbar(focusManager, textToolbar)
-                                onOpenFinalCodeModal()
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
-                            modifier = Modifier.testTag("final_print_button")
-                        ) {
-                            Icon(Icons.Default.Print, contentDescription = null)
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (isHi) "प्रिंट / PDF (A4)" else "Print / PDF (A4)")
+                            Text("New")
                         }
                     }
                 }
@@ -324,7 +418,7 @@ fun BillScreen(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = "LIVE A4 INVOICE SHEET PREVIEW",
+                        text = if (isQuotation) "LIVE A4 QUOTATION PREVIEW" else "LIVE A4 INVOICE SHEET PREVIEW",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
@@ -337,22 +431,102 @@ fun BillScreen(
             }
         }
 
-        // Customer & Invoice Metadata Card
+        // Step 1 & 2: Customer Mobile Search, Details & History Card
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = if (isHi) "ग्राहक और बिल विवरण" else "Customer & Invoice Details",
-                        style = MaterialTheme.typography.titleMedium
+                    Text("Step 1: Search Customer Mobile & Details", style = MaterialTheme.typography.titleMedium)
+
+                    OutlinedTextField(
+                        value = mobileSearchText,
+                        onValueChange = { mobileSearchText = it },
+                        label = { Text("Search by Mobile Number (or last 5 digits)") },
+                        placeholder = { Text("Enter at least 5 digits to auto-fill customer...") },
+                        leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null, tint = TealAccent) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("bill_mobile_search")
                     )
+
+                    if (matchedCustomers.isNotEmpty()) {
+                        Surface(
+                            color = GreenPaidBg,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(
+                                    text = "Matching Customer(s) — Tap to Auto-Fill:",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = GreenPaid,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    matchedCustomers.forEach { c ->
+                                        FilterChip(
+                                            selected = draft.customerName.equals(c.name, ignoreCase = true),
+                                            onClick = {
+                                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                                onCustomerSelected(c)
+                                            },
+                                            label = { Text("${c.name} (${c.phone})") },
+                                            modifier = Modifier.testTag("bill_customer_match_${c.id}")
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (customerHistoryBills.isNotEmpty()) {
+                        val dueCount = customerHistoryBills.count { it.dueAmount > 0.009 }
+                        val paidCount = customerHistoryBills.size - dueCount
+                        val totalDue = customerHistoryBills.sumOf { it.dueAmount }
+                        val visitingTechs = customerHistoryBills.map { it.createdBy }.filter { it.isNotBlank() }.distinct()
+                        Surface(
+                            color = if (totalDue > 0.009) RedDueBg else Color(0xFFE1ECF4),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, if (totalDue > 0.009) RedDue else TealAccent),
+                            modifier = Modifier.fillMaxWidth().testTag("bill_customer_history_card")
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Icon(
+                                        Icons.Default.History,
+                                        contentDescription = null,
+                                        tint = if (totalDue > 0.009) RedDueDark else NavyPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = "Customer History: $paidCount Paid · $dueCount Due · Total Due: ₹${String.format(Locale.US, "%.2f", totalDue)}",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (totalDue > 0.009) RedDueDark else NavyPrimary
+                                    )
+                                }
+                                if (visitingTechs.isNotEmpty()) {
+                                    Text(
+                                        text = "Visiting Technician(s): ${visitingTechs.joinToString(", ") { "@$it" }}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF1E293B)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     Box(modifier = Modifier.fillMaxWidth()) {
                         OutlinedTextField(
                             value = draft.customerName,
                             onValueChange = onCustomerNameChange,
-                            label = { Text(if (isHi) "ग्राहक का नाम" else "Customer Name") },
+                            label = { Text("Customer Name") },
                             trailingIcon = {
                                 if (customers.isNotEmpty()) {
                                     IconButton(onClick = {
@@ -372,7 +546,7 @@ fun BillScreen(
                         ) {
                             customers.forEach { c ->
                                 DropdownMenuItem(
-                                    text = { Text("${c.name} — ${c.details}", maxLines = 1) },
+                                    text = { Text("${c.name} (${c.phone})", maxLines = 1) },
                                     onClick = {
                                         onCustomerSelected(c)
                                         customerDropdownOpen = false
@@ -386,14 +560,14 @@ fun BillScreen(
                         OutlinedTextField(
                             value = draft.invoiceNo,
                             onValueChange = onInvoiceNoChange,
-                            label = { Text(if (isHi) "बिल नंबर" else "Invoice No.") },
+                            label = { Text(if (isQuotation) "Quotation No." else "Invoice No.") },
                             singleLine = true,
                             modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("bill_invoice_no")
                         )
                         OutlinedTextField(
                             value = draft.date,
                             onValueChange = onInvoiceDateChange,
-                            label = { Text(if (isHi) "तारीख (YYYY-MM-DD)" else "Date (YYYY-MM-DD)") },
+                            label = { Text("Date (YYYY-MM-DD)") },
                             singleLine = true,
                             modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("bill_invoice_date")
                         )
@@ -402,7 +576,7 @@ fun BillScreen(
                     OutlinedTextField(
                         value = draft.customerDetails,
                         onValueChange = onCustomerDetailsChange,
-                        label = { Text(if (isHi) "पता / मोबाइल नंबर" else "Customer Address / Mobile") },
+                        label = { Text("Customer Address & Mobile Number") },
                         minLines = 2,
                         modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("bill_customer_details")
                     )
@@ -410,7 +584,7 @@ fun BillScreen(
                     OutlinedTextField(
                         value = draft.customerLocationUrl,
                         onValueChange = onCustomerLocationUrlChange,
-                        label = { Text(if (isHi) "गूगल मैप्स लोकेशन (वैकल्पिक)" else "Google Maps Location Link / GPS (Optional)") },
+                        label = { Text("Google Maps Location Link / GPS (Optional)") },
                         leadingIcon = { Icon(Icons.Default.LocationOn, contentDescription = null, tint = TealAccent) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("bill_customer_location")
@@ -466,7 +640,7 @@ fun BillScreen(
             }
         }
 
-        // Line Items
+        // Step 2: Line Items with Folder Selector -> Product Selector
         itemsIndexed(draft.items, key = { _, item -> item.localId }) { index, item ->
             InvoiceItemEditorCard(
                 index = index,
@@ -487,13 +661,14 @@ fun BillScreen(
                         }
                     }
                 },
+                onSelectFolder = { folder -> onSelectFolderForRow(index, folder) },
                 onSelectProduct = { prod -> onSelectProductForRow(index, prod) },
                 onUpdate = { desc, qty, unit, rate -> onUpdateItem(index, desc, qty, unit, rate) },
                 onDelete = { onRemoveItem(index) }
             )
         }
 
-        // Service & Installation Charges Card
+        // Service / Installation / Customer Care & Support Charges
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -502,17 +677,10 @@ fun BillScreen(
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Icon(Icons.Default.Build, contentDescription = null, tint = TealAccent)
-                        Text(
-                            text = if (isHi) "सर्विस और इंस्टॉलेशन चार्ज" else "Service / Installation Charges",
-                            style = MaterialTheme.typography.titleMedium
-                        )
+                        Text("Service / Installation / Support Charges", style = MaterialTheme.typography.titleMedium)
                     }
                     Text(
-                        text = if (isHi) {
-                            "चुना गया चार्ज ऑटोमैटिक प्रिंट पेज में प्रोडक्ट लिस्ट के आखिर में जुड़ जाएगा।"
-                        } else {
-                            "Selected charge automatically appends as the last row in Product Details on A4 print & PDF."
-                        },
+                        text = "Any selected charge is automatically appended to Product Details on print, PDF, and Photo.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -546,148 +714,153 @@ fun BillScreen(
             }
         }
 
-        // Totals + Advance + Payment Mode + Dynamic UPI QR Card
-        item {
-            val qrAmt = if (draft.grandTotal > 0.009) draft.grandTotal else draft.subtotal
-            val upiUri = remember(upi.upiId, upi.payeeName, qrAmt, draft.invoiceNo) {
-                if (upi.upiId.isNotBlank()) QrGenerator.buildUpiUri(upi.upiId, upi.payeeName, qrAmt, draft.invoiceNo)
-                else ""
-            }
-
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        text = if (isHi) "कुल हिसाब और एडवांस" else "Totals & Advance Summary",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-
-                    OutlinedTextField(
-                        value = draft.paidAmountText,
-                        onValueChange = onPaidAmountChange,
-                        label = { Text("ADVANCE (₹)") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("bill_paid_input")
-                    )
-
-                    // Breakdown Table: Sub Total -> Advance -> Grand Total
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
-                    ) {
-                        TotalRow("SUB TOTAL", draft.subtotal)
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                        TotalRow("ADVANCE", draft.paidAmount)
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                        TotalRow(
-                            label = "GRAND TOTAL",
-                            amount = draft.grandTotal,
-                            bg = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                            bold = true
+        // Step 3: Payment Mode (NO premature QR amount, NO auto-bill-generation) + Info QR + Camera Signature
+        // Or Quotation Customer Note
+        if (isQuotation) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("Quotation Message for Customer", style = MaterialTheme.typography.titleMedium)
+                        OutlinedTextField(
+                            value = draft.quotationNote,
+                            onValueChange = onQuotationNoteChange,
+                            label = { Text("Custom Note for Customer (Optional)") },
+                            placeholder = { Text("Includes installation warranty, valid for 15 days...") },
+                            minLines = 3,
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("quotation_note_input")
                         )
-                    }
-
-                    Text(
-                        text = "In Words: ${RupeesWords.convert(draft.grandTotal)}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    HorizontalDivider()
-
-                    // Payment Mode + Auto UPI QR
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f))
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Estimated Quotation Total", fontWeight = FontWeight.Bold, color = NavyPrimary)
                             Text(
-                                text = if (isHi) "भुगतान का तरीका" else "Payment Mode",
-                                style = MaterialTheme.typography.labelMedium
+                                text = "₹${String.format(Locale.US, "%.2f", draft.grandTotal)}",
+                                fontWeight = FontWeight.Black,
+                                color = NavyPrimary
                             )
-                            PaymentMode.entries.forEach { mode ->
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    RadioButton(
-                                        selected = draft.paymentMode == mode,
-                                        onClick = { onPaymentModeChange(mode) }
-                                    )
-                                    Text(mode.label, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            }
+        } else {
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Text("Step 3: Payment Mode, Customer Info QR & Signature", style = MaterialTheme.typography.titleMedium)
+
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Select Payment Mode", style = MaterialTheme.typography.labelMedium)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                PaymentMode.entries.forEach { mode ->
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        RadioButton(
+                                            selected = draft.paymentMode == mode,
+                                            onClick = { onPaymentModeChange(mode) },
+                                            modifier = Modifier.testTag("payment_mode_${mode.name}")
+                                        )
+                                        Text(mode.label, style = MaterialTheme.typography.bodyMedium)
+                                    }
                                 }
                             }
-                            if (upi.upiId.isNotBlank()) {
-                                Text(
-                                    text = "UPI: ${upi.upiId}\nA/c: ${upi.payeeName}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TealAccent
+                            Text(
+                                text = if (draft.paymentMode == PaymentMode.ONLINE) {
+                                    "Online Payment selected: After tapping Get Summary, enter Paid Amount to generate a dynamic UPI QR for that exact amount."
+                                } else {
+                                    "Cash mode selected: Proceed to Get Summary to record discount, paid amount, due balance, and customer 5-star review."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TealAccent
+                            )
+                        }
+
+                        HorizontalDivider()
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Icon(Icons.Default.QrCode2, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                    Text("Customer Information QR", style = MaterialTheme.typography.labelMedium)
+                                }
+                                OutlinedTextField(
+                                    value = draft.customQrText,
+                                    onValueChange = onCustomQrTextChange,
+                                    placeholder = { Text("Warranty, DVR login or site details...") },
+                                    minLines = 2,
+                                    modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("custom_qr_input")
                                 )
-                            } else {
-                                Text(
-                                    text = "Set UPI ID in Admin Panel for auto QR",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                            if (draft.customQrText.isNotBlank()) {
+                                QrCodeImage(
+                                    content = draft.customQrText,
+                                    contentDescription = "Customer Information QR Preview",
+                                    modifier = Modifier.size(84.dp)
                                 )
                             }
                         }
-                        QrCodeImage(
-                            content = upiUri,
-                            fallbackBase64 = upi.fallbackQrBase64,
-                            contentDescription = "Auto-generated UPI Payment QR",
-                            modifier = Modifier.size(104.dp)
+
+                        HorizontalDivider()
+
+                        CameraSignatureBox(
+                            signatureBase64 = draft.signatureBase64,
+                            onSignatureChanged = onSignatureChanged
                         )
                     }
                 }
             }
         }
 
-        // Camera Signature Scan + Customer Information QR Card
+        // Step 4: Bottom Primary CTA -> Get Summary
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    CameraSignatureBox(
-                        signatureBase64 = draft.signatureBase64,
-                        onSignatureChanged = onSignatureChanged
-                    )
-
-                    HorizontalDivider()
-
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Icon(Icons.Default.QrCode2, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                Text(
-                                    text = "Customer Information QR",
-                                    style = MaterialTheme.typography.labelMedium
-                                )
-                            }
-                            OutlinedTextField(
-                                value = draft.customQrText,
-                                onValueChange = onCustomQrTextChange,
-                                placeholder = { Text("Warranty, DVR login or site note...") },
-                                minLines = 2,
-                                modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("custom_qr_input")
+                        Column {
+                            Text("Current Sub Total", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                text = "₹${String.format(Locale.US, "%.2f", draft.subtotal)}",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Black,
+                                color = NavyPrimary
                             )
                         }
-                        if (draft.customQrText.isNotBlank()) {
-                            QrCodeImage(
-                                content = draft.customQrText,
-                                contentDescription = "Customer Information QR Preview",
-                                modifier = Modifier.size(84.dp)
-                            )
+                        Button(
+                            onClick = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                onOpenSummaryModal()
+                            },
+                            enabled = !isNightClosed,
+                            colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
+                            modifier = Modifier.height(52.dp).testTag("get_summary_button")
+                        ) {
+                            Icon(Icons.Default.Summarize, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Get Summary", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -697,17 +870,24 @@ fun BillScreen(
         item { Spacer(Modifier.height(16.dp)) }
     }
 
-    if (finalModalVisible) {
-        FinalCodeDialog(
+    if (draft.summaryOpen) {
+        BillSummaryDialog(
+            draft = draft,
+            company = company,
+            upi = upi,
             currentUser = currentUser,
-            error = finalModalError,
-            onDismiss = onCloseFinalCodeModal,
-            onConfirm = onConfirmFinalBill
+            summaryError = summaryError,
+            onDiscountChange = onDiscountChange,
+            onPaidAmountChange = onPaidAmountChange,
+            onRatingChange = onStaffRatingChange,
+            onReviewChange = onStaffReviewChange,
+            onDismiss = onCloseSummaryModal,
+            onGenerate = onRequestGenerateWithDeviceAuth
         )
     }
 
     if (exportOptionsPayload != null) {
-        ExportA4OptionsDialog(
+        ExportDocumentOptionsDialog(
             payload = exportOptionsPayload,
             currentUser = currentUser,
             onDismiss = onDismissExportOptions,
@@ -718,6 +898,8 @@ fun BillScreen(
             onPrintA4 = { onPrintA4(exportOptionsPayload) },
             onSavePdf = { onSavePdf(exportOptionsPayload) },
             onSharePdf = { onSharePdf(exportOptionsPayload) },
+            onSavePhoto = { onSavePhoto(exportOptionsPayload) },
+            onSharePhoto = { onSharePhoto(exportOptionsPayload) },
             onOpenPaymentAndReview = { onOpenPaymentAndReview(exportOptionsPayload) }
         )
     }
@@ -734,15 +916,26 @@ private fun InvoiceItemEditorCard(
     shouldRequestFocus: Boolean,
     onFocusConsumed: () -> Unit,
     onEnterAddNext: () -> Unit,
+    onSelectFolder: (String) -> Unit,
     onSelectProduct: (ProductEntity) -> Unit,
     onUpdate: (String?, Double?, String?, Double?) -> Unit,
     onDelete: () -> Unit
 ) {
+    var folderMenuOpen by remember { mutableStateOf(false) }
     var productMenuOpen by remember { mutableStateOf(false) }
     val itemFocusManager = LocalFocusManager.current
     val itemTextToolbar = LocalTextToolbar.current
     val firstFieldFocus = remember { FocusRequester() }
     val qtyFocus = remember { FocusRequester() }
+
+    val availableFolders = remember(products) {
+        listOf("All Folders") + products.map { it.folder.ifBlank { "General" } }.distinct().sorted()
+    }
+    val selectedFolder = item.folder.ifBlank { "All Folders" }
+    val folderFilteredProducts = remember(products, selectedFolder) {
+        if (selectedFolder == "All Folders" || selectedFolder.isBlank()) products
+        else products.filter { it.folder.ifBlank { "General" }.equals(selectedFolder, ignoreCase = true) }
+    }
 
     LaunchedEffect(shouldRequestFocus) {
         if (shouldRequestFocus) {
@@ -802,13 +995,57 @@ private fun InvoiceItemEditorCard(
                 }
             }
 
+            // Folder Dropdown -> filters Products below
+            Box(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = {
+                        clearFocusAndHideToolbar(itemFocusManager, itemTextToolbar)
+                        folderMenuOpen = true
+                    },
+                    modifier = Modifier.fillMaxWidth().height(46.dp).testTag("item_folder_btn_$index"),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Icon(Icons.Default.Folder, contentDescription = null, tint = TealAccent, modifier = Modifier.size(18.dp))
+                            Text(
+                                text = "Folder: $selectedFolder",
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1
+                            )
+                        }
+                        Icon(Icons.Default.ArrowDropDown, contentDescription = "Choose product folder")
+                    }
+                }
+                DropdownMenu(
+                    expanded = folderMenuOpen,
+                    onDismissRequest = { folderMenuOpen = false },
+                    modifier = Modifier.widthIn(max = 320.dp)
+                ) {
+                    availableFolders.forEach { folder ->
+                        DropdownMenuItem(
+                            text = { Text(folder, fontWeight = FontWeight.SemiBold) },
+                            onClick = {
+                                onSelectFolder(if (folder == "All Folders") "" else folder)
+                                folderMenuOpen = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            // Product Dropdown (filtered by chosen folder, showing prices)
             Box(modifier = Modifier.fillMaxWidth()) {
                 OutlinedButton(
                     onClick = {
                         clearFocusAndHideToolbar(itemFocusManager, itemTextToolbar)
                         productMenuOpen = true
                     },
-                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    modifier = Modifier.fillMaxWidth().height(48.dp).testTag("item_product_btn_$index"),
                     shape = RoundedCornerShape(10.dp)
                 ) {
                     Row(
@@ -829,10 +1066,10 @@ private fun InvoiceItemEditorCard(
                     onDismissRequest = { productMenuOpen = false },
                     modifier = Modifier.widthIn(max = 320.dp)
                 ) {
-                    products.forEach { prod ->
+                    folderFilteredProducts.forEach { prod ->
                         DropdownMenuItem(
                             text = {
-                                Text("${prod.name} (${prod.unit} · ₹${prod.defaultRate.toInt()})")
+                                Text("${prod.name} (${prod.unit} · ₹${String.format(Locale.US, "%.0f", prod.defaultRate)})")
                             },
                             onClick = {
                                 onSelectProduct(prod)
@@ -929,7 +1166,7 @@ private fun InvoiceItemEditorCard(
                             onUpdate(null, null, null, it.toDoubleOrNull() ?: 0.0)
                         }
                     },
-                    label = { Text(if (isAdmin) "Rate (₹)" else "Rate (Admin)") },
+                    label = { Text(if (isAdmin) "Rate (₹)" else "Rate") },
                     readOnly = !isAdmin,
                     enabled = isAdmin,
                     keyboardOptions = KeyboardOptions(
@@ -973,130 +1210,242 @@ private fun InvoiceItemEditorCard(
 }
 
 @Composable
-private fun TotalRow(
-    label: String,
-    amount: Double,
-    bg: Color = Color.Transparent,
-    bold: Boolean = false
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(bg)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = label,
-            fontWeight = if (bold) FontWeight.Black else FontWeight.SemiBold,
-            style = MaterialTheme.typography.bodyMedium
-        )
-        Text(
-            text = "₹${String.format(Locale.US, "%.2f", amount)}",
-            fontWeight = FontWeight.Bold,
-            style = MaterialTheme.typography.bodyLarge
-        )
-    }
-}
-
-@Composable
-private fun FinalCodeDialog(
+private fun BillSummaryDialog(
+    draft: BillDraft,
+    company: CompanySettings,
+    upi: UpiSettings,
     currentUser: UserSession,
-    error: String,
+    summaryError: String,
+    onDiscountChange: (String) -> Unit,
+    onPaidAmountChange: (String) -> Unit,
+    onRatingChange: (Int) -> Unit,
+    onReviewChange: (String) -> Unit,
     onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit
+    onGenerate: () -> Unit
 ) {
-    var code by remember { mutableStateOf("") }
+    val isQuotation = draft.documentType == DocumentType.QUOTATION
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
+    val hasDue = draft.dueAmount > 0.009
+
+    val dynamicOnlineUri = remember(upi.upiId, upi.payeeName, draft.paidAmount, draft.invoiceNo) {
+        if (upi.upiId.isNotBlank()) {
+            QrGenerator.buildUpiUri(upi.upiId, upi.payeeName, draft.paidAmount, draft.invoiceNo)
+        } else ""
+    }
+
     AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = { Icon(Icons.Default.Lock, contentDescription = null, tint = TealAccent) },
-        title = { Text("Admin Final Bill Verification") },
+        onDismissRequest = {
+            clearFocusAndHideToolbar(focusManager, textToolbar)
+            onDismiss()
+        },
+        modifier = Modifier.testTag("bill_summary_dialog"),
+        icon = { Icon(Icons.Default.Summarize, contentDescription = null, tint = TealAccent) },
+        title = {
+            Column {
+                Text(if (isQuotation) "Quotation Summary" else "Final Bill Summary")
+                Text(
+                    text = "${draft.invoiceNo} · Generated by @${currentUser.username}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
         text = {
             ProvideSafeTextToolbar {
-                val dialogFocusManager = LocalFocusManager.current
-                val dialogTextToolbar = LocalTextToolbar.current
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .semantics(mergeDescendants = true) {}
-                            .testTag("final_dialog_staff_info")
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                text = "Generated By: ${currentUser.displayName} (@${currentUser.username})",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                DisposableEffect(focusManager, textToolbar) {
+                    onDispose { clearFocusAndHideToolbar(focusManager, textToolbar) }
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    InvoiceSheetPreview(
+                        draft = draft,
+                        company = company,
+                        upi = upi
+                    )
+
+                    if (!isQuotation) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column {
+                                TotalRow("SUB TOTAL", draft.subtotal)
+                                HorizontalDivider()
+                                TotalRow(
+                                    label = "GRAND TOTAL",
+                                    amount = draft.grandTotal,
+                                    bg = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                                    bold = true
+                                )
+                                HorizontalDivider()
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(if (hasDue) RedDueBg else GreenPaidBg)
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = if (hasDue) "DUE BALANCE" else "PAID IN FULL",
+                                        fontWeight = FontWeight.Black,
+                                        color = if (hasDue) RedDueDark else GreenPaid
+                                    )
+                                    Text(
+                                        text = "₹${String.format(Locale.US, "%.2f", draft.dueAmount)}",
+                                        fontWeight = FontWeight.Black,
+                                        color = if (hasDue) RedDueDark else GreenPaid,
+                                        modifier = Modifier.testTag("summary_due_amount")
+                                    )
+                                }
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = draft.discountText,
+                                onValueChange = onDiscountChange,
+                                label = { Text("Discount (₹)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("summary_discount_input")
                             )
-                            Text(
-                                text = "Role: ${if (currentUser.isAdmin) "Admin" else "Staff"} · Yeh username saved bill record me dikhega (bill print me nahi aayega).",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            OutlinedTextField(
+                                value = draft.paidAmountText,
+                                onValueChange = onPaidAmountChange,
+                                label = { Text("Paid Amount (₹)") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("summary_paid_input")
                             )
                         }
-                    }
-                    Text(
-                        text = "Bill final karne aur A4 PDF print karne ke liye Admin ka Final Bill Code enter karein.",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    OutlinedTextField(
-                        value = code,
-                        onValueChange = { code = it },
-                        label = { Text("Final Bill Code") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("final_code_input")
-                    )
-                    if (error.isNotEmpty()) {
+
+                        if (draft.paymentMode == PaymentMode.ONLINE) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color(0xFFE0F2FE),
+                                border = BorderStroke(1.dp, TealAccent),
+                                modifier = Modifier.fillMaxWidth().testTag("summary_online_qr_card")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    QrCodeImage(
+                                        content = dynamicOnlineUri,
+                                        fallbackBase64 = upi.fallbackQrBase64,
+                                        contentDescription = "Dynamic Online Paid Amount UPI QR",
+                                        modifier = Modifier.size(92.dp)
+                                    )
+                                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Text(
+                                            text = "Dynamic Payment QR: ₹${String.format(Locale.US, "%.2f", draft.paidAmount)}",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.Black,
+                                            color = NavyPrimary
+                                        )
+                                        Text(
+                                            text = "Generated strictly for Paid Amount above. If customer pays less, adjust Paid Amount to record Due Balance.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color(0xFF1E293B)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalDivider()
+
                         Text(
-                            text = error,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Bold
+                            text = "Customer 5-Star Rating for @${currentUser.username}",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = NavyPrimary
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly
+                        ) {
+                            for (star in 1..5) {
+                                val selected = star <= draft.staffRating
+                                IconButton(
+                                    onClick = {
+                                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                                        onRatingChange(star)
+                                    },
+                                    modifier = Modifier.size(48.dp).testTag("bill_summary_star_$star")
+                                ) {
+                                    Icon(
+                                        imageVector = if (selected) Icons.Default.Star else Icons.Default.StarBorder,
+                                        contentDescription = "Rate $star star",
+                                        tint = if (selected) GoldAccent else MaterialTheme.colorScheme.outline,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                }
+                            }
+                        }
+                        OutlinedTextField(
+                            value = draft.staffReviewNote,
+                            onValueChange = onReviewChange,
+                            label = { Text("Customer Review Feedback (Optional)") },
+                            minLines = 2,
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("bill_summary_review_note")
                         )
                     }
-                    // Keep focus cleanup tied to dialog composition scope when buttons below run
-                    androidx.compose.runtime.DisposableEffect(dialogFocusManager, dialogTextToolbar) {
-                        onDispose {
-                            clearFocusAndHideToolbar(dialogFocusManager, dialogTextToolbar)
+
+                    if (summaryError.isNotEmpty()) {
+                        Surface(
+                            color = RedDueBg,
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, RedDue),
+                            modifier = Modifier.fillMaxWidth().testTag("summary_error_text")
+                        ) {
+                            Text(
+                                text = summaryError,
+                                color = RedDueDark,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(10.dp)
+                            )
                         }
                     }
                 }
             }
         },
         confirmButton = {
-            val btnFocus = LocalFocusManager.current
-            val btnToolbar = LocalTextToolbar.current
             Button(
                 onClick = {
-                    clearFocusAndHideToolbar(btnFocus, btnToolbar)
-                    onConfirm(code)
+                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                    onGenerate()
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
-                modifier = Modifier.testTag("confirm_final_bill_button")
+                modifier = Modifier.testTag("generate_final_bill_button")
             ) {
-                Text("Verify & Print PDF")
+                Icon(Icons.Default.Fingerprint, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(if (isQuotation) "Generate Quotation" else "Generate Bill", fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
-            val btnFocus = LocalFocusManager.current
-            val btnToolbar = LocalTextToolbar.current
             TextButton(onClick = {
-                clearFocusAndHideToolbar(btnFocus, btnToolbar)
+                clearFocusAndHideToolbar(focusManager, textToolbar)
                 onDismiss()
             }) {
-                Text("Cancel")
+                Text("Back to Edit")
             }
         }
     )
 }
 
 @Composable
-private fun ExportA4OptionsDialog(
+private fun ExportDocumentOptionsDialog(
     payload: InvoicePrintPayload,
     currentUser: UserSession,
     onDismiss: () -> Unit,
@@ -1104,19 +1453,24 @@ private fun ExportA4OptionsDialog(
     onPrintA4: () -> Unit,
     onSavePdf: () -> Unit,
     onSharePdf: () -> Unit,
+    onSavePhoto: () -> Unit,
+    onSharePhoto: () -> Unit,
     onOpenPaymentAndReview: () -> Unit
 ) {
+    val isQuotation = payload.documentType == DocumentType.QUOTATION
+    val docTitle = if (isQuotation) "Quotation Ready (${payload.invoiceNo})" else "Bill Ready (${payload.invoiceNo})"
+
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = TealAccent) },
-        title = { Text("A4 Bill Ready (${payload.invoiceNo})") },
+        title = { Text(docTitle) },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    text = "Saved by @${currentUser.username} (print/PDF par show nahi hoga). Print/PDF ke baad Customer Payment, Discount, Due & 5-Star Review add karein:",
+                    text = "Saved by @${currentUser.username}. Export or share as A4 Print, PDF, or High-Res PNG Photo:",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Button(
@@ -1145,6 +1499,23 @@ private fun ExportA4OptionsDialog(
                     Spacer(Modifier.width(8.dp))
                     Text("Share A4 PDF", fontWeight = FontWeight.Bold)
                 }
+                Button(
+                    onClick = onSavePhoto,
+                    colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
+                    modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_save_photo_button")
+                ) {
+                    Icon(Icons.Default.Image, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Save Photo (PNG)", fontWeight = FontWeight.Bold)
+                }
+                OutlinedButton(
+                    onClick = onSharePhoto,
+                    modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_share_photo_button")
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Share Photo (PNG)", fontWeight = FontWeight.Bold)
+                }
                 OutlinedButton(
                     onClick = onPreviewA4,
                     modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_preview_a4_button")
@@ -1153,15 +1524,17 @@ private fun ExportA4OptionsDialog(
                     Spacer(Modifier.width(8.dp))
                     Text("View A4 Preview", fontWeight = FontWeight.Bold)
                 }
-                HorizontalDivider()
-                Button(
-                    onClick = onOpenPaymentAndReview,
-                    colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
-                    modifier = Modifier.fillMaxWidth().height(50.dp).testTag("export_payment_review_button")
-                ) {
-                    Icon(Icons.Default.Payments, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Payment, Discount & 5★ Review", fontWeight = FontWeight.Bold)
+                if (!isQuotation && currentUser.isAdmin) {
+                    HorizontalDivider()
+                    Button(
+                        onClick = onOpenPaymentAndReview,
+                        colors = ButtonDefaults.buttonColors(containerColor = AmberWarn),
+                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_payment_review_button")
+                    ) {
+                        Icon(Icons.Default.Payments, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Adjust Payment / Review", fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         },
@@ -1172,4 +1545,32 @@ private fun ExportA4OptionsDialog(
             }
         }
     )
+}
+
+@Composable
+private fun TotalRow(
+    label: String,
+    amount: Double,
+    bg: Color = Color.Transparent,
+    bold: Boolean = false
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(bg)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            fontWeight = if (bold) FontWeight.Black else FontWeight.SemiBold,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Text(
+            text = "₹${String.format(Locale.US, "%.2f", amount)}",
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.bodyLarge
+        )
+    }
 }

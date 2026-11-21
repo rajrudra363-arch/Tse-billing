@@ -22,18 +22,23 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SupportAgent
+import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -49,6 +54,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -63,6 +69,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.data.BillingRepository
+import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
 import com.example.data.CustomerHelpEntity
 import com.example.data.UserSession
@@ -76,13 +83,17 @@ import com.example.ui.theme.RedDue
 import com.example.ui.theme.RedDueBg
 import com.example.ui.theme.RedDueDark
 import com.example.ui.theme.TealAccent
+import com.example.util.DispatchCardGenerator
 import com.example.util.LocationHelper
+import kotlinx.coroutines.delay
+import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CustomerHelpScreen(
     helpRequests: List<CustomerHelpEntity>,
     customers: List<CustomerEntity>,
+    company: CompanySettings,
     user: UserSession,
     onSaveHelpRequest: (
         id: Long,
@@ -93,10 +104,13 @@ fun CustomerHelpScreen(
         helpDescription: String,
         status: String
     ) -> Unit,
-    onToggleStatus: (CustomerHelpEntity) -> Unit,
+    onAcceptRequest: (Long) -> Unit,
+    onMarkSolved: (Long) -> Unit,
+    onMarkNotSolved: (Long) -> Unit,
+    onGetBillFromHelp: (CustomerHelpEntity) -> Unit,
     onDeleteHelpRequest: (Long) -> Unit
 ) {
-    val canManage = !user.isStaff && user.isAdmin
+    val canManage = user.isAdmin && !user.isSuperAdmin
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
@@ -111,6 +125,18 @@ fun CustomerHelpScreen(
     var lastAutoMatchedId by remember { mutableStateOf<Long?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var locationBusy by remember { mutableStateOf(false) }
+
+    // 1-second ticker for 15-minute solve cooldown timers on accepted requests
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val hasActiveCountdown = remember(helpRequests) {
+        helpRequests.any { it.status == "ACCEPTED" && it.acceptedAt > 0L }
+    }
+    LaunchedEffect(hasActiveCountdown) {
+        while (hasActiveCountdown) {
+            nowMillis = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
 
     val matchedCustomers = remember(phone, customers) {
         BillingRepository.findMatchingCustomersByPhone(customers, phone)
@@ -138,6 +164,7 @@ fun CustomerHelpScreen(
                     req.phone.contains(q, ignoreCase = true) ||
                     req.address.contains(q, ignoreCase = true) ||
                     req.helpDescription.contains(q, ignoreCase = true) ||
+                    req.acceptedBy.contains(q, ignoreCase = true) ||
                     (qDigits.isNotEmpty() && (phoneDigits.endsWith(qDigits) || phoneDigits.contains(qDigits)))
             }
         }
@@ -228,7 +255,7 @@ fun CustomerHelpScreen(
                             )
                         }
                         Text(
-                            text = "WhatsApp par aane wali customer problem yahan add karein. Mobile number (ya last 5 digits) dalne par Customer List se naam, address aur Google location auto-fill ho jayega.",
+                            text = "Add WhatsApp customer support requests here. Entering a mobile number or last 5 digits auto-fills customer name, address, and Google Maps link from Customer List.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -361,7 +388,7 @@ fun CustomerHelpScreen(
                         OutlinedTextField(
                             value = helpDescription,
                             onValueChange = { helpDescription = it },
-                            label = { Text("Customer Need Help / Issue Description") },
+                            label = { Text("Customer Support Issue Description") },
                             placeholder = { Text("e.g. Camera 2 no signal, DVR beep sound, mobile app view setup...") },
                             minLines = 3,
                             modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("help_description_input")
@@ -394,7 +421,7 @@ fun CustomerHelpScreen(
                             ) {
                                 Icon(Icons.Default.Add, contentDescription = null)
                                 Spacer(Modifier.width(4.dp))
-                                Text(if (editingId > 0L) "Update Help" else "Save for Staff", fontWeight = FontWeight.Bold)
+                                Text(if (editingId > 0L) "Update Help" else "Save for Technicians", fontWeight = FontWeight.Bold)
                             }
 
                             Button(
@@ -402,7 +429,7 @@ fun CustomerHelpScreen(
                                     clearFocusAndHideToolbar(focusManager, textToolbar)
                                     val resolved = resolveForFormAction()
                                     if (helpDescription.isBlank() || (resolved.name.isBlank() && resolved.phone.isBlank())) {
-                                        Toast.makeText(context, "Number aur description enter karein", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "Please enter mobile number and issue description", Toast.LENGTH_SHORT).show()
                                         return@Button
                                     }
                                     onSaveHelpRequest(
@@ -456,10 +483,17 @@ fun CustomerHelpScreen(
                     Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Icon(Icons.Default.SupportAgent, contentDescription = null, tint = TealAccent)
-                            Text("Customer Help Desk (Staff View)", style = MaterialTheme.typography.titleLarge)
+                            Text(
+                                text = if (user.isSuperAdmin) "Customer Help Desk (Super Admin View)" else "Customer Help Desk (Technician Workflow)",
+                                style = MaterialTheme.typography.titleLarge
+                            )
                         }
                         Text(
-                            text = "Admin adds WhatsApp customer support requests here. Staff can view problem description, call customer, and open Google Maps location.",
+                            text = if (user.isSuperAdmin) {
+                                "Super Admin read-only view of all customer help desk tickets."
+                            } else {
+                                "Tap Accept Request to claim a ticket. After 15 minutes of site work, mark Solved / Not Solved and tap Get Bill to invoice with Support Charges."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -472,7 +506,7 @@ fun CustomerHelpScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Search help by name, last 5 digits, address or issue...") },
+                placeholder = { Text("Search help by name, last 5 digits, address, or technician...") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("help_search_input")
@@ -491,19 +525,52 @@ fun CustomerHelpScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(Icons.Default.SupportAgent, contentDescription = null, modifier = Modifier.size(44.dp), tint = MaterialTheme.colorScheme.primary)
-                        Text("No customer help requests yet", style = MaterialTheme.typography.titleMedium)
+                        Text("No customer help requests found", style = MaterialTheme.typography.titleMedium)
                     }
                 }
             }
         } else {
             items(filteredRequests, key = { it.id }) { req ->
-                val isResolved = req.status == "RESOLVED"
+                val normalizedStatus = req.status.uppercase(Locale.ROOT)
+                val isSolved = normalizedStatus == "SOLVED" || normalizedStatus == "RESOLVED"
+                val isAccepted = normalizedStatus == "ACCEPTED"
+                val isNotSolved = normalizedStatus == "NOT_SOLVED"
+
+                // Explicit high-contrast colors on crisp light surface backgrounds
+                val cardBg = when {
+                    isSolved -> Color(0xFFF0FDF4)
+                    isAccepted -> Color(0xFFEFF6FF)
+                    isNotSolved -> Color(0xFFFFFBEB)
+                    else -> Color(0xFFFEF2F2)
+                }
+                val cardBorder = when {
+                    isSolved -> GreenPaid
+                    isAccepted -> Color(0xFF0284C7)
+                    isNotSolved -> AmberWarn
+                    else -> RedDue
+                }
+                val badgeBg = when {
+                    isSolved -> GreenPaid
+                    isAccepted -> Color(0xFF0284C7)
+                    isNotSolved -> AmberWarn
+                    else -> RedDue
+                }
+                val badgeText = when {
+                    isSolved -> "SOLVED"
+                    isAccepted -> "IN PROGRESS"
+                    isNotSolved -> "NOT SOLVED"
+                    else -> "OPEN"
+                }
+
+                val remainingWaitMs = if (isAccepted && req.acceptedAt > 0L) {
+                    (BillingRepository.HELP_SOLVE_WAIT_MS - (nowMillis - req.acceptedAt)).coerceAtLeast(0L)
+                } else 0L
+                val canMarkOutcome = !user.isSuperAdmin && isAccepted && (canManage || remainingWaitMs == 0L)
+
                 Card(
                     shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isResolved) MaterialTheme.colorScheme.surface else RedDueBg.copy(alpha = 0.35f)
-                    ),
-                    border = BorderStroke(1.dp, if (isResolved) GreenPaid.copy(alpha = 0.45f) else AmberWarn)
+                    colors = CardDefaults.cardColors(containerColor = cardBg),
+                    border = BorderStroke(1.5.dp, cardBorder)
                 ) {
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(14.dp),
@@ -519,37 +586,38 @@ fun CustomerHelpScreen(
                                     text = req.customerName.ifBlank { "Customer (${req.phone})" },
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
-                                    color = NavyPrimary
+                                    color = Color(0xFF0B2238)
                                 )
                                 if (req.phone.isNotBlank()) {
                                     Text(
                                         text = "Mobile: ${req.phone}",
                                         style = MaterialTheme.typography.bodyMedium,
-                                        color = TealAccent,
-                                        fontWeight = FontWeight.SemiBold
+                                        color = Color(0xFF0B4F6C),
+                                        fontWeight = FontWeight.Bold
                                     )
                                 }
                                 if (req.address.isNotBlank()) {
                                     Text(
                                         text = "Address: ${req.address}",
                                         style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = Color(0xFF1E293B)
                                     )
                                 }
                                 if (req.locationUrl.isNotBlank()) {
                                     Text(
                                         text = "Google Maps: ${req.locationUrl}",
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.primary
+                                        color = Color(0xFF0369A1),
+                                        fontWeight = FontWeight.Medium
                                     )
                                 }
                             }
                             Surface(
-                                color = if (isResolved) GreenPaid else RedDue,
+                                color = badgeBg,
                                 shape = RoundedCornerShape(999.dp)
                             ) {
                                 Text(
-                                    text = if (isResolved) "RESOLVED" else "OPEN",
+                                    text = badgeText,
                                     color = Color.White,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
@@ -558,24 +626,69 @@ fun CustomerHelpScreen(
                             }
                         }
 
+                        if (req.acceptedBy.isNotBlank()) {
+                            Surface(
+                                color = Color.White,
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "Assigned Technician: ${req.acceptedByName.ifBlank { req.acceptedBy }} (@${req.acceptedBy})" +
+                                        if (req.acceptedByPhone.isNotBlank()) " · ${req.acceptedByPhone}" else "",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF0B2238),
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+
+                        // Crisp white issue description surface with dark charcoal text
                         Surface(
-                            color = if (isResolved) GreenPaidBg else Color.White,
+                            color = Color.White,
                             shape = RoundedCornerShape(10.dp),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+                            border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Text(
-                                    text = "NEED HELP / ISSUE:",
+                                    text = "CUSTOMER ISSUE / REQUIREMENT:",
                                     style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isResolved) GreenPaid else RedDueDark
+                                    fontWeight = FontWeight.Black,
+                                    color = if (isSolved) GreenPaid else RedDueDark
                                 )
                                 Text(
                                     text = req.helpDescription,
                                     style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Medium
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF0F172A)
                                 )
+                            }
+                        }
+
+                        if (isAccepted && remainingWaitMs > 0L && !canManage) {
+                            val mins = (remainingWaitMs / 60_000L).toInt()
+                            val secs = ((remainingWaitMs % 60_000L) / 1000L).toInt()
+                            Surface(
+                                color = Color(0xFFFFFBEB),
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, AmberWarn),
+                                modifier = Modifier.fillMaxWidth().testTag("help_wait_timer_${req.id}")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(Icons.Default.HourglassTop, contentDescription = null, tint = AmberWarn, modifier = Modifier.size(16.dp))
+                                    Text(
+                                        text = "Solved / Not Solved unlocks in ${String.format(Locale.US, "%02d:%02d", mins, secs)}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF92400E)
+                                    )
+                                }
                             }
                         }
 
@@ -593,7 +706,7 @@ fun CustomerHelpScreen(
                                 ) {
                                     Icon(Icons.Default.Call, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text("Call")
+                                    Text("Call", color = Color(0xFF0B2238))
                                 }
                             }
 
@@ -608,42 +721,109 @@ fun CustomerHelpScreen(
                                 ) {
                                     Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text("Maps")
+                                    Text("Maps", color = Color(0xFF0B2238))
                                 }
                             }
 
-                            OutlinedButton(
-                                onClick = {
-                                    clearFocusAndHideToolbar(focusManager, textToolbar)
-                                    val msg = LocationHelper.buildHelpShareMessage(
-                                        customerName = req.customerName,
-                                        phone = req.phone,
-                                        address = req.address,
-                                        locationUrl = req.locationUrl,
-                                        helpDescription = req.helpDescription
-                                    )
-                                    LocationHelper.shareText(context, msg, preferWhatsApp = false)
-                                },
-                                modifier = Modifier.testTag("share_help_${req.id}")
-                            ) {
-                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("Share")
+                            if (!user.isSuperAdmin && normalizedStatus == "OPEN") {
+                                Button(
+                                    onClick = { onAcceptRequest(req.id) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
+                                    modifier = Modifier.testTag("accept_help_${req.id}")
+                                ) {
+                                    Icon(Icons.Default.TaskAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Accept Request")
+                                }
                             }
 
-                            if (canManage) {
+                            if (canMarkOutcome) {
                                 Button(
-                                    onClick = { onToggleStatus(req) },
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (isResolved) AmberWarn else GreenPaid
-                                    ),
-                                    modifier = Modifier.testTag("status_help_${req.id}")
+                                    onClick = { onMarkSolved(req.id) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                                    modifier = Modifier.testTag("solve_help_${req.id}")
                                 ) {
                                     Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text(if (isResolved) "Reopen" else "Resolve")
+                                    Text("Solved")
                                 }
+                                OutlinedButton(
+                                    onClick = { onMarkNotSolved(req.id) },
+                                    modifier = Modifier.testTag("not_solve_help_${req.id}")
+                                ) {
+                                    Icon(Icons.Default.Cancel, contentDescription = null, tint = RedDue, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Not Solved", color = RedDue)
+                                }
+                            }
 
+                            if (!user.isSuperAdmin && isSolved) {
+                                if (req.billId.isBlank()) {
+                                    Button(
+                                        onClick = { onGetBillFromHelp(req) },
+                                        colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
+                                        modifier = Modifier.testTag("get_bill_help_${req.id}")
+                                    ) {
+                                        Icon(Icons.Default.Receipt, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("Get Bill")
+                                    }
+                                } else {
+                                    Surface(color = GreenPaidBg, shape = RoundedCornerShape(999.dp)) {
+                                        Text(
+                                            text = "Billed",
+                                            color = GreenPaid,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (canManage && req.acceptedBy.isNotBlank()) {
+                                Button(
+                                    onClick = {
+                                        val ok = DispatchCardGenerator.shareDispatchCardToCustomerWhatsApp(
+                                            context = context,
+                                            company = company,
+                                            request = req
+                                        )
+                                        if (!ok) {
+                                            Toast.makeText(context, "Could not create Dispatch Card photo", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                                    modifier = Modifier.testTag("dispatch_card_help_${req.id}")
+                                ) {
+                                    Icon(Icons.Default.Badge, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Dispatch Card (WhatsApp)")
+                                }
+                            }
+
+                            if (canManage && req.phone.isNotBlank()) {
+                                OutlinedButton(
+                                    onClick = {
+                                        val chatMsg = if (req.acceptedBy.isNotBlank()) {
+                                            "Hello ${req.customerName}, your CCTV technician ${req.acceptedByName.ifBlank { req.acceptedBy }} (${req.acceptedByPhone}) has been assigned by ${company.companyName}."
+                                        } else {
+                                            "Hello ${req.customerName}, regarding your support request with ${company.companyName}."
+                                        }
+                                        val opened = DispatchCardGenerator.openCustomerWhatsAppChat(context, req.phone, chatMsg)
+                                        if (!opened) {
+                                            Toast.makeText(context, "WhatsApp not available", Toast.LENGTH_SHORT).show()
+                                        }
+                                    },
+                                    modifier = Modifier.testTag("wa_chat_help_${req.id}")
+                                ) {
+                                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("WhatsApp Chat", color = GreenPaid)
+                                }
+                            }
+
+                            if (canManage) {
                                 IconButton(
                                     onClick = {
                                         clearFocusAndHideToolbar(focusManager, textToolbar)

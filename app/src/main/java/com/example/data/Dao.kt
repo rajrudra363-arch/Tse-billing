@@ -20,6 +20,9 @@ interface BillDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(bill: BillEntity)
 
+    @Query("UPDATE bills SET createdBy = :newUsername WHERE LOWER(createdBy) = LOWER(:oldUsername)")
+    suspend fun reassignCreator(oldUsername: String, newUsername: String)
+
     @Query("DELETE FROM bills WHERE id = :id")
     suspend fun deleteById(id: String)
 
@@ -50,10 +53,10 @@ interface CustomerDao {
 
 @Dao
 interface ProductDao {
-    @Query("SELECT * FROM products ORDER BY id ASC")
+    @Query("SELECT * FROM products ORDER BY folder COLLATE NOCASE ASC, id ASC")
     fun observeAll(): Flow<List<ProductEntity>>
 
-    @Query("SELECT * FROM products ORDER BY id ASC")
+    @Query("SELECT * FROM products ORDER BY folder COLLATE NOCASE ASC, id ASC")
     suspend fun getAll(): List<ProductEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -71,7 +74,16 @@ interface ProductDao {
 
 @Dao
 interface UserAccountDao {
-    @Query("SELECT * FROM user_accounts ORDER BY CASE WHEN role = 'admin' THEN 0 ELSE 1 END, username COLLATE NOCASE ASC")
+    @Query(
+        """
+        SELECT * FROM user_accounts
+        ORDER BY CASE
+            WHEN LOWER(role) = 'admin' THEN 0
+            WHEN LOWER(role) = 'super_admin' THEN 1
+            ELSE 2
+        END, username COLLATE NOCASE ASC
+        """
+    )
     fun observeAll(): Flow<List<UserAccountEntity>>
 
     @Query("SELECT * FROM user_accounts")
@@ -82,6 +94,9 @@ interface UserAccountDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(account: UserAccountEntity)
+
+    @Query("DELETE FROM user_accounts WHERE LOWER(role) = 'admin'")
+    suspend fun deleteAllAdmins()
 
     @Query("DELETE FROM user_accounts WHERE username = :username")
     suspend fun deleteByUsername(username: String)
@@ -110,14 +125,30 @@ interface AppConfigDao {
 
 @Dao
 interface CustomerHelpDao {
-    @Query("SELECT * FROM customer_help_requests ORDER BY CASE WHEN status = 'OPEN' THEN 0 ELSE 1 END, updatedAt DESC")
+    @Query(
+        """
+        SELECT * FROM customer_help_requests
+        ORDER BY CASE
+            WHEN status = 'OPEN' THEN 0
+            WHEN status = 'ACCEPTED' THEN 1
+            WHEN status = 'NOT_SOLVED' THEN 2
+            ELSE 3
+        END, updatedAt DESC
+        """
+    )
     fun observeAll(): Flow<List<CustomerHelpEntity>>
 
     @Query("SELECT * FROM customer_help_requests ORDER BY updatedAt DESC")
     suspend fun getAll(): List<CustomerHelpEntity>
 
+    @Query("SELECT * FROM customer_help_requests WHERE id = :id LIMIT 1")
+    suspend fun findById(id: Long): CustomerHelpEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(request: CustomerHelpEntity)
+    suspend fun upsert(request: CustomerHelpEntity): Long
+
+    @Query("UPDATE customer_help_requests SET acceptedBy = :newUsername, acceptedByName = :newName, acceptedByPhone = :newPhone WHERE LOWER(acceptedBy) = LOWER(:oldUsername)")
+    suspend fun updateTechnicianInfo(oldUsername: String, newUsername: String, newName: String, newPhone: String)
 
     @Query("DELETE FROM customer_help_requests WHERE id = :id")
     suspend fun deleteById(id: Long)
@@ -126,3 +157,20 @@ interface CustomerHelpDao {
     suspend fun deleteAll()
 }
 
+@Dao
+interface TechnicianSettlementDao {
+    @Query("SELECT * FROM technician_settlements ORDER BY createdAt DESC")
+    fun observeAll(): Flow<List<TechnicianSettlementEntity>>
+
+    @Query("SELECT * FROM technician_settlements ORDER BY createdAt DESC")
+    suspend fun getAll(): List<TechnicianSettlementEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(settlement: TechnicianSettlementEntity)
+
+    @Query("UPDATE technician_settlements SET technicianUsername = :newUsername WHERE LOWER(technicianUsername) = LOWER(:oldUsername)")
+    suspend fun reassignTechnician(oldUsername: String, newUsername: String)
+
+    @Query("DELETE FROM technician_settlements")
+    suspend fun deleteAll()
+}

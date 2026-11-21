@@ -5,6 +5,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.speech.tts.TextToSpeech
+import com.example.data.VoicePreset
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,25 +30,76 @@ class SoundEngine(context: Context) {
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     @Volatile private var pendingMessage: String? = null
-    @Volatile private var pendingEnglish: Boolean = false
+    @Volatile private var pendingVoiceModelId: String = VoicePreset.CLEAR.id
+    @Volatile var currentVoiceModelId: String = VoicePreset.CLEAR.id
     @Volatile var enabled: Boolean = true
 
     init {
         try {
             tts = TextToSpeech(appContext) { status ->
                 if (status == TextToSpeech.SUCCESS) {
-                    tts?.setSpeechRate(0.96f)
                     ttsReady = true
+                    applyVoiceModel(currentVoiceModelId)
                     val queued = pendingMessage
-                    val useEn = pendingEnglish
+                    val queuedModel = pendingVoiceModelId
                     pendingMessage = null
                     if (!queued.isNullOrBlank()) {
-                        if (useEn) speakEnglish(queued) else speak(queued)
+                        speakEnglish(queued, queuedModel)
                     }
                 }
             }
         } catch (_: Exception) {
             ttsReady = false
+        }
+    }
+
+    fun availableSystemVoices(): List<Pair<String, String>> {
+        val voices = runCatching { tts?.voices }.getOrNull().orEmpty()
+        return voices
+            .filter { v ->
+                !v.isNetworkConnectionRequired &&
+                    v.locale.language.equals("en", ignoreCase = true)
+            }
+            .distinctBy { it.name }
+            .sortedBy { it.name }
+            .take(12)
+            .map { v ->
+                val country = v.locale.country.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""
+                val friendly = "Device Voice: ${v.name.substringAfterLast('#').substringAfterLast('-').uppercase(Locale.US)}$country"
+                v.name to friendly
+            }
+    }
+
+    fun applyVoiceModel(modelId: String) {
+        val targetId = modelId.ifBlank { VoicePreset.CLEAR.id }
+        currentVoiceModelId = targetId
+        val engine = tts ?: return
+        if (!ttsReady) return
+
+        try {
+            val enIn = Locale("en", "IN")
+            val res = engine.setLanguage(enIn)
+            if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
+                val usRes = engine.setLanguage(Locale.US)
+                if (usRes == TextToSpeech.LANG_MISSING_DATA || usRes == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    engine.setLanguage(Locale.ENGLISH)
+                }
+            }
+
+            val preset = VoicePreset.entries.firstOrNull { it.id == targetId }
+            if (preset != null) {
+                engine.setPitch(preset.pitch)
+                engine.setSpeechRate(preset.rate)
+            } else {
+                val matchedVoice = runCatching { engine.voices }.getOrNull()
+                    ?.firstOrNull { it.name == targetId }
+                if (matchedVoice != null) {
+                    engine.voice = matchedVoice
+                }
+                engine.setPitch(1.0f)
+                engine.setSpeechRate(0.96f)
+            }
+        } catch (_: Exception) {
         }
     }
 
@@ -74,40 +126,19 @@ class SoundEngine(context: Context) {
         }
     }
 
-    fun speak(message: String) {
-        if (!enabled || message.isBlank()) return
-        if (!ttsReady) {
-            pendingMessage = message
-            pendingEnglish = false
-            return
-        }
-        try {
-            val hiLocale = Locale("hi", "IN")
-            val res = tts?.setLanguage(hiLocale)
-            if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                tts?.setLanguage(Locale.ENGLISH)
-            }
-            tts?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "tse_${System.currentTimeMillis()}")
-        } catch (_: Exception) {
-        }
+    fun speak(message: String, voiceModelId: String = currentVoiceModelId) {
+        speakEnglish(message, voiceModelId)
     }
 
-    fun speakEnglish(message: String) {
+    fun speakEnglish(message: String, voiceModelId: String = currentVoiceModelId) {
         if (!enabled || message.isBlank()) return
         if (!ttsReady) {
             pendingMessage = message
-            pendingEnglish = true
+            pendingVoiceModelId = voiceModelId
             return
         }
         try {
-            val enIn = Locale("en", "IN")
-            val res = tts?.setLanguage(enIn)
-            if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-                val usRes = tts?.setLanguage(Locale.US)
-                if (usRes == TextToSpeech.LANG_MISSING_DATA || usRes == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    tts?.setLanguage(Locale.ENGLISH)
-                }
-            }
+            applyVoiceModel(voiceModelId)
             tts?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "tse_en_${System.currentTimeMillis()}")
         } catch (_: Exception) {
         }
@@ -123,7 +154,10 @@ class SoundEngine(context: Context) {
                 val t = i.toDouble() / sampleRate
                 val env = exp(-4.5 * t / (durationMs / 1000.0))
                 val sample = sin(2.0 * PI * freqHz * t) * env * volume
-                samples[i] = (sample * Short.MAX_VALUE).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+                samples[i] = (sample * Short.MAX_VALUE)
+                    .toInt()
+                    .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                    .toShort()
             }
             val minBuf = AudioTrack.getMinBufferSize(
                 sampleRate,

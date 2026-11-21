@@ -5,13 +5,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -41,7 +38,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
@@ -115,7 +111,7 @@ fun PaymentAndReviewDialog(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "Staff: @${bill.createdBy.ifBlank { "Admin" }}",
+                            text = "Technician: @${bill.createdBy.ifBlank { "Admin" }}",
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -123,7 +119,6 @@ fun PaymentAndReviewDialog(
                         )
                     }
 
-                    // Breakdown Card: SubTotal -> GrandTotal -> Due
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
@@ -264,15 +259,15 @@ fun PaymentAndReviewDialog(
 
                     Text(
                         text = if (ratingLocked) {
-                            "${rating} / 5 Stars — Locked (Cannot be edited or deleted)"
+                            "$rating / 5 Stars — Locked (Cannot be edited or deleted)"
                         } else {
                             when (rating) {
-                                5 -> "5 / 5 Stars — Excellent Service (Cannot edit after saving)"
-                                4 -> "4 / 5 Stars — Very Good (Cannot edit after saving)"
-                                3 -> "3 / 5 Stars — Good (Cannot edit after saving)"
-                                2 -> "2 / 5 Stars — Needs Improvement (Cannot edit after saving)"
-                                1 -> "1 / 5 Star — Poor (Cannot edit after saving)"
-                                else -> "Tap stars to rate staff work quality (Permanent once saved)"
+                                5 -> "5 / 5 Stars — Excellent Service (Permanent once saved)"
+                                4 -> "4 / 5 Stars — Very Good Service (Permanent once saved)"
+                                3 -> "3 / 5 Stars — Good Service (Permanent once saved)"
+                                2 -> "2 / 5 Stars — Needs Improvement (Permanent once saved)"
+                                1 -> "1 / 5 Star — Poor Service (Permanent once saved)"
+                                else -> "Tap stars to rate technician work quality (Permanent once saved)"
                             }
                         },
                         style = MaterialTheme.typography.labelMedium,

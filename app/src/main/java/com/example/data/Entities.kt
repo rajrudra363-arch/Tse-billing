@@ -24,7 +24,11 @@ data class BillEntity(
     val extraChargeType: String = "NONE",
     val extraChargeAmount: Double = 0.0,
     val staffRating: Int = 0,
-    val staffReviewNote: String = ""
+    val staffReviewNote: String = "",
+    val documentType: String = "BILL",
+    val isHelpBill: Boolean = false,
+    val helpRequestId: Long = 0L,
+    val quotationNote: String = ""
 )
 
 @Entity(tableName = "customers")
@@ -42,7 +46,8 @@ data class ProductEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
     val unit: String = "Nos",
-    val defaultRate: Double = 0.0
+    val defaultRate: Double = 0.0,
+    val folder: String = "General"
 )
 
 @Entity(tableName = "user_accounts")
@@ -50,7 +55,9 @@ data class UserAccountEntity(
     @PrimaryKey val username: String,
     val displayName: String,
     val passwordHash: String,
-    val role: String
+    val role: String,
+    val phone: String = "",
+    val photoBase64: String = ""
 )
 
 @Entity(tableName = "app_config")
@@ -69,6 +76,21 @@ data class CustomerHelpEntity(
     val helpDescription: String,
     val status: String = "OPEN",
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val acceptedBy: String = "",
+    val acceptedByName: String = "",
+    val acceptedByPhone: String = "",
+    val acceptedAt: Long = 0L,
+    val solvedAt: Long = 0L,
+    val billId: String = ""
 )
 
+@Entity(tableName = "technician_settlements")
+data class TechnicianSettlementEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val technicianUsername: String,
+    val amount: Double,
+    val note: String = "",
+    val recordedBy: String = "",
+    val createdAt: Long = System.currentTimeMillis()
+)

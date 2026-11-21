@@ -1,7 +1,11 @@
 package com.example
 
+import android.Manifest
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -15,7 +19,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,19 +44,27 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AdminPanelSettings
+import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Inventory2
-import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SupportAgent
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,15 +82,19 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalTextToolbar
@@ -83,12 +103,16 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppDatabase
-import com.example.data.AppLanguage
 import com.example.data.BillingRepository
+import com.example.data.BillingTimePolicy
 import com.example.data.CompanySettings
+import com.example.data.DocumentType
 import com.example.data.UserSession
+import com.example.data.VoiceAndNoteSettings
 import com.example.ui.BillingEvent
 import com.example.ui.BillingViewModel
 import com.example.ui.MainTab
@@ -105,20 +129,31 @@ import com.example.ui.screens.CustomersScreen
 import com.example.ui.screens.ProductsScreen
 import com.example.ui.screens.SavedBillsScreen
 import com.example.ui.screens.SettingsScreen
+import com.example.ui.screens.SuperAdminDashboardScreen
+import com.example.ui.theme.AmberWarn
 import com.example.ui.theme.CyanGlow
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.GoldSoft
+import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.NavyDeep
+import com.example.ui.theme.RedDue
 import com.example.ui.theme.TealAccent
 import com.example.ui.theme.TseBillingTheme
+import com.example.util.AppUpdateChecker
+import com.example.util.DeviceAuthHelper
+import com.example.util.GitHubReleaseInfo
 import com.example.util.InvoicePdfPrinter
 import com.example.util.InvoicePrintPayload
 import com.example.util.SoundEngine
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private lateinit var soundEngine: SoundEngine
 
     private val viewModel: BillingViewModel by viewModels {
@@ -146,205 +181,299 @@ class MainActivity : ComponentActivity() {
 
 private data class NavItem(
     val tab: MainTab,
-    val labelEn: String,
-    val labelHi: String,
+    val label: String,
     val icon: ImageVector
 )
+
+private tailrec fun Context.findFragmentActivity(): FragmentActivity? = when (this) {
+    is FragmentActivity -> this
+    is ContextWrapper -> baseContext.findFragmentActivity()
+    else -> null
+}
 
 @Composable
 fun TseBillingApp(viewModel: BillingViewModel) {
     ProvideSafeTextToolbar {
-    val context = LocalContext.current
-    val focusManager = LocalFocusManager.current
-    val textToolbar = LocalTextToolbar.current
-    val snackbarHostState = remember { SnackbarHostState() }
+        val context = LocalContext.current
+        val focusManager = LocalFocusManager.current
+        val textToolbar = LocalTextToolbar.current
+        val snackbarHostState = remember { SnackbarHostState() }
 
-    val splashVisible by viewModel.splashVisible.collectAsStateWithLifecycle()
-    val session by viewModel.session.collectAsStateWithLifecycle()
-    val isAdminConfigured by viewModel.isAdminConfigured.collectAsStateWithLifecycle()
-    val accounts by viewModel.accounts.collectAsStateWithLifecycle()
-    val authError by viewModel.authError.collectAsStateWithLifecycle()
+        val splashVisible by viewModel.splashVisible.collectAsStateWithLifecycle()
+        val session by viewModel.session.collectAsStateWithLifecycle()
+        val isAdminConfigured by viewModel.isAdminConfigured.collectAsStateWithLifecycle()
+        val accounts by viewModel.accounts.collectAsStateWithLifecycle()
+        val authError by viewModel.authError.collectAsStateWithLifecycle()
+        val summaryError by viewModel.summaryError.collectAsStateWithLifecycle()
 
-    val activeTab by viewModel.activeTab.collectAsStateWithLifecycle()
-    val billDraft by viewModel.billDraft.collectAsStateWithLifecycle()
-    val bills by viewModel.bills.collectAsStateWithLifecycle()
-    val filteredBills by viewModel.filteredBills.collectAsStateWithLifecycle()
-    val billSearch by viewModel.billSearchQuery.collectAsStateWithLifecycle()
-    val customers by viewModel.customers.collectAsStateWithLifecycle()
-    val customerSearch by viewModel.customerSearchQuery.collectAsStateWithLifecycle()
-    val helpRequests by viewModel.helpRequests.collectAsStateWithLifecycle()
-    val products by viewModel.products.collectAsStateWithLifecycle()
-    val company by viewModel.companySettings.collectAsStateWithLifecycle()
-    val upi by viewModel.upiSettings.collectAsStateWithLifecycle()
-    val soundEnabled by viewModel.soundEnabled.collectAsStateWithLifecycle()
-    val language by viewModel.language.collectAsStateWithLifecycle()
-    val finalModalVisible by viewModel.finalModalVisible.collectAsStateWithLifecycle()
-    val finalModalError by viewModel.finalModalError.collectAsStateWithLifecycle()
-    val exportOptionsPayload by viewModel.exportOptionsPayload.collectAsStateWithLifecycle()
-    val settlementDialogBill by viewModel.settlementDialogBill.collectAsStateWithLifecycle()
-    val staffPerformance by viewModel.staffPerformance.collectAsStateWithLifecycle()
+        val activeTab by viewModel.activeTab.collectAsStateWithLifecycle()
+        val billDraft by viewModel.billDraft.collectAsStateWithLifecycle()
+        val bills by viewModel.bills.collectAsStateWithLifecycle()
+        val visibleBills by viewModel.visibleBills.collectAsStateWithLifecycle()
+        val filteredBills by viewModel.filteredBills.collectAsStateWithLifecycle()
+        val billSearch by viewModel.billSearchQuery.collectAsStateWithLifecycle()
+        val customers by viewModel.customers.collectAsStateWithLifecycle()
+        val customerSearch by viewModel.customerSearchQuery.collectAsStateWithLifecycle()
+        val visibleHelpRequests by viewModel.visibleHelpRequests.collectAsStateWithLifecycle()
+        val helpRequests by viewModel.helpRequests.collectAsStateWithLifecycle()
+        val products by viewModel.products.collectAsStateWithLifecycle()
+        val company by viewModel.companySettings.collectAsStateWithLifecycle()
+        val upi by viewModel.upiSettings.collectAsStateWithLifecycle()
+        val voiceAndNote by viewModel.voiceAndNoteSettings.collectAsStateWithLifecycle()
+        val deviceAuthByUser by viewModel.deviceAuthEnabledByUser.collectAsStateWithLifecycle()
+        val technicianPerformance by viewModel.technicianPerformance.collectAsStateWithLifecycle()
+        val customerFolders by viewModel.customerFolders.collectAsStateWithLifecycle()
+        val soundEnabled by viewModel.soundEnabled.collectAsStateWithLifecycle()
+        val exportOptionsPayload by viewModel.exportOptionsPayload.collectAsStateWithLifecycle()
+        val settlementDialogBill by viewModel.settlementDialogBill.collectAsStateWithLifecycle()
+        val availableUpdate by viewModel.availableUpdate.collectAsStateWithLifecycle()
+        val updateCheckBusy by viewModel.updateCheckBusy.collectAsStateWithLifecycle()
+        val loginSecurityState by viewModel.loginSecurityState.collectAsStateWithLifecycle()
 
-    val scope = rememberCoroutineScope()
-    var pendingSavePayload by remember { mutableStateOf<InvoicePrintPayload?>(null) }
+        val scope = rememberCoroutineScope()
+        var pendingSavePdfPayload by remember { mutableStateOf<InvoicePrintPayload?>(null) }
+        var pendingSavePhotoPayload by remember { mutableStateOf<InvoicePrintPayload?>(null) }
+        var pendingNotifRelease by remember { mutableStateOf<GitHubReleaseInfo?>(null) }
+        var showUpdateDialog by remember { mutableStateOf(false) }
 
-    val savePdfLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/pdf")
-    ) { uri ->
-        val payload = pendingSavePayload
-        pendingSavePayload = null
-        if (uri != null && payload != null) {
-            scope.launch {
-                val ok = withContext(Dispatchers.IO) {
-                    context.contentResolver.openOutputStream(uri)?.use { out ->
-                        InvoicePdfPrinter.writePdfToStream(payload, out)
-                    } ?: false
+        // Real-time 1-second clock + Night closure check (12:01 AM - 6:00 AM)
+        var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                nowMillis = System.currentTimeMillis()
+                delay(1000L)
+            }
+        }
+        val liveTimeText = remember(nowMillis) {
+            SimpleDateFormat("hh:mm:ss a", Locale.US).format(Date(nowMillis))
+        }
+        val isNightClosed = remember(nowMillis) {
+            BillingTimePolicy.isNightClosedNow(nowMillis)
+        }
+
+        val savePdfLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.CreateDocument("application/pdf")
+        ) { uri ->
+            val payload = pendingSavePdfPayload
+            pendingSavePdfPayload = null
+            if (uri != null && payload != null) {
+                scope.launch {
+                    val ok = withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            InvoicePdfPrinter.writePdfToStream(payload, out)
+                        } ?: false
+                    }
+                    viewModel.notifyPdfSaved(ok)
                 }
-                viewModel.notifyPdfSaved(ok)
             }
         }
-    }
 
-    LaunchedEffect(Unit) {
-        viewModel.events.collect { event ->
-            when (event) {
-                is BillingEvent.Toast -> snackbarHostState.showSnackbar(event.message)
-                is BillingEvent.PrintPdf -> InvoicePdfPrinter.printInvoice(context, event.payload)
-                is BillingEvent.SavePdf -> {
-                    pendingSavePayload = event.payload
-                    val cleanNo = event.payload.invoiceNo.replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "Bill" }
-                    savePdfLauncher.launch("TSE_Invoice_$cleanNo.pdf")
-                }
-                is BillingEvent.SharePdf -> {
-                    val ok = InvoicePdfPrinter.sharePdf(context, event.payload)
-                    if (!ok) snackbarHostState.showSnackbar("Could not share A4 PDF")
+        val savePhotoLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.CreateDocument("image/png")
+        ) { uri ->
+            val payload = pendingSavePhotoPayload
+            pendingSavePhotoPayload = null
+            if (uri != null && payload != null) {
+                scope.launch {
+                    val ok = withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            InvoicePdfPrinter.saveInvoicePhotoToStream(payload, out)
+                        } ?: false
+                    }
+                    viewModel.notifyPhotoSaved(ok)
                 }
             }
         }
-    }
 
-    var loginWelcomeSpoken by remember { mutableStateOf(false) }
-    LaunchedEffect(splashVisible, session, isAdminConfigured) {
-        if (!splashVisible && session == null && isAdminConfigured == true) {
-            if (!loginWelcomeSpoken) {
-                loginWelcomeSpoken = true
-                viewModel.speakLoginWelcome()
-            }
-        } else if (session != null) {
-            loginWelcomeSpoken = false
-        }
-    }
-
-    val navItems = remember(session) {
-        buildList {
-            add(NavItem(MainTab.BILL, "New Bill", "नया बिल", Icons.Default.Receipt))
-            add(NavItem(MainTab.SAVED, "Saved", "सेव बिल", Icons.Default.ReceiptLong))
-            add(NavItem(MainTab.CUSTOMERS, "Customers", "ग्राहक", Icons.Default.People))
-            add(NavItem(MainTab.HELP, "Help Desk", "ग्राहक हेल्प", Icons.Default.SupportAgent))
-            if (session?.isAdmin == true && session?.isStaff == false) {
-                add(NavItem(MainTab.PRODUCTS, "Products", "प्रोडक्ट", Icons.Default.Inventory2))
-                add(NavItem(MainTab.ADMIN, "Admin", "एडमिन", Icons.Default.AdminPanelSettings))
-                add(NavItem(MainTab.SETTINGS, "Settings", "सेटिंग्स", Icons.Default.Settings))
+        val notifPermissionLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            val rel = pendingNotifRelease
+            pendingNotifRelease = null
+            if (granted && rel != null) {
+                AppUpdateChecker.postUpdateNotification(context, rel)
             }
         }
-    }
 
-    if (session != null && activeTab != MainTab.BILL) {
-        BackHandler {
-            clearFocusAndHideToolbar(focusManager, textToolbar)
-            viewModel.selectTab(MainTab.BILL)
+        LaunchedEffect(availableUpdate) {
+            if (availableUpdate != null) {
+                showUpdateDialog = true
+            }
         }
-    }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        if (session == null) {
-            AuthScreen(
-                isAdminConfigured = isAdminConfigured,
-                accounts = accounts,
-                authError = authError,
-                onClearError = viewModel::clearAuthError,
-                onSetupAdmin = viewModel::setupAdmin,
-                onLogin = viewModel::login,
-                onImportBackup = { json -> viewModel.importBackupJson(json, allowPreSetupRestore = true) },
-                onResetAdminPassword = viewModel::resetAdminPassword
-            )
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .imePadding()
-            )
-        } else {
-            val currentSession = session!!
-            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                val useRail = maxWidth >= 700.dp
-
-                Scaffold(
-                    modifier = Modifier.fillMaxSize().imePadding(),
-                    contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                    snackbarHost = {
-                        SnackbarHost(
-                            hostState = snackbarHostState,
-                            modifier = Modifier.navigationBarsPadding()
-                        )
-                    },
-                    topBar = {
-                        TseTopBar(
-                            company = company,
-                            session = currentSession,
-                            soundEnabled = soundEnabled,
-                            language = language,
-                            onToggleSound = viewModel::toggleSound,
-                            onToggleLanguage = {
-                                clearFocusAndHideToolbar(focusManager, textToolbar)
-                                val next = if (language == AppLanguage.EN) AppLanguage.HI else AppLanguage.EN
-                                viewModel.setLanguage(next)
-                            },
-                            onLogout = {
-                                clearFocusAndHideToolbar(focusManager, textToolbar)
-                                viewModel.logout()
-                            }
-                        )
-                    },
-                    bottomBar = {
-                        if (!useRail && navItems.size > 1) {
-                            if (navItems.size <= 5) {
-                                NavigationBar(
-                                    modifier = Modifier.navigationBarsPadding(),
-                                    containerColor = MaterialTheme.colorScheme.surface
-                                ) {
-                                    navItems.forEach { item ->
-                                        val selected = activeTab == item.tab
-                                        NavigationBarItem(
-                                            selected = selected,
-                                            onClick = {
-                                                clearFocusAndHideToolbar(focusManager, textToolbar)
-                                                viewModel.selectTab(item.tab)
-                                            },
-                                            icon = { Icon(item.icon, contentDescription = item.labelEn) },
-                                            label = {
-                                                Text(
-                                                    text = if (language == AppLanguage.HI) item.labelHi else item.labelEn,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                            },
-                                            modifier = Modifier.testTag("nav_${item.tab.route}")
-                                        )
-                                    }
+        LaunchedEffect(Unit) {
+            viewModel.events.collect { event ->
+                when (event) {
+                    is BillingEvent.Toast -> snackbarHostState.showSnackbar(event.message)
+                    is BillingEvent.PrintPdf -> InvoicePdfPrinter.printInvoice(context, event.payload)
+                    is BillingEvent.SavePdf -> {
+                        pendingSavePdfPayload = event.payload
+                        val prefix = if (event.payload.documentType == DocumentType.QUOTATION) "Quotation" else "Invoice"
+                        val cleanNo = event.payload.invoiceNo.replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "Bill" }
+                        savePdfLauncher.launch("TSE_${prefix}_$cleanNo.pdf")
+                    }
+                    is BillingEvent.SharePdf -> {
+                        val ok = InvoicePdfPrinter.sharePdf(context, event.payload)
+                        if (!ok) snackbarHostState.showSnackbar("Could not share A4 PDF")
+                    }
+                    is BillingEvent.SavePhoto -> {
+                        pendingSavePhotoPayload = event.payload
+                        val prefix = if (event.payload.documentType == DocumentType.QUOTATION) "Quotation" else "Invoice"
+                        val cleanNo = event.payload.invoiceNo.replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "Bill" }
+                        savePhotoLauncher.launch("TSE_${prefix}_$cleanNo.png")
+                    }
+                    is BillingEvent.SharePhoto -> {
+                        val ok = InvoicePdfPrinter.shareInvoicePhoto(context, event.payload)
+                        if (!ok) snackbarHostState.showSnackbar("Could not share document photo")
+                    }
+                    is BillingEvent.RequestDeviceAuthForBill -> {
+                        val activity = context.findFragmentActivity()
+                        if (activity == null) {
+                            snackbarHostState.showSnackbar("Unable to open device lock prompt on this screen.")
+                        } else {
+                            DeviceAuthHelper.authenticate(
+                                activity = activity,
+                                title = event.title,
+                                subtitle = event.subtitle,
+                                onSuccess = { viewModel.commitGeneratedBill() },
+                                onError = { err ->
+                                    scope.launch { snackbarHostState.showSnackbar(err) }
                                 }
+                            )
+                        }
+                    }
+                    is BillingEvent.NotifyAppUpdate -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            val granted = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.POST_NOTIFICATIONS
+                            ) == PackageManager.PERMISSION_GRANTED
+                            if (granted) {
+                                AppUpdateChecker.postUpdateNotification(context, event.release)
                             } else {
-                                Surface(
-                                    tonalElevation = 3.dp,
-                                    color = MaterialTheme.colorScheme.surface,
-                                    modifier = Modifier.fillMaxWidth().navigationBarsPadding()
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .horizontalScroll(rememberScrollState())
-                                            .padding(horizontal = 4.dp, vertical = 4.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                pendingNotifRelease = event.release
+                                notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            }
+                        } else {
+                            AppUpdateChecker.postUpdateNotification(context, event.release)
+                        }
+                    }
+                }
+            }
+        }
+
+        var loginWelcomeSpoken by remember { mutableStateOf(false) }
+        LaunchedEffect(splashVisible, session, isAdminConfigured) {
+            if (!splashVisible && session == null && isAdminConfigured == true) {
+                if (!loginWelcomeSpoken) {
+                    loginWelcomeSpoken = true
+                    viewModel.speakLoginWelcome()
+                }
+            } else if (session != null) {
+                loginWelcomeSpoken = false
+            }
+        }
+
+        val navItems = remember(session) {
+            val s = session
+            when {
+                s == null -> emptyList()
+                s.isSuperAdmin -> listOf(
+                    NavItem(MainTab.ANALYTICS, "Analytics", Icons.Default.Analytics),
+                    NavItem(MainTab.SAVED, "Saved", Icons.Default.ReceiptLong),
+                    NavItem(MainTab.CUSTOMERS, "Customers", Icons.Default.People),
+                    NavItem(MainTab.HELP, "Help Desk", Icons.Default.SupportAgent),
+                    NavItem(MainTab.PRODUCTS, "Products", Icons.Default.Inventory2)
+                )
+                s.isAdmin -> listOf(
+                    NavItem(MainTab.BILL, "New Bill", Icons.Default.Receipt),
+                    NavItem(MainTab.SAVED, "Saved", Icons.Default.ReceiptLong),
+                    NavItem(MainTab.CUSTOMERS, "Customers", Icons.Default.People),
+                    NavItem(MainTab.HELP, "Help Desk", Icons.Default.SupportAgent),
+                    NavItem(MainTab.PRODUCTS, "Products", Icons.Default.Inventory2),
+                    NavItem(MainTab.ANALYTICS, "Analytics", Icons.Default.Analytics),
+                    NavItem(MainTab.ADMIN, "Admin", Icons.Default.AdminPanelSettings),
+                    NavItem(MainTab.SETTINGS, "Settings", Icons.Default.Settings)
+                )
+                else -> listOf(
+                    NavItem(MainTab.BILL, "New Bill", Icons.Default.Receipt),
+                    NavItem(MainTab.SAVED, "Saved", Icons.Default.ReceiptLong),
+                    NavItem(MainTab.CUSTOMERS, "Customers", Icons.Default.People),
+                    NavItem(MainTab.HELP, "Help Desk", Icons.Default.SupportAgent),
+                    NavItem(MainTab.PRODUCTS, "Products", Icons.Default.Inventory2),
+                    NavItem(MainTab.SETTINGS, "Settings", Icons.Default.Settings)
+                )
+            }
+        }
+
+        val homeTabForSession = if (session?.isSuperAdmin == true) MainTab.ANALYTICS else MainTab.BILL
+        if (session != null && activeTab != homeTabForSession) {
+            BackHandler {
+                clearFocusAndHideToolbar(focusManager, textToolbar)
+                viewModel.selectTab(homeTabForSession)
+            }
+        }
+
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (session == null) {
+                AuthScreen(
+                    isAdminConfigured = isAdminConfigured,
+                    accounts = accounts,
+                    authError = authError,
+                    logoBase64 = company.logoBase64,
+                    loginSecurityState = loginSecurityState,
+                    onClearError = viewModel::clearAuthError,
+                    onSetupAdmin = viewModel::setupAdmin,
+                    onLogin = { u, p, antiRobotPassed -> viewModel.login(u, p, antiRobotPassed) },
+                    onImportBackup = { json -> viewModel.importBackupJson(json, allowPreSetupRestore = true) },
+                    onResetAdminPassword = viewModel::resetAdminPassword
+                )
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .imePadding()
+                )
+            } else {
+                val currentSession = session!!
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val useRail = maxWidth >= 700.dp
+
+                    Scaffold(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .imePadding(),
+                        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                        snackbarHost = {
+                            SnackbarHost(
+                                hostState = snackbarHostState,
+                                modifier = Modifier.navigationBarsPadding()
+                            )
+                        },
+                        topBar = {
+                            TseTopBar(
+                                company = company,
+                                session = currentSession,
+                                voiceAndNote = voiceAndNote,
+                                liveTimeText = liveTimeText,
+                                isNightClosed = isNightClosed,
+                                soundEnabled = soundEnabled,
+                                hasAvailableUpdate = availableUpdate != null,
+                                onToggleSound = viewModel::toggleSound,
+                                onOpenUpdateDialog = { showUpdateDialog = true },
+                                onLogout = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    viewModel.logout()
+                                }
+                            )
+                        },
+                        bottomBar = {
+                            if (!useRail && navItems.size > 1) {
+                                if (navItems.size <= 5) {
+                                    NavigationBar(
+                                        modifier = Modifier.navigationBarsPadding(),
+                                        containerColor = MaterialTheme.colorScheme.surface
                                     ) {
                                         navItems.forEach { item ->
                                             val selected = activeTab == item.tab
@@ -354,220 +483,376 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                                     clearFocusAndHideToolbar(focusManager, textToolbar)
                                                     viewModel.selectTab(item.tab)
                                                 },
-                                                icon = { Icon(item.icon, contentDescription = item.labelEn) },
+                                                icon = { Icon(item.icon, contentDescription = item.label) },
                                                 label = {
                                                     Text(
-                                                        text = if (language == AppLanguage.HI) item.labelHi else item.labelEn,
+                                                        text = item.label,
                                                         maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis
                                                     )
                                                 },
-                                                modifier = Modifier
-                                                    .widthIn(min = 76.dp)
-                                                    .testTag("nav_${item.tab.route}")
+                                                modifier = Modifier.testTag("nav_${item.tab.route}")
                                             )
+                                        }
+                                    }
+                                } else {
+                                    Surface(
+                                        tonalElevation = 3.dp,
+                                        color = MaterialTheme.colorScheme.surface,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .navigationBarsPadding()
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .horizontalScroll(rememberScrollState())
+                                                .padding(horizontal = 4.dp, vertical = 4.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            navItems.forEach { item ->
+                                                val selected = activeTab == item.tab
+                                                NavigationBarItem(
+                                                    selected = selected,
+                                                    onClick = {
+                                                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                                                        viewModel.selectTab(item.tab)
+                                                    },
+                                                    icon = { Icon(item.icon, contentDescription = item.label) },
+                                                    label = {
+                                                        Text(
+                                                            text = item.label,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    },
+                                                    modifier = Modifier
+                                                        .widthIn(min = 76.dp)
+                                                        .testTag("nav_${item.tab.route}")
+                                                )
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
-                    }
-                ) { innerPadding ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding)
-                            .background(MaterialTheme.colorScheme.background)
-                    ) {
-                        if (useRail && navItems.size > 1) {
-                            NavigationRail(
-                                modifier = Modifier.fillMaxHeight().navigationBarsPadding(),
-                                containerColor = MaterialTheme.colorScheme.surface
-                            ) {
-                                Spacer(Modifier.height(8.dp))
-                                navItems.forEach { item ->
-                                    NavigationRailItem(
-                                        selected = activeTab == item.tab,
-                                        onClick = {
-                                            clearFocusAndHideToolbar(focusManager, textToolbar)
-                                            viewModel.selectTab(item.tab)
-                                        },
-                                        icon = { Icon(item.icon, contentDescription = item.labelEn) },
-                                        label = { Text(if (language == AppLanguage.HI) item.labelHi else item.labelEn) },
-                                        modifier = Modifier.testTag("rail_${item.tab.route}")
-                                    )
+                    ) { innerPadding ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(innerPadding)
+                                .background(MaterialTheme.colorScheme.background)
+                        ) {
+                            if (useRail && navItems.size > 1) {
+                                NavigationRail(
+                                    modifier = Modifier
+                                        .fillMaxHeight()
+                                        .navigationBarsPadding(),
+                                    containerColor = MaterialTheme.colorScheme.surface
+                                ) {
+                                    Spacer(Modifier.height(8.dp))
+                                    navItems.forEach { item ->
+                                        NavigationRailItem(
+                                            selected = activeTab == item.tab,
+                                            onClick = {
+                                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                                viewModel.selectTab(item.tab)
+                                            },
+                                            icon = { Icon(item.icon, contentDescription = item.label) },
+                                            label = { Text(item.label) },
+                                            modifier = Modifier.testTag("rail_${item.tab.route}")
+                                        )
+                                    }
                                 }
                             }
-                        }
 
-                        AnimatedContent(
-                            targetState = activeTab,
-                            transitionSpec = {
-                                (fadeIn(tween(240)) + slideInVertically(tween(240)) { it / 18 }) togetherWith
-                                    fadeOut(tween(150))
-                            },
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                            label = "tabContent"
-                        ) { tab ->
-                            when (tab) {
-                                MainTab.BILL -> BillScreen(
-                                    draft = billDraft,
-                                    products = products,
-                                    customers = customers,
-                                    company = company,
-                                    upi = upi,
-                                    language = language,
-                                    currentUser = currentSession,
-                                    finalModalVisible = finalModalVisible,
-                                    finalModalError = finalModalError,
-                                    exportOptionsPayload = exportOptionsPayload,
-                                    onCustomerNameChange = viewModel::updateCustomerName,
-                                    onCustomerSelected = viewModel::selectCustomerSuggestion,
-                                    onCustomerDetailsChange = viewModel::updateCustomerDetails,
-                                    onCustomerLocationUrlChange = viewModel::updateCustomerLocationUrl,
-                                    onInvoiceNoChange = viewModel::updateInvoiceNo,
-                                    onInvoiceDateChange = viewModel::updateInvoiceDate,
-                                    onAddItem = viewModel::addItem,
-                                    onSelectProductForRow = viewModel::selectProductForRow,
-                                    onUpdateItem = viewModel::updateItemFields,
-                                    onRemoveItem = viewModel::removeItem,
-                                    onExtraChargeTypeChange = viewModel::updateExtraChargeType,
-                                    onExtraChargeAmountChange = viewModel::updateExtraChargeAmount,
-                                    onDiscountChange = viewModel::updateDiscount,
-                                    onPaidAmountChange = viewModel::updatePaidAmount,
-                                    onPaymentModeChange = viewModel::updatePaymentMode,
-                                    onSignatureChanged = viewModel::updateSignatureBitmap,
-                                    onCustomQrTextChange = viewModel::updateCustomQrText,
-                                    onToggleSheetPreview = viewModel::toggleSheetPreview,
-                                    onResetBill = viewModel::resetBill,
-                                    onSaveBill = { viewModel.saveBill() },
-                                    onOpenFinalCodeModal = viewModel::openFinalCodeModal,
-                                    onCloseFinalCodeModal = viewModel::closeFinalCodeModal,
-                                    onConfirmFinalBill = viewModel::confirmFinalBill,
-                                    onDismissExportOptions = viewModel::dismissExportOptions,
-                                    onPrintA4 = viewModel::triggerPrintA4,
-                                    onSavePdf = viewModel::triggerSavePdf,
-                                    onSharePdf = viewModel::triggerSharePdf,
-                                    onOpenPaymentAndReview = viewModel::openSettlementReviewForExport
-                                )
+                            AnimatedContent(
+                                targetState = activeTab,
+                                transitionSpec = {
+                                    (fadeIn(tween(240)) + slideInVertically(tween(240)) { it / 18 }) togetherWith
+                                        fadeOut(tween(150))
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight(),
+                                label = "tabContent"
+                            ) { tab ->
+                                when (tab) {
+                                    MainTab.BILL -> BillScreen(
+                                        draft = billDraft,
+                                        products = products,
+                                        customers = customers,
+                                        allBills = bills,
+                                        company = company,
+                                        upi = upi,
+                                        currentUser = currentSession,
+                                        isNightClosed = isNightClosed,
+                                        summaryError = summaryError,
+                                        exportOptionsPayload = exportOptionsPayload,
+                                        onSetDocumentType = viewModel::setDocumentType,
+                                        onQuotationNoteChange = viewModel::updateQuotationNote,
+                                        onCustomerNameChange = viewModel::updateCustomerName,
+                                        onCustomerSelected = viewModel::selectCustomerSuggestion,
+                                        onCustomerDetailsChange = viewModel::updateCustomerDetails,
+                                        onCustomerLocationUrlChange = viewModel::updateCustomerLocationUrl,
+                                        onInvoiceNoChange = viewModel::updateInvoiceNo,
+                                        onInvoiceDateChange = viewModel::updateInvoiceDate,
+                                        onAddItem = viewModel::addItem,
+                                        onSelectFolderForRow = viewModel::selectFolderForRow,
+                                        onSelectProductForRow = viewModel::selectProductForRow,
+                                        onUpdateItem = viewModel::updateItemFields,
+                                        onRemoveItem = viewModel::removeItem,
+                                        onExtraChargeTypeChange = viewModel::updateExtraChargeType,
+                                        onExtraChargeAmountChange = viewModel::updateExtraChargeAmount,
+                                        onDiscountChange = viewModel::updateDiscount,
+                                        onPaidAmountChange = viewModel::updatePaidAmount,
+                                        onPaymentModeChange = viewModel::updatePaymentMode,
+                                        onSignatureChanged = viewModel::updateSignatureBitmap,
+                                        onCustomQrTextChange = viewModel::updateCustomQrText,
+                                        onStaffRatingChange = viewModel::updateStaffRatingInDraft,
+                                        onStaffReviewChange = viewModel::updateStaffReviewInDraft,
+                                        onToggleSheetPreview = viewModel::toggleSheetPreview,
+                                        onResetBill = viewModel::resetBill,
+                                        onOpenSummaryModal = { viewModel.openSummaryModal() },
+                                        onCloseSummaryModal = viewModel::closeSummaryModal,
+                                        onRequestGenerateWithDeviceAuth = { viewModel.requestBillGenerationWithDeviceAuth() },
+                                        onDismissExportOptions = viewModel::dismissExportOptions,
+                                        onPrintA4 = viewModel::triggerPrintA4,
+                                        onSavePdf = viewModel::triggerSavePdf,
+                                        onSharePdf = viewModel::triggerSharePdf,
+                                        onSavePhoto = viewModel::triggerSavePhoto,
+                                        onSharePhoto = viewModel::triggerSharePhoto,
+                                        onOpenPaymentAndReview = viewModel::openSettlementReviewForExport
+                                    )
 
-                                MainTab.SAVED -> SavedBillsScreen(
-                                    allBills = bills,
-                                    filteredBills = filteredBills,
-                                    searchQuery = billSearch,
-                                    company = company,
-                                    upi = upi,
-                                    isAdmin = currentSession.isAdmin && !currentSession.isStaff,
-                                    onSearchChange = viewModel::updateBillSearch,
-                                    onOpenBill = viewModel::openBillForEdit,
-                                    onOpenPaymentReview = viewModel::openSettlementReviewDialog,
-                                    onPrintBill = viewModel::printBillDirect,
-                                    onSavePdf = viewModel::saveBillPdfDirect,
-                                    onSharePdf = viewModel::shareBillPdfDirect,
-                                    onDeleteBill = viewModel::deleteBill
-                                )
+                                    MainTab.SAVED -> SavedBillsScreen(
+                                        allBills = visibleBills,
+                                        filteredBills = filteredBills,
+                                        customerFolders = customerFolders,
+                                        searchQuery = billSearch,
+                                        company = company,
+                                        upi = upi,
+                                        isAdmin = currentSession.isAdmin,
+                                        isSuperAdmin = currentSession.isSuperAdmin,
+                                        onSearchChange = viewModel::updateBillSearch,
+                                        onOpenBill = viewModel::openBillForEdit,
+                                        onPrintBill = viewModel::printBillDirect,
+                                        onSavePdf = viewModel::saveBillPdfDirect,
+                                        onSharePdf = viewModel::shareBillPdfDirect,
+                                        onSavePhoto = viewModel::saveBillPhotoDirect,
+                                        onSharePhoto = viewModel::shareBillPhotoDirect,
+                                        onDeleteBill = viewModel::deleteBill,
+                                        onOpenPaymentReview = viewModel::openSettlementReviewDialog
+                                    )
 
-                                MainTab.CUSTOMERS -> CustomersScreen(
-                                    customers = customers,
-                                    user = currentSession,
-                                    searchQuery = customerSearch,
-                                    onSearchChange = viewModel::updateCustomerSearch,
-                                    onSaveCustomer = { id, name, phone, address, locationUrl ->
-                                        viewModel.saveCustomer(
-                                            name = name,
-                                            phone = phone,
-                                            address = address,
-                                            locationUrl = locationUrl,
-                                            id = id
-                                        )
-                                    },
-                                    onDeleteCustomer = viewModel::deleteCustomer
-                                )
+                                    MainTab.CUSTOMERS -> CustomersScreen(
+                                        customers = customers,
+                                        user = currentSession,
+                                        searchQuery = customerSearch,
+                                        onSearchChange = viewModel::updateCustomerSearch,
+                                        onSaveCustomer = { id, name, phone, address, locationUrl ->
+                                            viewModel.saveCustomer(
+                                                name = name,
+                                                phone = phone,
+                                                address = address,
+                                                locationUrl = locationUrl,
+                                                id = id
+                                            )
+                                        },
+                                        onDeleteCustomer = viewModel::deleteCustomer
+                                    )
 
-                                MainTab.HELP -> CustomerHelpScreen(
-                                    helpRequests = helpRequests,
-                                    customers = customers,
-                                    user = currentSession,
-                                    onSaveHelpRequest = { id, name, phone, address, locationUrl, desc, status ->
-                                        viewModel.saveHelpRequest(
-                                            id = id,
-                                            customerName = name,
-                                            phone = phone,
-                                            address = address,
-                                            locationUrl = locationUrl,
-                                            helpDescription = desc,
-                                            status = status
-                                        )
-                                    },
-                                    onToggleStatus = viewModel::toggleHelpRequestStatus,
-                                    onDeleteHelpRequest = viewModel::deleteHelpRequest
-                                )
+                                    MainTab.HELP -> CustomerHelpScreen(
+                                        helpRequests = visibleHelpRequests,
+                                        customers = customers,
+                                        company = company,
+                                        user = currentSession,
+                                        onSaveHelpRequest = { id, name, phone, address, locationUrl, desc, status ->
+                                            viewModel.saveHelpRequest(
+                                                id = id,
+                                                customerName = name,
+                                                phone = phone,
+                                                address = address,
+                                                locationUrl = locationUrl,
+                                                helpDescription = desc,
+                                                status = status
+                                            )
+                                        },
+                                        onAcceptRequest = viewModel::acceptHelpRequest,
+                                        onMarkSolved = { viewModel.markHelpSolved(it) },
+                                        onMarkNotSolved = { viewModel.markHelpNotSolved(it) },
+                                        onGetBillFromHelp = viewModel::startBillFromHelpRequest,
+                                        onDeleteHelpRequest = viewModel::deleteHelpRequest
+                                    )
 
-                                MainTab.PRODUCTS -> ProductsScreen(
-                                    products = products,
-                                    user = currentSession,
-                                    onAddProduct = viewModel::addProduct,
-                                    onUpdateProduct = viewModel::updateProduct,
-                                    onDeleteProduct = viewModel::deleteProduct
-                                )
+                                    MainTab.PRODUCTS -> ProductsScreen(
+                                        products = products,
+                                        user = currentSession,
+                                        onAddProduct = viewModel::addProduct,
+                                        onUpdateProduct = viewModel::updateProduct,
+                                        onDeleteProduct = viewModel::deleteProduct
+                                    )
 
-                                MainTab.ADMIN -> AdminPanelScreen(
-                                    upiSettings = upi,
-                                    accounts = accounts,
-                                    staffPerformance = staffPerformance,
-                                    onSaveUpi = viewModel::saveUpiSettings,
-                                    onClearUpi = viewModel::clearUpiId,
-                                    onChangeFinalCode = viewModel::changeFinalCode,
-                                    onAddStaff = viewModel::addStaff,
-                                    onRemoveStaff = viewModel::removeStaff
-                                )
+                                    MainTab.ANALYTICS -> SuperAdminDashboardScreen(
+                                        bills = bills,
+                                        customers = customers,
+                                        helpRequests = helpRequests,
+                                        products = products,
+                                        technicianPerformance = technicianPerformance
+                                    )
 
-                                MainTab.SETTINGS -> SettingsScreen(
-                                    settings = company,
-                                    user = currentSession,
-                                    onSaveSettings = viewModel::saveCompanySettings,
-                                    onPickFallbackQrBitmap = viewModel::saveFallbackQrBitmap,
-                                    onPickAuthorisedSignatureBitmap = viewModel::saveAuthorisedSignatureBitmap,
-                                    onExportBackup = viewModel::exportBackupJson,
-                                    onImportBackup = viewModel::importBackupJson,
-                                    onBackupExported = viewModel::notifyBackupExported
-                                )
+                                    MainTab.ADMIN -> AdminPanelScreen(
+                                        upiSettings = upi,
+                                        accounts = accounts,
+                                        technicianPerformance = technicianPerformance,
+                                        voiceAndNoteSettings = voiceAndNote,
+                                        systemVoiceOptions = viewModel.availableSystemVoices(),
+                                        onSaveUpi = viewModel::saveUpiSettings,
+                                        onClearUpi = viewModel::clearUpiId,
+                                        onAddTechnician = viewModel::addTechnician,
+                                        onUpdateTechnician = viewModel::updateTechnician,
+                                        onRemoveTechnician = viewModel::removeTechnician,
+                                        onAddSuperAdmin = viewModel::addSuperAdmin,
+                                        onRemoveSuperAdmin = viewModel::removeSuperAdmin,
+                                        onRecordCashSettlement = viewModel::recordTechnicianCashSettlement,
+                                        onSaveVoiceAndNoteSettings = viewModel::saveVoiceAndNoteSettings,
+                                        onTestVoice = viewModel::testVoiceAnnouncement
+                                    )
+
+                                    MainTab.SETTINGS -> SettingsScreen(
+                                        settings = company,
+                                        user = currentSession,
+                                        deviceAuthEnabled = deviceAuthByUser[currentSession.username.lowercase(Locale.ROOT)] == true,
+                                        updateCheckBusy = updateCheckBusy,
+                                        onToggleDeviceAuth = viewModel::setDeviceAuthForCurrentUser,
+                                        onSaveSettings = viewModel::saveCompanySettings,
+                                        onPickCompanyLogoBitmap = viewModel::saveCompanyLogoBitmap,
+                                        onPickFallbackQrBitmap = viewModel::saveFallbackQrBitmap,
+                                        onPickAuthorisedSignatureBitmap = viewModel::saveAuthorisedSignatureBitmap,
+                                        onExportBackup = viewModel::exportBackupJson,
+                                        onImportBackup = viewModel::importBackupJson,
+                                        onBackupExported = viewModel::notifyBackupExported,
+                                        onCheckForUpdates = { viewModel.checkForAppUpdates(manual = true) }
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        val activeSettlementBill = settlementDialogBill
-        if (activeSettlementBill != null) {
-            PaymentAndReviewDialog(
-                bill = activeSettlementBill,
-                onDismiss = viewModel::dismissSettlementReviewDialog,
-                onSave = viewModel::saveBillSettlementAndReview
-            )
-        }
+            val activeSettlementBill = settlementDialogBill
+            if (activeSettlementBill != null) {
+                PaymentAndReviewDialog(
+                    bill = activeSettlementBill,
+                    onDismiss = viewModel::dismissSettlementReviewDialog,
+                    onSave = viewModel::saveBillSettlementAndReview
+                )
+            }
 
-        // Non-blocking Animated Splash Overlay
-        AnimatedVisibility(
-            visible = splashVisible,
-            enter = fadeIn(tween(150)),
-            exit = fadeOut(tween(320))
-        ) {
-            SplashOverlay(onSkip = viewModel::dismissSplash)
+            val updateRelease = availableUpdate
+            if (showUpdateDialog && updateRelease != null) {
+                AlertDialog(
+                    onDismissRequest = {
+                        showUpdateDialog = false
+                        viewModel.dismissUpdateDialog()
+                    },
+                    modifier = Modifier.testTag("app_update_dialog"),
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Default.SystemUpdate, contentDescription = null, tint = TealAccent)
+                            Text("Update Available (${updateRelease.tagName})", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = "A new version of TSE Billing is available on GitHub Releases.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = updateRelease.releaseNotes,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Surface(
+                                color = Color(0xFFE8F5E9),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    text = "All existing bills, customers, Technician records, and settings remain safe after updating.",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = GreenPaid,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                val started = AppUpdateChecker.triggerUpdateDownloadAndInstall(context, updateRelease)
+                                showUpdateDialog = false
+                                viewModel.dismissUpdateDialog()
+                                scope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        if (started) "Downloading TSE Billing v${updateRelease.versionName} update..."
+                                        else "Unable to start update download."
+                                    )
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                            modifier = Modifier.testTag("update_now_button")
+                        ) {
+                            Text("Update Now", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = {
+                                showUpdateDialog = false
+                                viewModel.dismissUpdateDialog()
+                            },
+                            modifier = Modifier.testTag("update_later_button")
+                        ) {
+                            Text("Later")
+                        }
+                    }
+                )
+            }
+
+            // Non-blocking Animated Splash Overlay
+            AnimatedVisibility(
+                visible = splashVisible,
+                enter = fadeIn(tween(150)),
+                exit = fadeOut(tween(320))
+            ) {
+                SplashOverlay(
+                    logoBase64 = company.logoBase64,
+                    onSkip = viewModel::dismissSplash
+                )
+            }
         }
-    }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TseTopBar(
     company: CompanySettings,
     session: UserSession,
+    voiceAndNote: VoiceAndNoteSettings,
+    liveTimeText: String,
+    isNightClosed: Boolean,
     soundEnabled: Boolean,
-    language: AppLanguage,
+    hasAvailableUpdate: Boolean,
     onToggleSound: () -> Unit,
-    onToggleLanguage: () -> Unit,
+    onOpenUpdateDialog: () -> Unit,
     onLogout: () -> Unit
 ) {
     Column(
@@ -579,7 +864,7 @@ private fun TseTopBar(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+                .padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -588,7 +873,24 @@ private fun TseTopBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                TseShieldLogo(modifier = Modifier.size(40.dp))
+                TseShieldLogo(
+                    logoBase64 = company.logoBase64,
+                    modifier = Modifier.size(40.dp)
+                )
+                val techAvatarBmp = remember(session.photoBase64) {
+                    session.photoBase64.takeIf { it.isNotBlank() }?.let { InvoicePdfPrinter.decodeBase64Bitmap(it) }
+                }
+                if (techAvatarBmp != null) {
+                    Image(
+                        bitmap = techAvatarBmp.asImageBitmap(),
+                        contentDescription = "${session.displayName} profile photo",
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .border(1.5.dp, GoldAccent, CircleShape),
+                        contentScale = ContentScale.Crop
+                    )
+                }
                 Column {
                     Text(
                         text = company.companyName,
@@ -599,39 +901,37 @@ private fun TseTopBar(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = if (session.isAdmin && !session.isStaff) {
-                            "${session.displayName} (Admin)"
-                        } else {
-                            "${session.displayName} (Staff · View & Bill)"
-                        },
+                        text = "${session.displayName} (${session.roleDisplayLabel})",
                         color = GoldSoft,
-                        style = MaterialTheme.typography.labelMedium
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (hasAvailableUpdate) {
+                    IconButton(
+                        onClick = onOpenUpdateDialog,
+                        modifier = Modifier.testTag("topbar_update_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SystemUpdate,
+                            contentDescription = "Update available",
+                            tint = AmberWarn
+                        )
+                    }
+                }
+
                 IconButton(
                     onClick = onToggleSound,
                     modifier = Modifier.testTag("sound_toggle_button")
                 ) {
                     Icon(
                         imageVector = if (soundEnabled) Icons.Default.VolumeUp else Icons.Default.VolumeOff,
-                        contentDescription = if (soundEnabled) "Mute sound" else "Enable sound",
+                        contentDescription = if (soundEnabled) "Mute voice and sound" else "Enable voice and sound",
                         tint = if (soundEnabled) CyanGlow else Color.White.copy(alpha = 0.6f)
-                    )
-                }
-
-                TextButton(
-                    onClick = onToggleLanguage,
-                    modifier = Modifier.testTag("language_toggle_button")
-                ) {
-                    Icon(Icons.Default.Language, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(3.dp))
-                    Text(
-                        text = if (language == AppLanguage.EN) "EN" else "हि",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold
                     )
                 }
 
@@ -647,6 +947,93 @@ private fun TseTopBar(
                 }
             }
         }
-        HorizontalDivider(thickness = 3.dp, color = GoldAccent)
+
+        // Contrasting Header Marquee Note + Live Real-Time Clock Strip
+        Surface(
+            color = if (isNightClosed) Color(0xFF5A161E) else Color(0xFF0A2433),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Campaign,
+                    contentDescription = "Notice ticker",
+                    tint = GoldAccent,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = voiceAndNote.headerNote.ifBlank {
+                        "Welcome to Total Solution Enterprises — Authorized CCTV Sales & Support"
+                    },
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    modifier = Modifier
+                        .weight(1f)
+                        .basicMarquee(iterations = Int.MAX_VALUE)
+                        .testTag("header_marquee_note")
+                )
+
+                if (isNightClosed) {
+                    Surface(
+                        color = RedDue,
+                        shape = RoundedCornerShape(999.dp),
+                        modifier = Modifier.testTag("night_closed_chip")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.NightsStay,
+                                contentDescription = "Night closure active",
+                                tint = Color.White,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text(
+                                text = "CLOSED 12:01AM-6AM",
+                                color = Color.White,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Black
+                            )
+                        }
+                    }
+                }
+
+                Surface(
+                    color = GoldAccent.copy(alpha = 0.22f),
+                    shape = RoundedCornerShape(999.dp),
+                    modifier = Modifier.testTag("live_clock_pill")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Schedule,
+                            contentDescription = "Live time",
+                            tint = GoldSoft,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = liveTimeText,
+                            color = GoldSoft,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider(thickness = 2.5.dp, color = GoldAccent)
     }
 }

@@ -27,6 +27,7 @@ import android.util.Base64
 import androidx.core.content.FileProvider
 import com.example.data.ChargeType
 import com.example.data.CompanySettings
+import com.example.data.DocumentType
 import com.example.data.InvoiceItem
 import com.example.data.PaymentMode
 import com.example.data.UpiSettings
@@ -52,7 +53,11 @@ data class InvoicePrintPayload(
     val signatureBase64: String,
     val customQrText: String,
     val extraChargeType: ChargeType = ChargeType.NONE,
-    val extraChargeAmount: Double = 0.0
+    val extraChargeAmount: Double = 0.0,
+    val documentType: DocumentType = DocumentType.BILL,
+    val isHelpBill: Boolean = false,
+    val helpRequestId: Long = 0L,
+    val quotationNote: String = ""
 )
 
 object InvoicePdfPrinter {
@@ -63,8 +68,9 @@ object InvoicePdfPrinter {
 
     fun printInvoice(context: Context, payload: InvoicePrintPayload) {
         val printManager = context.getSystemService(Context.PRINT_SERVICE) as? PrintManager ?: return
-        val safeNo = sanitizeFileName(payload.invoiceNo.ifBlank { "Bill" })
-        val jobName = "TSE_Invoice_$safeNo"
+        val prefix = if (payload.documentType == DocumentType.QUOTATION) "TSE_Quotation" else "TSE_Invoice"
+        val safeNo = sanitizeFileName(payload.invoiceNo.ifBlank { "Document" })
+        val jobName = "${prefix}_$safeNo"
         val attrs = PrintAttributes.Builder()
             .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
             .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
@@ -90,11 +96,67 @@ object InvoicePdfPrinter {
         }
     }
 
+    fun renderInvoiceBitmap(payload: InvoicePrintPayload, scale: Float = 2f): Bitmap {
+        val w = (A4_WIDTH_PT * scale).toInt().coerceAtLeast(A4_WIDTH_PT)
+        val h = (A4_HEIGHT_PT * scale).toInt().coerceAtLeast(A4_HEIGHT_PT)
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.scale(scale, scale)
+        drawInvoicePage(canvas, payload)
+        return bitmap
+    }
+
+    fun saveInvoicePhotoToStream(payload: InvoicePrintPayload, outputStream: OutputStream): Boolean {
+        return try {
+            val bmp = renderInvoiceBitmap(payload, scale = 2.0f)
+            val ok = bmp.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+            outputStream.flush()
+            ok
+        } catch (e: Exception) {
+            android.util.Log.e("InvoicePdfPrinter", "Photo export failed", e)
+            false
+        }
+    }
+
+    fun shareInvoicePhoto(context: Context, payload: InvoicePrintPayload): Boolean {
+        return try {
+            val dir = File(context.cacheDir, "photos").apply { mkdirs() }
+            val prefix = if (payload.documentType == DocumentType.QUOTATION) "TSE_Quotation" else "TSE_Invoice"
+            val safeNo = sanitizeFileName(payload.invoiceNo.ifBlank { "Document" })
+            val file = File(dir, "${prefix}_$safeNo.png")
+            FileOutputStream(file).use { out ->
+                if (!saveInvoicePhotoToStream(payload, out)) return false
+            }
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                file
+            )
+            val title = if (payload.documentType == DocumentType.QUOTATION) {
+                "Quotation ${payload.invoiceNo} - ${payload.company.companyName}"
+            } else {
+                "Invoice ${payload.invoiceNo} - ${payload.company.companyName}"
+            }
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "image/png"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_SUBJECT, title)
+                putExtra(Intent.EXTRA_TEXT, "$title\nThank you for choosing ${payload.company.companyName}!")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(shareIntent, "Share Document Photo"))
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun sharePdf(context: Context, payload: InvoicePrintPayload): Boolean {
         return try {
             val dir = File(context.cacheDir, "pdfs").apply { mkdirs() }
+            val prefix = if (payload.documentType == DocumentType.QUOTATION) "TSE_Quotation" else "TSE_Invoice"
             val safeNo = sanitizeFileName(payload.invoiceNo.ifBlank { "Bill" })
-            val file = File(dir, "TSE_Invoice_$safeNo.pdf")
+            val file = File(dir, "${prefix}_$safeNo.pdf")
             FileOutputStream(file).use { out ->
                 if (!writePdfToStream(payload, out)) return false
             }
@@ -103,13 +165,14 @@ object InvoicePdfPrinter {
                 "${context.packageName}.fileprovider",
                 file
             )
+            val docTitle = if (payload.documentType == DocumentType.QUOTATION) "Quotation" else "Tax Invoice"
             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                 type = "application/pdf"
                 putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(Intent.EXTRA_SUBJECT, "Tax Invoice ${payload.invoiceNo} - ${payload.company.companyName}")
+                putExtra(Intent.EXTRA_SUBJECT, "$docTitle ${payload.invoiceNo} - ${payload.company.companyName}")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            context.startActivity(Intent.createChooser(shareIntent, "Share A4 Invoice PDF"))
+            context.startActivity(Intent.createChooser(shareIntent, "Share A4 $docTitle PDF"))
             true
         } catch (_: Exception) {
             false
@@ -135,8 +198,9 @@ object InvoicePdfPrinter {
                 callback.onLayoutCancelled()
                 return
             }
+            val prefix = if (payload.documentType == DocumentType.QUOTATION) "TSE_Quotation" else "TSE_Invoice"
             val safeNo = sanitizeFileName(payload.invoiceNo.ifBlank { "Bill" })
-            val info = PrintDocumentInfo.Builder("TSE_Invoice_$safeNo.pdf")
+            val info = PrintDocumentInfo.Builder("${prefix}_$safeNo.pdf")
                 .setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT)
                 .setPageCount(1)
                 .build()
@@ -169,6 +233,7 @@ object InvoicePdfPrinter {
         val top = MARGIN
         val bottom = A4_HEIGHT_PT - MARGIN
         val width = right - left
+        val isQuotation = p.documentType == DocumentType.QUOTATION
 
         val bgWhite = Paint().apply { color = Color.WHITE; style = Paint.Style.FILL }
         canvas.drawRect(0f, 0f, A4_WIDTH_PT.toFloat(), A4_HEIGHT_PT.toFloat(), bgWhite)
@@ -186,28 +251,32 @@ object InvoicePdfPrinter {
         val fillHeader = Paint().apply { color = Color.parseColor("#EDF4F7"); style = Paint.Style.FILL }
         val fillSoft = Paint().apply { color = Color.parseColor("#F7FAFC"); style = Paint.Style.FILL }
         val fillGrand = Paint().apply { color = Color.parseColor("#EEF5F8"); style = Paint.Style.FILL }
-        val fillDue = Paint().apply { color = Color.parseColor("#FEE2E2"); style = Paint.Style.FILL }
-        val dueBorder = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#B91C1C")
-            style = Paint.Style.STROKE
-            strokeWidth = 1.2f
-        }
+        val fillHelpBanner = Paint().apply { color = Color.parseColor("#E0F2FE"); style = Paint.Style.FILL }
 
         // Outer A4 border
         canvas.drawRect(left, top, right, bottom, borderPaint)
 
-        // 1. TOP HEADER: 2/3 Company Details + 1/3 Customer Care & Support QR (y: 18 -> 126)
+        // 1. TOP HEADER: Company Details + Support QR (or full width clean header for Quotation)
         val headerH = 108f
-        val splitX = left + width * 0.67f
+        val splitX = if (isQuotation) right else left + width * 0.67f
         val headerBottom = top + headerH
         canvas.drawLine(left, headerBottom, right, headerBottom, borderPaint)
-        canvas.drawLine(splitX, top, splitX, headerBottom, borderPaint)
+        if (!isQuotation) {
+            canvas.drawLine(splitX, top, splitX, headerBottom, borderPaint)
+        }
 
-        // Draw TSE Shield Logo
-        drawShieldLogo(canvas, RectF(left + 8f, top + 18f, left + 74f, top + 88f))
+        // Draw Company Logo (Admin uploaded bitmap or upgraded vector shield emblem)
+        val logoBounds = RectF(left + 8f, top + 16f, left + 78f, top + 86f)
+        val customLogo = decodeBase64Bitmap(p.company.logoBase64)
+        if (customLogo != null) {
+            canvas.drawBitmap(customLogo, null, logoBounds, null)
+            canvas.drawRect(logoBounds, thinBorder)
+        } else {
+            drawShieldLogo(canvas, logoBounds)
+        }
 
-        // Company Details (2/3 left)
-        val infoX = left + 82f
+        // Company Details
+        val infoX = left + 86f
         val infoW = (splitX - infoX - 8f).toInt().coerceAtLeast(100)
         val companyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#102F4B")
@@ -257,49 +326,55 @@ object InvoicePdfPrinter {
         curY += 2f
         drawWrappedText(canvas, "Office Address: ${p.company.address}", infoX, curY, infoW, addrPaint, maxLines = 2)
 
-        // Right 1/3: Customer Care & Support WhatsApp QR
-        val careCenterX = splitX + (right - splitX) / 2f
-        val centerBold = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#102F4B")
-            textSize = 8.5f
-            textAlign = Paint.Align.CENTER
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        if (!isQuotation) {
+            val careCenterX = splitX + (right - splitX) / 2f
+            val centerBold = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#102F4B")
+                textSize = 8.5f
+                textAlign = Paint.Align.CENTER
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            }
+            canvas.drawText("Customer Care & Support", careCenterX, top + 14f, centerBold)
+            val waQr = QrGenerator.generateQrBitmap(QrGenerator.buildWhatsAppSupportUri(p.company.mobile), 180)
+            if (waQr != null) {
+                val qrRect = RectF(careCenterX - 28f, top + 19f, careCenterX + 28f, top + 75f)
+                canvas.drawBitmap(waQr, null, qrRect, null)
+                canvas.drawRect(qrRect, thinBorder)
+            }
+            val careSub = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#222222")
+                textSize = 7.2f
+                textAlign = Paint.Align.CENTER
+            }
+            canvas.drawText("Scan to WhatsApp us", careCenterX, top + 86f, careSub)
+            canvas.drawText(p.company.mobile, careCenterX, top + 97f, careSub)
         }
-        canvas.drawText("Customer Care & Support", careCenterX, top + 14f, centerBold)
-        val waQr = QrGenerator.generateQrBitmap(QrGenerator.buildWhatsAppSupportUri(p.company.mobile), 180)
-        if (waQr != null) {
-            val qrRect = RectF(careCenterX - 28f, top + 19f, careCenterX + 28f, top + 75f)
-            canvas.drawBitmap(waQr, null, qrRect, null)
-            canvas.drawRect(qrRect, thinBorder)
-        }
-        val careSub = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#222222")
-            textSize = 7.2f
-            textAlign = Paint.Align.CENTER
-        }
-        canvas.drawText("Scan to WhatsApp us", careCenterX, top + 86f, careSub)
-        canvas.drawText(p.company.mobile, careCenterX, top + 97f, careSub)
 
-        // 2. TAX INVOICE DOUBLE-BORDERED BANNER (y: 127 -> 151)
+        // 2. BANNER (TAX INVOICE / CUSTOMER CARE & SUPPORT SERVICE INVOICE / QUOTATION)
         val bannerTop = headerBottom + 5f
         val bannerH = 24f
         val bannerRect = RectF(left + 5f, bannerTop, right - 5f, bannerTop + bannerH)
-        canvas.drawRect(bannerRect, fillSoft)
+        canvas.drawRect(bannerRect, if (p.isHelpBill && !isQuotation) fillHelpBanner else fillSoft)
         canvas.drawRect(bannerRect, borderPaint)
         canvas.drawRect(
             RectF(bannerRect.left + 2.5f, bannerRect.top + 2.5f, bannerRect.right - 2.5f, bannerRect.bottom - 2.5f),
             thinBorder
         )
+        val bannerText = when {
+            isQuotation -> "QUOTATION"
+            p.isHelpBill -> "CUSTOMER CARE & SUPPORT SERVICE INVOICE"
+            else -> "TAX INVOICE"
+        }
         val titlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.BLACK
-            textSize = 12f
+            color = if (p.isHelpBill && !isQuotation) Color.parseColor("#0B4F6C") else Color.BLACK
+            textSize = if (p.isHelpBill && !isQuotation) 10.6f else 12f
             textAlign = Paint.Align.CENTER
-            letterSpacing = 0.15f
+            letterSpacing = if (p.isHelpBill && !isQuotation) 0.08f else 0.15f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
-        canvas.drawText("TAX INVOICE", left + width / 2f, bannerTop + 16.5f, titlePaint)
+        canvas.drawText(bannerText, left + width / 2f, bannerTop + 16.5f, titlePaint)
 
-        // 3. META ROW (M/S | DATE & INVOICE NO) (y: 160 -> 216)
+        // 3. META ROW (M/S | DATE & INVOICE/QUOTATION NO)
         val metaTop = bannerTop + bannerH + 5f
         val metaH = 56f
         val metaBottom = metaTop + metaH
@@ -325,8 +400,17 @@ object InvoicePdfPrinter {
         }
         drawWrappedText(canvas, custBlock, left + 40f, metaTop + 5f, (metaSplitX - left - 46f).toInt(), bodyPaint, maxLines = 4)
 
+        val docNumberLabel = if (isQuotation) "QUOTATION NO." else "INVOICE NO."
         canvas.drawText("DATE: ${p.date}", metaSplitX + 8f, metaTop + 20f, labelPaint)
-        canvas.drawText("INVOICE NO. : ${p.invoiceNo}", metaSplitX + 8f, metaTop + 40f, labelPaint)
+        canvas.drawText("$docNumberLabel : ${p.invoiceNo}", metaSplitX + 8f, metaTop + 40f, labelPaint)
+        if (p.isHelpBill && p.helpRequestId > 0L && !isQuotation) {
+            val badgePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#087F8C")
+                textSize = 7.4f
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            }
+            canvas.drawText("Support Ticket #${p.helpRequestId}", metaSplitX + 8f, metaTop + 51f, badgePaint)
+        }
 
         // 4. ITEMS TABLE (Header + 15+ Fixed Rows)
         val effectiveItems = buildEffectivePrintItems(p.items, p.extraChargeType, p.extraChargeAmount)
@@ -392,7 +476,127 @@ object InvoicePdfPrinter {
             }
         }
 
-        // 5. AMOUNT SUMMARY & TOTALS ROW
+        val smallBold = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            textSize = 7.8f
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+        val smallCenter = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#111111")
+            textSize = 6.8f
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+
+        if (isQuotation) {
+            // QUOTATION SUMMARY & FOOTER (No Payment Mode, No Payment QR, No Cust Info QR, No Customer Sig)
+            val sumTop = tableBottom
+            val sumH = 74f
+            val sumBottom = sumTop + sumH
+            val sumSplitX = tableLeft + tableW * 0.58f
+            canvas.drawRect(tableLeft, sumTop, tableRight, sumBottom, borderPaint)
+            canvas.drawLine(sumSplitX, sumTop, sumSplitX, sumBottom, borderPaint)
+
+            val wordsX = tableLeft + 8f
+            canvas.drawText("Estimated Amount in Words:", wordsX, sumTop + 15f, labelPaint)
+            drawWrappedText(
+                canvas,
+                RupeesWords.convert(p.grandTotal),
+                wordsX,
+                sumTop + 22f,
+                (sumSplitX - tableLeft - 16f).toInt(),
+                bodyPaint,
+                maxLines = 4
+            )
+
+            val totLeft = sumSplitX
+            val totValSplit = tableRight - 88f
+            canvas.drawRect(totLeft, sumTop, tableRight, sumBottom, fillGrand)
+            canvas.drawLine(totValSplit, sumTop, totValSplit, sumBottom, thinBorder)
+            val grandLbl = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.BLACK
+                textSize = 10.5f
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            }
+            val grandVal = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#102F4B")
+                textSize = 11.5f
+                textAlign = Paint.Align.RIGHT
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            }
+            canvas.drawText("QUOTATION TOTAL", totLeft + 8f, sumTop + 42f, grandLbl)
+            canvas.drawText("₹${String.format(Locale.US, "%.2f", p.grandTotal)}", tableRight - 8f, sumTop + 42f, grandVal)
+
+            // Quotation Note + Right Authorised Signatory
+            val footTop = sumBottom
+            val footRow1H = 118f
+            val row1Bot = footTop + footRow1H
+            val sigSplitX = tableLeft + tableW * 0.65f
+            canvas.drawRect(tableLeft, footTop, tableRight, row1Bot, borderPaint)
+            canvas.drawLine(sigSplitX, footTop, sigSplitX, row1Bot, thinBorder)
+
+            val qMsgTitlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#102F4B")
+                textSize = 9.2f
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            }
+            val qMsgBodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#1E293B")
+                textSize = 8.4f
+            }
+            canvas.drawText("Note for Customer:", tableLeft + 8f, footTop + 16f, qMsgTitlePaint)
+            val customerQuoteMsg = p.quotationNote.ifBlank {
+                "We appreciate the opportunity to serve you. All quoted items use genuine manufacturer-warranted hardware installed by certified technicians of ${p.company.companyName}."
+            }
+            drawWrappedText(
+                canvas,
+                customerQuoteMsg,
+                tableLeft + 8f,
+                footTop + 24f,
+                (sigSplitX - tableLeft - 16f).toInt(),
+                qMsgBodyPaint,
+                maxLines = 6
+            )
+
+            // Right: Authorised Signatory
+            val authSigBitmap = decodeBase64Bitmap(p.company.authorisedSignatureBase64)
+            if (authSigBitmap != null) {
+                canvas.drawBitmap(authSigBitmap, null, RectF(sigSplitX + 14f, footTop + 10f, tableRight - 14f, row1Bot - 34f), null)
+            }
+            val rightCenterX = sigSplitX + (tableRight - sigSplitX) / 2f
+            canvas.drawLine(sigSplitX + 12f, row1Bot - 30f, tableRight - 12f, row1Bot - 30f, thinBorder)
+            canvas.drawText("Authorised Signatory", rightCenterX, row1Bot - 18f, smallBold)
+            canvas.drawText(
+                ellipsizeText(p.company.companyName, smallCenter, tableRight - sigSplitX - 12f),
+                rightCenterX,
+                row1Bot - 7f,
+                smallCenter
+            )
+
+            // Product Disclaimer Row at bottom
+            val row3Top = row1Bot
+            val row3Bot = bottom - 4f
+            canvas.drawRect(tableLeft, row3Top, tableRight, row3Bot, fillSoft)
+            canvas.drawRect(tableLeft, row3Top, tableRight, row3Bot, borderPaint)
+            val discPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#334155")
+                textSize = 7.4f
+            }
+            drawWrappedText(
+                canvas,
+                "Product Disclaimer: This quotation is valid for 15 days. Product warranty is subject to the respective manufacturer's terms and conditions. Physical damage, water damage, voltage fluctuation, improper installation or unauthorised tampering are not covered unless manufacturer policy states otherwise.",
+                tableLeft + 8f,
+                row3Top + 8f,
+                (tableW - 16f).toInt(),
+                discPaint,
+                Layout.Alignment.ALIGN_CENTER,
+                maxLines = 5
+            )
+            return
+        }
+
+        // TAX INVOICE / HELP BILL SUMMARY & FOOTER
         val sumTop = tableBottom
         val sumH = 114f
         val sumBottom = sumTop + sumH
@@ -400,7 +604,6 @@ object InvoicePdfPrinter {
         canvas.drawRect(tableLeft, sumTop, tableRight, sumBottom, borderPaint)
         canvas.drawLine(sumSplitX, sumTop, sumSplitX, sumBottom, borderPaint)
 
-        // Left side: Words + Payment Mode + Online Payment QR (using full bill amount)
         val wordsAreaW = (sumSplitX - tableLeft) * 0.42f
         val modeAreaW = (sumSplitX - tableLeft) * 0.24f
         val wordsX = tableLeft + 6f
@@ -418,18 +621,13 @@ object InvoicePdfPrinter {
         val qrColStart = tableLeft + wordsAreaW + modeAreaW
         val qrColW = sumSplitX - qrColStart
         val qrColCenterX = qrColStart + (qrColW / 2f)
-        val smallBold = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.BLACK
-            textSize = 7.8f
-            textAlign = Paint.Align.CENTER
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        }
         canvas.drawText("Online QR Payment :-", qrColCenterX, sumTop + 13f, smallBold)
 
-        val qrAmt = if (p.grandTotal > 0.009) p.grandTotal else p.subtotal
+        // Generate UPI QR strictly for paidAmount when Online Payment is selected; no hardcoded full bill amount otherwise
+        val qrPaidAmount = if (p.paymentMode == PaymentMode.ONLINE && p.paidAmount > 0.009) p.paidAmount else 0.0
         val payQrBitmap = when {
             p.upi.upiId.isNotBlank() -> QrGenerator.generateQrBitmap(
-                QrGenerator.buildUpiUri(p.upi.upiId, p.upi.payeeName, qrAmt, p.invoiceNo),
+                QrGenerator.buildUpiUri(p.upi.upiId, p.upi.payeeName, qrPaidAmount, p.invoiceNo),
                 200
             )
             p.upi.fallbackQrBase64.isNotBlank() -> decodeBase64Bitmap(p.upi.fallbackQrBase64)
@@ -440,23 +638,17 @@ object InvoicePdfPrinter {
             canvas.drawBitmap(payQrBitmap, null, qrRect, null)
             canvas.drawRect(qrRect, thinBorder)
         }
-        val smallCenter = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#111111")
-            textSize = 6.8f
-            textAlign = Paint.Align.CENTER
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        }
         if (p.upi.upiId.isNotBlank()) {
             canvas.drawText(ellipsizeText("UPI: ${p.upi.upiId}", smallCenter, qrColW - 6f), qrColCenterX, sumTop + 91f, smallCenter)
         }
         canvas.drawText(ellipsizeText("A/c: ${p.upi.payeeName}", smallCenter, qrColW - 6f), qrColCenterX, sumTop + 102f, smallCenter)
 
-        // Right side: Totals 3 rows (SUB TOTAL, ADVANCE, GRAND TOTAL) — Discount & Due removed from Print
+        // Right side: Totals 3 rows (SUB TOTAL, ADVANCE / PAID, GRAND TOTAL)
         val totLeft = sumSplitX
         val totRowH = sumH / 3f
         val totValSplit = tableRight - 84f
 
-        val totLabels = arrayOf("SUB TOTAL", "ADVANCE", "GRAND TOTAL")
+        val totLabels = arrayOf("SUB TOTAL", "ADVANCE / PAID", "GRAND TOTAL")
         val totValues = arrayOf(p.subtotal, p.paidAmount, p.grandTotal)
 
         for (i in 0 until 3) {
@@ -471,7 +663,7 @@ object InvoicePdfPrinter {
 
             val lPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.BLACK
-                textSize = if (isGrand) 9.6f else 8.8f
+                textSize = if (isGrand) 9.6f else 8.4f
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             }
             val vPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -522,7 +714,7 @@ object InvoicePdfPrinter {
             canvas.drawText("No extra info QR added", midCenterX, footTop + 50f, emptyInfo)
         }
 
-        // Right: Authorised Signatory (Admin uploaded photo + company name)
+        // Right: Authorised Signatory
         val authSigBitmap = decodeBase64Bitmap(p.company.authorisedSignatureBase64)
         if (authSigBitmap != null) {
             canvas.drawBitmap(authSigBitmap, null, RectF(col2X + 14f, footTop + 6f, tableRight - 14f, row1Bot - 31f), null)
@@ -537,7 +729,7 @@ object InvoicePdfPrinter {
             smallCenter
         )
 
-        // Row 2: Customer Message Row (wrapped safely with StaticLayout)
+        // Row 2: Customer Message Row
         val row2Top = row1Bot
         val row2Bot = row2Top + footRow2H
         canvas.drawRect(tableLeft, row2Top, tableRight, row2Bot, fillSoft)
@@ -551,6 +743,11 @@ object InvoicePdfPrinter {
             color = Color.parseColor("#102F4B")
             textSize = 7.5f
         }
+        val appreciationBody = if (p.isHelpBill) {
+            "Thank you for trusting our Customer Care & Support team! Contact us anytime for technical assistance and maintenance."
+        } else {
+            "We value your trust. Your safety and satisfaction are our priority. Please contact us anytime for CCTV service and support."
+        }
         val titleH = drawWrappedText(
             canvas,
             "Thank you for choosing ${p.company.companyName}!",
@@ -563,7 +760,7 @@ object InvoicePdfPrinter {
         )
         drawWrappedText(
             canvas,
-            "We value your trust. Your safety and satisfaction are our priority. Please contact us anytime for CCTV service and support.",
+            appreciationBody,
             tableLeft + 8f,
             row2Top + 5f + titleH,
             (tableW - 16f).toInt(),

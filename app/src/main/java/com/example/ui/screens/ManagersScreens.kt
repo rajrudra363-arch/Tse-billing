@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -24,9 +25,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Map
@@ -39,11 +42,15 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -69,10 +76,20 @@ import com.example.ui.components.ProvideSafeTextToolbar
 import com.example.ui.components.bringIntoViewOnFocus
 import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.theme.GreenPaid
+import com.example.ui.theme.NavyPrimary
 import com.example.ui.theme.RedDue
 import com.example.ui.theme.TealAccent
 import com.example.util.LocationHelper
 import java.util.Locale
+
+private val DEFAULT_PRODUCT_FOLDERS = listOf(
+    "CCTV Cameras",
+    "DVR & NVR",
+    "Storage & Power",
+    "Cables & Accessories",
+    "Services",
+    "General"
+)
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -84,7 +101,7 @@ fun CustomersScreen(
     onSaveCustomer: (id: Long, name: String, phone: String, address: String, locationUrl: String) -> Unit,
     onDeleteCustomer: (Long) -> Unit
 ) {
-    val canManageCustomers = !user.isStaff && user.isAdmin
+    val canManageCustomers = user.isAdmin && !user.isSuperAdmin
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
@@ -269,7 +286,11 @@ fun CustomersScreen(
                     Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text("Customer Directory (View Only)", style = MaterialTheme.typography.titleLarge)
                         Text(
-                            text = "Staff can view customer details and open Google Maps locations, but cannot add, edit, or delete customers.",
+                            text = if (user.isSuperAdmin) {
+                                "Super Admin view-only mode: inspect customer details and saved locations."
+                            } else {
+                                "Technicians can view customer details, call, and open Google Maps locations, but cannot add, edit, or delete customers."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -290,14 +311,14 @@ fun CustomersScreen(
                             if (onSearchChange != null) onSearchChange(q) else localSearch = q
                         },
                         label = { Text("Search Customer / Last 5 Digits of Mobile") },
-                        placeholder = { Text("Type name or last 5 digits (e.g. 54321)") },
+                        placeholder = { Text("Type customer name or last 5 digits (e.g. 54321)") },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("customer_search_input")
                     )
                     Text(
                         text = if (activeQuery.isBlank()) {
-                            "Total Customers: ${customers.size} · Mobile ke last 5 digits dalkar bhi details search kar sakte hain."
+                            "Total Customers: ${customers.size} · Enter the last 5 mobile digits to find customer details quickly."
                         } else {
                             "Showing ${filteredCustomers.size} of ${customers.size} customers"
                         },
@@ -440,26 +461,43 @@ fun CustomersScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ProductsScreen(
     products: List<ProductEntity>,
     user: UserSession,
-    onAddProduct: (name: String, unit: String, rateText: String) -> Unit,
-    onUpdateProduct: (id: Long, name: String, unit: String, rateText: String) -> Unit,
+    onAddProduct: (name: String, unit: String, rateText: String, folder: String) -> Unit,
+    onUpdateProduct: (id: Long, name: String, unit: String, rateText: String, folder: String) -> Unit,
     onDeleteProduct: (Long) -> Unit
 ) {
-    val canManageProducts = !user.isStaff && user.isAdmin
+    val canManageProducts = user.isAdmin && !user.isSuperAdmin
     var name by remember { mutableStateOf("") }
     var unit by remember { mutableStateOf("Nos") }
     var rate by remember { mutableStateOf("") }
+    var folder by remember { mutableStateOf("CCTV Cameras") }
+    var folderMenuOpen by remember { mutableStateOf(false) }
+    var selectedFolderFilter by remember { mutableStateOf("All") }
     var editingProduct by remember { mutableStateOf<ProductEntity?>(null) }
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
 
+    val allFolders = remember(products) {
+        (DEFAULT_PRODUCT_FOLDERS + products.map { it.folder.ifBlank { "General" } })
+            .distinct()
+    }
+    val existingFolderTabs = remember(products) {
+        listOf("All") + products.map { it.folder.ifBlank { "General" } }.distinct().sorted()
+    }
+    val visibleProducts = remember(products, selectedFolderFilter) {
+        if (selectedFolderFilter == "All") products
+        else products.filter { it.folder.ifBlank { "General" }.equals(selectedFolderFilter, ignoreCase = true) }
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = 12.dp)
+            .testTag("products_lazy_list"),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item { Spacer(Modifier.height(4.dp)) }
@@ -471,12 +509,43 @@ fun ProductsScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Product Manager (Admin)", style = MaterialTheme.typography.titleLarge)
+                        Text("Product Folders & Price Manager (Admin)", style = MaterialTheme.typography.titleLarge)
                         Text(
-                            text = "Add new CCTV products or tap Edit on any item below to update its name, unit, or price.",
+                            text = "Organize CCTV items into folders so Technicians and Billing can browse prices cleanly.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedTextField(
+                                value = folder,
+                                onValueChange = { folder = it },
+                                label = { Text("Folder Name (or type custom)") },
+                                leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, tint = TealAccent) },
+                                trailingIcon = {
+                                    IconButton(onClick = { folderMenuOpen = true }) {
+                                        Icon(Icons.Default.ArrowDropDown, contentDescription = "Pick folder")
+                                    }
+                                },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_product_folder")
+                            )
+                            DropdownMenu(
+                                expanded = folderMenuOpen,
+                                onDismissRequest = { folderMenuOpen = false }
+                            ) {
+                                allFolders.forEach { f ->
+                                    DropdownMenuItem(
+                                        text = { Text(f) },
+                                        onClick = {
+                                            folder = f
+                                            folderMenuOpen = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
                         OutlinedTextField(
                             value = name,
                             onValueChange = { name = it },
@@ -503,19 +572,21 @@ fun ProductsScreen(
                         }
                         Button(
                             onClick = {
+                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                val resolvedFolder = folder.trim().ifBlank { "General" }
                                 if (name.isNotBlank()) {
-                                    onAddProduct(name, unit, rate)
+                                    onAddProduct(name, unit, rate, resolvedFolder)
                                     name = ""
                                     rate = ""
                                 } else {
-                                    onAddProduct("", unit, rate)
+                                    onAddProduct("", unit, rate, resolvedFolder)
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
                             modifier = Modifier.fillMaxWidth().height(48.dp).testTag("add_product_button")
                         ) {
                             Icon(Icons.Default.Add, contentDescription = null)
-                            Text(" Add Product", fontWeight = FontWeight.Bold)
+                            Text(" Add Product to Folder", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -527,9 +598,13 @@ fun ProductsScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
                     Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("Product Catalog (Read-Only)", style = MaterialTheme.typography.titleLarge)
+                        Text("Product Folders & Price Catalog", style = MaterialTheme.typography.titleLarge)
                         Text(
-                            text = "Staff users cannot add, edit, or delete products.",
+                            text = if (user.isSuperAdmin) {
+                                "Super Admin read-only view: inspect all product folders and unit prices."
+                            } else {
+                                "Technicians can browse any folder below to inspect product prices (Admin manages catalog edits)."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -538,7 +613,37 @@ fun ProductsScreen(
             }
         }
 
-        if (products.isEmpty()) {
+        // Folder Selector Chips
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Icon(Icons.Default.Folder, contentDescription = null, tint = TealAccent)
+                        Text("Product Folders", style = MaterialTheme.typography.titleMedium, color = NavyPrimary)
+                    }
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        existingFolderTabs.forEach { folderName ->
+                            val count = if (folderName == "All") products.size
+                            else products.count { it.folder.ifBlank { "General" }.equals(folderName, ignoreCase = true) }
+                            FilterChip(
+                                selected = selectedFolderFilter == folderName,
+                                onClick = { selectedFolderFilter = folderName },
+                                label = { Text("$folderName ($count)", fontWeight = FontWeight.SemiBold) },
+                                modifier = Modifier.testTag("product_folder_chip_${folderName.replace(" ", "_")}")
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (visibleProducts.isEmpty()) {
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -550,12 +655,12 @@ fun ProductsScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(Icons.Default.Inventory2, contentDescription = null, modifier = Modifier.size(44.dp), tint = MaterialTheme.colorScheme.primary)
-                        Text("No products found", style = MaterialTheme.typography.titleMedium)
+                        Text("No products found in this folder", style = MaterialTheme.typography.titleMedium)
                     }
                 }
             }
         } else {
-            items(products, key = { it.id }) { prod ->
+            items(visibleProducts, key = { it.id }) { prod ->
                 Card(
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -565,12 +670,25 @@ fun ProductsScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = prod.folder.ifBlank { "General" },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
                             Text(prod.name, style = MaterialTheme.typography.titleMedium)
                             Text(
                                 text = "Unit: ${prod.unit} · Rate: ₹${String.format(Locale.US, "%.2f", prod.defaultRate)}",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = TealAccent,
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                         if (canManageProducts) {
@@ -604,9 +722,10 @@ fun ProductsScreen(
     if (canManageProducts && productToEdit != null) {
         EditProductDialog(
             product = productToEdit,
+            folderSuggestions = allFolders,
             onDismiss = { editingProduct = null },
-            onSave = { updatedName, updatedUnit, updatedRate ->
-                onUpdateProduct(productToEdit.id, updatedName, updatedUnit, updatedRate)
+            onSave = { updatedName, updatedUnit, updatedRate, updatedFolder ->
+                onUpdateProduct(productToEdit.id, updatedName, updatedUnit, updatedRate, updatedFolder)
                 editingProduct = null
             }
         )
@@ -616,11 +735,14 @@ fun ProductsScreen(
 @Composable
 private fun EditProductDialog(
     product: ProductEntity,
+    folderSuggestions: List<String>,
     onDismiss: () -> Unit,
-    onSave: (name: String, unit: String, rateText: String) -> Unit
+    onSave: (name: String, unit: String, rateText: String, folder: String) -> Unit
 ) {
     var editName by remember(product.id) { mutableStateOf(product.name) }
     var editUnit by remember(product.id) { mutableStateOf(product.unit) }
+    var editFolder by remember(product.id) { mutableStateOf(product.folder.ifBlank { "General" }) }
+    var folderMenu by remember { mutableStateOf(false) }
     var editRate by remember(product.id) {
         mutableStateOf(
             if (product.defaultRate == 0.0) "0"
@@ -641,6 +763,28 @@ private fun EditProductDialog(
                     modifier = Modifier.imePadding().verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = editFolder,
+                            onValueChange = { editFolder = it },
+                            label = { Text("Folder") },
+                            trailingIcon = {
+                                IconButton(onClick = { folderMenu = true }) {
+                                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Pick folder")
+                                }
+                            },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("edit_product_folder_input")
+                        )
+                        DropdownMenu(expanded = folderMenu, onDismissRequest = { folderMenu = false }) {
+                            folderSuggestions.forEach { f ->
+                                DropdownMenuItem(
+                                    text = { Text(f) },
+                                    onClick = { editFolder = f; folderMenu = false }
+                                )
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = editName,
                         onValueChange = { editName = it },
@@ -679,7 +823,7 @@ private fun EditProductDialog(
             Button(
                 onClick = {
                     clearFocusAndHideToolbar(btnFocus, btnToolbar)
-                    onSave(editName, editUnit, editRate)
+                    onSave(editName, editUnit, editRate, editFolder.trim().ifBlank { "General" })
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
                 modifier = Modifier.testTag("save_edited_product_button")

@@ -14,9 +14,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProductEntity::class,
         UserAccountEntity::class,
         AppConfigEntity::class,
-        CustomerHelpEntity::class
+        CustomerHelpEntity::class,
+        TechnicianSettlementEntity::class
     ],
-    version = 4,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -26,6 +27,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun userAccountDao(): UserAccountDao
     abstract fun appConfigDao(): AppConfigDao
     abstract fun customerHelpDao(): CustomerHelpDao
+    abstract fun technicianSettlementDao(): TechnicianSettlementDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -65,6 +67,60 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Bills: documentType, help bill flags, quotationNote
+                db.execSQL("ALTER TABLE bills ADD COLUMN documentType TEXT NOT NULL DEFAULT 'BILL'")
+                db.execSQL("ALTER TABLE bills ADD COLUMN isHelpBill INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE bills ADD COLUMN helpRequestId INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE bills ADD COLUMN quotationNote TEXT NOT NULL DEFAULT ''")
+
+                // Products: folder grouping
+                db.execSQL("ALTER TABLE products ADD COLUMN folder TEXT NOT NULL DEFAULT 'General'")
+
+                // User accounts: phone + normalize 'staff' -> 'technician' + ensure single admin
+                db.execSQL("ALTER TABLE user_accounts ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
+                db.execSQL("UPDATE user_accounts SET role = 'technician' WHERE LOWER(role) = 'staff'")
+                db.execSQL(
+                    """
+                    DELETE FROM user_accounts
+                    WHERE LOWER(role) = 'admin'
+                    AND rowid NOT IN (
+                        SELECT MIN(rowid) FROM user_accounts WHERE LOWER(role) = 'admin'
+                    )
+                    """.trimIndent()
+                )
+
+                // Customer help requests: technician acceptance & 15-min solve workflow
+                db.execSQL("ALTER TABLE customer_help_requests ADD COLUMN acceptedBy TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE customer_help_requests ADD COLUMN acceptedByName TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE customer_help_requests ADD COLUMN acceptedByPhone TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE customer_help_requests ADD COLUMN acceptedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE customer_help_requests ADD COLUMN solvedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE customer_help_requests ADD COLUMN billId TEXT NOT NULL DEFAULT ''")
+
+                // Technician settlements ledger
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `technician_settlements` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `technicianUsername` TEXT NOT NULL,
+                        `amount` REAL NOT NULL,
+                        `note` TEXT NOT NULL,
+                        `recordedBy` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE user_accounts ADD COLUMN photoBase64 TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -74,7 +130,13 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "tse_billing.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { INSTANCE = it }
+                ).addMigrations(
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6
+                ).build().also { INSTANCE = it }
             }
         }
     }

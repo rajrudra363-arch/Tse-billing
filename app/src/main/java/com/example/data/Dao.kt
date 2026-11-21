@@ -63,7 +63,7 @@ interface ProductDao {
     suspend fun insertAll(products: List<ProductEntity>)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(product: ProductEntity)
+    suspend fun upsert(product: ProductEntity): Long
 
     @Query("DELETE FROM products WHERE id = :id")
     suspend fun deleteById(id: Long)
@@ -166,7 +166,7 @@ interface TechnicianSettlementDao {
     suspend fun getAll(): List<TechnicianSettlementEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(settlement: TechnicianSettlementEntity)
+    suspend fun insert(settlement: TechnicianSettlementEntity): Long
 
     @Query("UPDATE technician_settlements SET technicianUsername = :newUsername WHERE LOWER(technicianUsername) = LOWER(:oldUsername)")
     suspend fun reassignTechnician(oldUsername: String, newUsername: String)

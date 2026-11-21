@@ -3,6 +3,9 @@ package com.example.data
 import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -27,7 +30,10 @@ object AuthHasher {
     }
 }
 
-class BillingRepository(private val db: AppDatabase) {
+class BillingRepository(
+    private val db: AppDatabase,
+    val cloudSync: CloudSyncRepository? = null
+) {
     private val billDao = db.billDao()
     private val customerDao = db.customerDao()
     private val productDao = db.productDao()
@@ -36,36 +42,89 @@ class BillingRepository(private val db: AppDatabase) {
     private val helpDao = db.customerHelpDao()
     private val settlementDao = db.technicianSettlementDao()
 
-    val bills: Flow<List<BillEntity>> = billDao.observeAll()
-    val customers: Flow<List<CustomerEntity>> = customerDao.observeAll()
-    val products: Flow<List<ProductEntity>> = productDao.observeAll()
+    private val _volatileCloudActive = MutableStateFlow(false)
+    val isVolatileCloudMode: StateFlow<Boolean> = _volatileCloudActive.asStateFlow()
 
-    // Guarantee at most ONE Admin account is ever surfaced in UI/dropdowns
-    val accounts: Flow<List<UserAccountEntity>> = userDao.observeAll().map { raw ->
-        var adminSeen = false
-        buildList {
-            for (acc in raw) {
-                val normalizedRole = normalizeRole(acc.role)
-                if (normalizedRole == "admin") {
-                    if (!adminSeen) {
-                        adminSeen = true
-                        add(acc.copy(role = "admin"))
-                    }
-                } else {
-                    add(acc.copy(role = normalizedRole))
-                }
-            }
-        }
+    private val _volatileDeviceRole = MutableStateFlow("")
+    private val _volatileBills = MutableStateFlow<List<BillEntity>>(emptyList())
+    private val _volatileCustomers = MutableStateFlow<List<CustomerEntity>>(emptyList())
+    private val _volatileProducts = MutableStateFlow<List<ProductEntity>>(emptyList())
+    private val _volatileAccounts = MutableStateFlow<List<UserAccountEntity>>(emptyList())
+    private val _volatileHelpRequests = MutableStateFlow<List<CustomerHelpEntity>>(emptyList())
+    private val _volatileSettlements = MutableStateFlow<List<TechnicianSettlementEntity>>(emptyList())
+    private val _volatileCompany = MutableStateFlow<CompanySettings?>(null)
+    private val _volatileUpi = MutableStateFlow<UpiSettings?>(null)
+    private val _volatileVoice = MutableStateFlow<VoiceAndNoteSettings?>(null)
+
+    val bills: Flow<List<BillEntity>> = combine(
+        billDao.observeAll(),
+        _volatileCloudActive,
+        _volatileBills
+    ) { local, volatile, cloud ->
+        if (volatile) cloud else local
     }
 
-    val helpRequests: Flow<List<CustomerHelpEntity>> = helpDao.observeAll()
-    val settlements: Flow<List<TechnicianSettlementEntity>> = settlementDao.observeAll()
+    val customers: Flow<List<CustomerEntity>> = combine(
+        customerDao.observeAll(),
+        _volatileCloudActive,
+        _volatileCustomers
+    ) { local, volatile, cloud ->
+        if (volatile) cloud else local
+    }
+
+    val products: Flow<List<ProductEntity>> = combine(
+        productDao.observeAll(),
+        _volatileCloudActive,
+        _volatileProducts
+    ) { local, volatile, cloud ->
+        if (volatile) cloud else local
+    }
+
+    private val localNormalizedAccounts: Flow<List<UserAccountEntity>> = userDao.observeAll().map { raw ->
+        normalizeAccountList(raw)
+    }
+
+    // Guarantee at most ONE Admin account is ever surfaced in UI/dropdowns
+    val accounts: Flow<List<UserAccountEntity>> = combine(
+        localNormalizedAccounts,
+        _volatileCloudActive,
+        _volatileAccounts
+    ) { local, volatile, cloud ->
+        if (volatile) normalizeAccountList(cloud) else local
+    }
+
+    val helpRequests: Flow<List<CustomerHelpEntity>> = combine(
+        helpDao.observeAll(),
+        _volatileCloudActive,
+        _volatileHelpRequests
+    ) { local, volatile, cloud ->
+        if (volatile) cloud else local
+    }
+
+    val settlements: Flow<List<TechnicianSettlementEntity>> = combine(
+        settlementDao.observeAll(),
+        _volatileCloudActive,
+        _volatileSettlements
+    ) { local, volatile, cloud ->
+        if (volatile) cloud else local
+    }
 
     val configMap: Flow<Map<String, String>> = configDao.observeAll().map { list ->
         list.associate { it.key to it.value }
     }
 
-    val companySettings: Flow<CompanySettings> = configMap.map { m ->
+    val cloudWorkspaceInfo: Flow<CloudWorkspaceInfo> = configMap.map { m ->
+        CloudWorkspaceInfo(
+            workspaceId = m[KEY_CLOUD_WORKSPACE_ID].orEmpty(),
+            ownerUid = m[KEY_CLOUD_OWNER_UID].orEmpty(),
+            techShareCode = m[KEY_CLOUD_TECH_CODE].orEmpty(),
+            superShareCode = m[KEY_CLOUD_SUPER_CODE].orEmpty(),
+            deviceRole = m[KEY_CLOUD_DEVICE_ROLE].orEmpty().ifBlank { "admin" },
+            companyName = m[KEY_COMPANY_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_NAME
+        )
+    }
+
+    private val localCompanySettings: Flow<CompanySettings> = configMap.map { m ->
         CompanySettings(
             companyName = m[KEY_COMPANY_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_NAME,
             mobile = m[KEY_COMPANY_MOBILE]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_MOBILE,
@@ -76,7 +135,15 @@ class BillingRepository(private val db: AppDatabase) {
         )
     }
 
-    val voiceAndNoteSettings: Flow<VoiceAndNoteSettings> = configMap.map { m ->
+    val companySettings: Flow<CompanySettings> = combine(
+        localCompanySettings,
+        _volatileCloudActive,
+        _volatileCompany
+    ) { local, volatile, cloud ->
+        if (volatile && cloud != null) cloud else local
+    }
+
+    private val localVoiceSettings: Flow<VoiceAndNoteSettings> = configMap.map { m ->
         val defaults = VoiceAndNoteSettings()
         VoiceAndNoteSettings(
             headerNote = m[KEY_HEADER_NOTE] ?: defaults.headerNote,
@@ -88,12 +155,28 @@ class BillingRepository(private val db: AppDatabase) {
         )
     }
 
-    val upiSettings: Flow<UpiSettings> = configMap.map { m ->
+    val voiceAndNoteSettings: Flow<VoiceAndNoteSettings> = combine(
+        localVoiceSettings,
+        _volatileCloudActive,
+        _volatileVoice
+    ) { local, volatile, cloud ->
+        if (volatile && cloud != null) cloud else local
+    }
+
+    private val localUpiSettings: Flow<UpiSettings> = configMap.map { m ->
         UpiSettings(
             upiId = m[KEY_UPI_ID] ?: "",
             payeeName = m[KEY_UPI_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_PAYEE_NAME,
             fallbackQrBase64 = m[KEY_FALLBACK_QR] ?: ""
         )
+    }
+
+    val upiSettings: Flow<UpiSettings> = combine(
+        localUpiSettings,
+        _volatileCloudActive,
+        _volatileUpi
+    ) { local, volatile, cloud ->
+        if (volatile && cloud != null) cloud else local
     }
 
     val deviceAuthEnabledByUser: Flow<Map<String, Boolean>> = configMap.map { m ->
@@ -119,6 +202,23 @@ class BillingRepository(private val db: AppDatabase) {
             failedAttempts = m[KEY_LOGIN_FAILED_ATTEMPTS]?.toIntOrNull() ?: 0,
             lockUntilMillis = m[KEY_LOGIN_LOCK_UNTIL_MS]?.toLongOrNull() ?: 0L
         )
+    }
+
+    private fun normalizeAccountList(raw: List<UserAccountEntity>): List<UserAccountEntity> {
+        var adminSeen = false
+        return buildList {
+            for (acc in raw) {
+                val normalizedRole = normalizeRole(acc.role)
+                if (normalizedRole == "admin") {
+                    if (!adminSeen) {
+                        adminSeen = true
+                        add(acc.copy(role = "admin"))
+                    }
+                } else {
+                    add(acc.copy(role = normalizedRole))
+                }
+            }
+        }
     }
 
     suspend fun seedDefaultsIfNeeded() {
@@ -149,26 +249,37 @@ class BillingRepository(private val db: AppDatabase) {
 
     suspend fun setupAdmin(username: String, password: String, finalCode: String = "") {
         val cleanUser = username.trim()
+        val adminEntity = UserAccountEntity(
+            username = cleanUser,
+            displayName = "Admin",
+            passwordHash = AuthHasher.sha256(password),
+            role = "admin",
+            phone = ""
+        )
+        _volatileCloudActive.value = false
+        _volatileDeviceRole.value = "admin"
         db.withTransaction {
             // Strictly enforce single Admin account
             userDao.deleteAllAdmins()
-            userDao.upsert(
-                UserAccountEntity(
-                    username = cleanUser,
-                    displayName = "Admin",
-                    passwordHash = AuthHasher.sha256(password),
-                    role = "admin",
-                    phone = ""
-                )
-            )
+            userDao.upsert(adminEntity)
             if (finalCode.isNotBlank()) {
                 configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, AuthHasher.sha256(finalCode)))
             }
         }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushAccount(wsId, adminEntity)
+        }
     }
 
     suspend fun authenticate(username: String, password: String): UserSession? {
-        val account = userDao.findByUsername(username.trim()) ?: return null
+        val clean = username.trim()
+        val account = if (_volatileCloudActive.value) {
+            _volatileAccounts.value.firstOrNull { it.username.equals(clean, ignoreCase = true) }
+                ?: userDao.findByUsername(clean)
+        } else {
+            userDao.findByUsername(clean)
+        } ?: return null
         val hash = AuthHasher.sha256(password)
         return if (account.passwordHash == hash) {
             UserSession(
@@ -268,16 +379,19 @@ class BillingRepository(private val db: AppDatabase) {
         if (existing.any { it.username.equals(cleanUser, ignoreCase = true) }) {
             return Result.failure(IllegalStateException("Username already exists"))
         }
-        userDao.upsert(
-            UserAccountEntity(
-                username = cleanUser,
-                displayName = cleanName,
-                passwordHash = AuthHasher.sha256(password),
-                role = "technician",
-                phone = cleanPhone,
-                photoBase64 = cleanPhoto
-            )
+        val entity = UserAccountEntity(
+            username = cleanUser,
+            displayName = cleanName,
+            passwordHash = AuthHasher.sha256(password),
+            role = "technician",
+            phone = cleanPhone,
+            photoBase64 = cleanPhoto
         )
+        userDao.upsert(entity)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushAccount(wsId, entity)
+        }
         return Result.success(Unit)
     }
 
@@ -322,6 +436,14 @@ class BillingRepository(private val db: AppDatabase) {
         }
         val finalPhoto = if (!newPhotoBase64.isNullOrBlank()) newPhotoBase64.trim() else existing.photoBase64
 
+        val updatedEntity = UserAccountEntity(
+            username = cleanNew,
+            displayName = cleanName,
+            passwordHash = updatedPasswordHash,
+            role = normalizeRole(existing.role),
+            phone = cleanPhone,
+            photoBase64 = finalPhoto
+        )
         db.withTransaction {
             if (!cleanNew.equals(cleanOld, ignoreCase = true)) {
                 userDao.deleteByUsername(existing.username)
@@ -338,23 +460,25 @@ class BillingRepository(private val db: AppDatabase) {
                     )
                 }
             }
-            userDao.upsert(
-                UserAccountEntity(
-                    username = cleanNew,
-                    displayName = cleanName,
-                    passwordHash = updatedPasswordHash,
-                    role = normalizeRole(existing.role),
-                    phone = cleanPhone,
-                    photoBase64 = finalPhoto
-                )
-            )
+            userDao.upsert(updatedEntity)
             helpDao.updateTechnicianInfo(existing.username, cleanNew, cleanName, cleanPhone)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            if (!cleanNew.equals(cleanOld, ignoreCase = true)) {
+                cloudSync?.deleteAccount(wsId, existing.username)
+            }
+            cloudSync?.pushAccount(wsId, updatedEntity)
         }
         return Result.success(Unit)
     }
 
     suspend fun removeTechnician(username: String) {
         userDao.deleteByUsername(username)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.deleteAccount(wsId, username)
+        }
     }
 
     suspend fun addSuperAdmin(
@@ -378,20 +502,27 @@ class BillingRepository(private val db: AppDatabase) {
         if (existing.any { it.username.equals(cleanUser, ignoreCase = true) }) {
             return Result.failure(IllegalStateException("Username already exists"))
         }
-        userDao.upsert(
-            UserAccountEntity(
-                username = cleanUser,
-                displayName = cleanName,
-                passwordHash = AuthHasher.sha256(password),
-                role = "super_admin",
-                phone = phone.trim()
-            )
+        val entity = UserAccountEntity(
+            username = cleanUser,
+            displayName = cleanName,
+            passwordHash = AuthHasher.sha256(password),
+            role = "super_admin",
+            phone = phone.trim()
         )
+        userDao.upsert(entity)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushAccount(wsId, entity)
+        }
         return Result.success(Unit)
     }
 
     suspend fun removeSuperAdmin(username: String) {
         userDao.deleteByUsername(username)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.deleteAccount(wsId, username)
+        }
     }
 
     suspend fun resetAdminPasswordWithRecovery(
@@ -431,6 +562,54 @@ class BillingRepository(private val db: AppDatabase) {
     }
 
     suspend fun saveBill(bill: BillEntity, customerLocationUrl: String = "") {
+        val wsId = getActiveWorkspaceId()
+        if (_volatileCloudActive.value) {
+            // Technician / non-Admin cloud device: NEVER write company/customer/bill data to Room SQLite!
+            val existing = _volatileBills.value.firstOrNull { it.id == bill.id }
+            val safeBill = if (existing != null && existing.staffRating in 1..5) {
+                bill.copy(staffRating = existing.staffRating, staffReviewNote = existing.staffReviewNote)
+            } else {
+                bill
+            }
+            if (wsId.isNotBlank()) {
+                cloudSync?.pushBill(wsId, safeBill)
+            }
+            _volatileBills.value = (listOf(safeBill) + _volatileBills.value.filterNot { it.id == safeBill.id })
+                .sortedByDescending { it.updatedAt }
+
+            val custName = bill.customerName.trim()
+            if (custName.isNotEmpty()) {
+                val old = _volatileCustomers.value.firstOrNull { it.name.equals(custName, ignoreCase = true) }
+                val (parsedPhone, parsedAddress) = parsePhoneAndAddress(bill.customerDetails)
+                val cleanLoc = customerLocationUrl.trim()
+                val syncedCust = if (old != null) {
+                    old.copy(
+                        details = bill.customerDetails.ifBlank { old.details },
+                        phone = parsedPhone.ifBlank { old.phone },
+                        address = parsedAddress.ifBlank { old.address },
+                        locationUrl = cleanLoc.ifBlank { old.locationUrl }
+                    )
+                } else {
+                    CustomerEntity(
+                        id = (custName.hashCode().toLong() and 0x7FFFFFFFL).coerceAtLeast(1L),
+                        name = custName,
+                        details = bill.customerDetails,
+                        phone = parsedPhone,
+                        address = parsedAddress,
+                        locationUrl = cleanLoc
+                    )
+                }
+                if (wsId.isNotBlank()) {
+                    cloudSync?.pushCustomer(wsId, syncedCust)
+                }
+                _volatileCustomers.value = (listOf(syncedCust) + _volatileCustomers.value.filterNot { it.name.equals(custName, ignoreCase = true) })
+            }
+            if (safeBill.helpRequestId > 0L) {
+                linkBillToHelpRequest(safeBill.helpRequestId, safeBill.id)
+            }
+            return
+        }
+
         val existing = billDao.findById(bill.id)
         val safeBill = if (existing != null && existing.staffRating in 1..5) {
             bill.copy(
@@ -441,30 +620,33 @@ class BillingRepository(private val db: AppDatabase) {
             bill
         }
         billDao.upsert(safeBill)
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushBill(wsId, safeBill)
+        }
         val custName = bill.customerName.trim()
         if (custName.isNotEmpty()) {
             val old = customerDao.findByName(custName)
             val (parsedPhone, parsedAddress) = parsePhoneAndAddress(bill.customerDetails)
             val cleanLoc = customerLocationUrl.trim()
-            if (old != null) {
-                customerDao.upsert(
-                    old.copy(
-                        details = bill.customerDetails.ifBlank { old.details },
-                        phone = parsedPhone.ifBlank { old.phone },
-                        address = parsedAddress.ifBlank { old.address },
-                        locationUrl = cleanLoc.ifBlank { old.locationUrl }
-                    )
+            val custEntity = if (old != null) {
+                old.copy(
+                    details = bill.customerDetails.ifBlank { old.details },
+                    phone = parsedPhone.ifBlank { old.phone },
+                    address = parsedAddress.ifBlank { old.address },
+                    locationUrl = cleanLoc.ifBlank { old.locationUrl }
                 )
             } else {
-                customerDao.upsert(
-                    CustomerEntity(
-                        name = custName,
-                        details = bill.customerDetails,
-                        phone = parsedPhone,
-                        address = parsedAddress,
-                        locationUrl = cleanLoc
-                    )
+                CustomerEntity(
+                    name = custName,
+                    details = bill.customerDetails,
+                    phone = parsedPhone,
+                    address = parsedAddress,
+                    locationUrl = cleanLoc
                 )
+            }
+            customerDao.upsert(custEntity)
+            if (wsId.isNotBlank()) {
+                cloudSync?.pushCustomer(wsId, custEntity)
             }
         }
         if (safeBill.helpRequestId > 0L) {
@@ -478,10 +660,19 @@ class BillingRepository(private val db: AppDatabase) {
             return false
         }
         billDao.deleteById(id)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.deleteBill(wsId, id)
+        }
         return true
     }
 
-    suspend fun getBillById(id: String): BillEntity? = billDao.findById(id)
+    suspend fun getBillById(id: String): BillEntity? {
+        if (_volatileCloudActive.value) {
+            return _volatileBills.value.firstOrNull { it.id == id }
+        }
+        return billDao.findById(id)
+    }
 
     suspend fun updateBillSettlementAndReview(
         billId: String,
@@ -504,6 +695,10 @@ class BillingRepository(private val db: AppDatabase) {
             updatedAt = System.currentTimeMillis()
         )
         billDao.upsert(updated)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushBill(wsId, updated)
+        }
         return updated
     }
 
@@ -516,15 +711,18 @@ class BillingRepository(private val db: AppDatabase) {
         if (amount <= 0.0) {
             return Result.failure(IllegalArgumentException("Enter a settlement amount greater than zero"))
         }
-        settlementDao.insert(
-            TechnicianSettlementEntity(
-                technicianUsername = technicianUsername.trim(),
-                amount = amount,
-                note = note.trim(),
-                recordedBy = recordedBy.trim(),
-                createdAt = System.currentTimeMillis()
-            )
+        val entity = TechnicianSettlementEntity(
+            technicianUsername = technicianUsername.trim(),
+            amount = amount,
+            note = note.trim(),
+            recordedBy = recordedBy.trim(),
+            createdAt = System.currentTimeMillis()
         )
+        val rowId = settlementDao.insert(entity)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushSettlement(wsId, entity.copy(id = rowId))
+        }
         return Result.success(Unit)
     }
 
@@ -648,14 +846,22 @@ class BillingRepository(private val db: AppDatabase) {
         technician: UserSession,
         acceptedAtMillis: Long = System.currentTimeMillis()
     ): Result<CustomerHelpEntity> {
-        val current = helpDao.findById(requestId)
-            ?: return Result.failure(IllegalStateException("Help request not found"))
+        val current = if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value.firstOrNull { it.id == requestId }
+        } else {
+            helpDao.findById(requestId)
+        } ?: return Result.failure(IllegalStateException("Help request not found"))
+
         if (current.acceptedBy.isNotBlank() &&
             !current.acceptedBy.equals(technician.username, ignoreCase = true)
         ) {
             return Result.failure(IllegalStateException("Request already accepted by another technician"))
         }
-        val account = userDao.findByUsername(technician.username)
+        val account = if (_volatileCloudActive.value) {
+            _volatileAccounts.value.firstOrNull { it.username.equals(technician.username, ignoreCase = true) }
+        } else {
+            userDao.findByUsername(technician.username)
+        }
         val techPhone = account?.phone?.takeIf { it.isNotBlank() } ?: technician.phone
         val updated = current.copy(
             status = "ACCEPTED",
@@ -665,7 +871,15 @@ class BillingRepository(private val db: AppDatabase) {
             acceptedAt = if (current.acceptedAt > 0L) current.acceptedAt else acceptedAtMillis,
             updatedAt = acceptedAtMillis
         )
-        helpDao.upsert(updated)
+        if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value = _volatileHelpRequests.value.map { if (it.id == updated.id) updated else it }
+        } else {
+            helpDao.upsert(updated)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = !technician.isAdmin)
+        }
         return Result.success(updated)
     }
 
@@ -676,8 +890,12 @@ class BillingRepository(private val db: AppDatabase) {
         nowMillis: Long = System.currentTimeMillis(),
         enforce15MinWait: Boolean = true
     ): Result<CustomerHelpEntity> {
-        val current = helpDao.findById(requestId)
-            ?: return Result.failure(IllegalStateException("Help request not found"))
+        val current = if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value.firstOrNull { it.id == requestId }
+        } else {
+            helpDao.findById(requestId)
+        } ?: return Result.failure(IllegalStateException("Help request not found"))
+
         if (!isAdmin && current.acceptedBy.isNotBlank() &&
             !current.acceptedBy.equals(actorUsername, ignoreCase = true)
         ) {
@@ -695,7 +913,15 @@ class BillingRepository(private val db: AppDatabase) {
             solvedAt = nowMillis,
             updatedAt = nowMillis
         )
-        helpDao.upsert(updated)
+        if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value = _volatileHelpRequests.value.map { if (it.id == updated.id) updated else it }
+        } else {
+            helpDao.upsert(updated)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = !isAdmin)
+        }
         return Result.success(updated)
     }
 
@@ -706,8 +932,12 @@ class BillingRepository(private val db: AppDatabase) {
         nowMillis: Long = System.currentTimeMillis(),
         enforce15MinWait: Boolean = true
     ): Result<CustomerHelpEntity> {
-        val current = helpDao.findById(requestId)
-            ?: return Result.failure(IllegalStateException("Help request not found"))
+        val current = if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value.firstOrNull { it.id == requestId }
+        } else {
+            helpDao.findById(requestId)
+        } ?: return Result.failure(IllegalStateException("Help request not found"))
+
         if (!isAdmin && current.acceptedBy.isNotBlank() &&
             !current.acceptedBy.equals(actorUsername, ignoreCase = true)
         ) {
@@ -724,57 +954,97 @@ class BillingRepository(private val db: AppDatabase) {
             status = "NOT_SOLVED",
             updatedAt = nowMillis
         )
-        helpDao.upsert(updated)
+        if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value = _volatileHelpRequests.value.map { if (it.id == updated.id) updated else it }
+        } else {
+            helpDao.upsert(updated)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = !isAdmin)
+        }
         return Result.success(updated)
     }
 
     suspend fun linkBillToHelpRequest(helpRequestId: Long, billId: String) {
-        val current = helpDao.findById(helpRequestId) ?: return
-        helpDao.upsert(
-            current.copy(
-                billId = billId,
-                status = if (current.status == "OPEN" || current.status == "ACCEPTED") "SOLVED" else current.status,
-                solvedAt = if (current.solvedAt == 0L) System.currentTimeMillis() else current.solvedAt,
-                updatedAt = System.currentTimeMillis()
-            )
+        val current = if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value.firstOrNull { it.id == helpRequestId }
+        } else {
+            helpDao.findById(helpRequestId)
+        } ?: return
+        val updated = current.copy(
+            billId = billId,
+            status = if (current.status == "OPEN" || current.status == "ACCEPTED") "SOLVED" else current.status,
+            solvedAt = if (current.solvedAt == 0L) System.currentTimeMillis() else current.solvedAt,
+            updatedAt = System.currentTimeMillis()
         )
+        if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value = _volatileHelpRequests.value.map { if (it.id == updated.id) updated else it }
+        } else {
+            helpDao.upsert(updated)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = _volatileCloudActive.value)
+        }
     }
 
     suspend fun updateHelpStatus(request: CustomerHelpEntity, newStatus: String) {
-        helpDao.upsert(
-            request.copy(
-                status = newStatus,
-                updatedAt = System.currentTimeMillis()
-            )
+        val updated = request.copy(
+            status = newStatus,
+            updatedAt = System.currentTimeMillis()
         )
+        helpDao.upsert(updated)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = false)
+        }
     }
 
-    suspend fun deleteHelpRequest(id: Long) = helpDao.deleteById(id)
+    suspend fun deleteHelpRequest(id: Long) {
+        helpDao.deleteById(id)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.deleteHelpRequest(wsId, id)
+        }
+    }
 
     suspend fun addProduct(name: String, unit: String, rate: Double, folder: String = "General") {
-        productDao.upsert(
-            ProductEntity(
-                name = name.trim(),
-                unit = unit.trim().ifEmpty { "Nos" },
-                defaultRate = rate.coerceAtLeast(0.0),
-                folder = folder.trim().ifEmpty { "General" }
-            )
+        val entity = ProductEntity(
+            name = name.trim(),
+            unit = unit.trim().ifEmpty { "Nos" },
+            defaultRate = rate.coerceAtLeast(0.0),
+            folder = folder.trim().ifEmpty { "General" }
         )
+        val rowId = productDao.upsert(entity)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushProduct(wsId, entity.copy(id = rowId))
+        }
     }
 
     suspend fun updateProduct(id: Long, name: String, unit: String, rate: Double, folder: String = "General") {
-        productDao.upsert(
-            ProductEntity(
-                id = id,
-                name = name.trim(),
-                unit = unit.trim().ifEmpty { "Nos" },
-                defaultRate = rate.coerceAtLeast(0.0),
-                folder = folder.trim().ifEmpty { "General" }
-            )
+        val entity = ProductEntity(
+            id = id,
+            name = name.trim(),
+            unit = unit.trim().ifEmpty { "Nos" },
+            defaultRate = rate.coerceAtLeast(0.0),
+            folder = folder.trim().ifEmpty { "General" }
         )
+        productDao.upsert(entity)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushProduct(wsId, entity)
+        }
     }
 
-    suspend fun deleteProduct(id: Long) = productDao.deleteById(id)
+    suspend fun deleteProduct(id: Long) {
+        productDao.deleteById(id)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.deleteProduct(wsId, id)
+        }
+    }
 
     suspend fun saveCompanySettings(settings: CompanySettings) {
         val entries = mutableListOf(
@@ -853,14 +1123,30 @@ class BillingRepository(private val db: AppDatabase) {
     }
 
     suspend fun exportBackupJson(): String {
-        val bills = billDao.getAll()
-        val customers = customerDao.getAll()
-        val products = productDao.getAll()
-        val users = userDao.getAll()
+        val useVolatile = _volatileCloudActive.value
+        val bills = if (useVolatile) _volatileBills.value else billDao.getAll()
+        val customers = if (useVolatile) _volatileCustomers.value else customerDao.getAll()
+        val products = if (useVolatile) _volatileProducts.value else productDao.getAll()
+        val users = if (useVolatile) _volatileAccounts.value else userDao.getAll()
         val allConfigs = configDao.getAll()
-        val cfgMap = allConfigs.associate { it.key to it.value }
-        val helpList = helpDao.getAll()
-        val settlementList = settlementDao.getAll()
+        val cfgMap = allConfigs.associate { it.key to it.value }.toMutableMap()
+        if (useVolatile) {
+            _volatileCompany.value?.let { c ->
+                cfgMap[KEY_COMPANY_NAME] = c.companyName
+                cfgMap[KEY_COMPANY_MOBILE] = c.mobile
+                cfgMap[KEY_COMPANY_EMAIL] = c.email
+                cfgMap[KEY_COMPANY_ADDRESS] = c.address
+                cfgMap[KEY_AUTHORISED_SIGNATURE] = c.authorisedSignatureBase64
+                cfgMap[KEY_COMPANY_LOGO] = c.logoBase64
+            }
+            _volatileUpi.value?.let { u ->
+                cfgMap[KEY_UPI_ID] = u.upiId
+                cfgMap[KEY_UPI_NAME] = u.payeeName
+                cfgMap[KEY_FALLBACK_QR] = u.fallbackQrBase64
+            }
+        }
+        val helpList = if (useVolatile) _volatileHelpRequests.value else helpDao.getAll()
+        val settlementList = if (useVolatile) _volatileSettlements.value else settlementDao.getAll()
 
         val root = JSONObject()
         root.put("schemaVersion", 5)
@@ -1214,10 +1500,250 @@ class BillingRepository(private val db: AppDatabase) {
         }
     }
 
+    suspend fun getActiveWorkspaceId(): String =
+        _volatileWorkspaceId.value.ifBlank { configDao.getValue(KEY_CLOUD_WORKSPACE_ID).orEmpty() }
+
+    suspend fun saveWorkspaceMetadata(info: CloudWorkspaceInfo) {
+        _volatileWorkspaceId.value = info.workspaceId
+        _volatileDeviceRole.value = info.deviceRole
+        configDao.setAll(
+            listOf(
+                AppConfigEntity(KEY_CLOUD_WORKSPACE_ID, info.workspaceId),
+                AppConfigEntity(KEY_CLOUD_OWNER_UID, info.ownerUid),
+                AppConfigEntity(KEY_CLOUD_TECH_CODE, info.techShareCode),
+                AppConfigEntity(KEY_CLOUD_SUPER_CODE, info.superShareCode),
+                AppConfigEntity(KEY_CLOUD_DEVICE_ROLE, info.deviceRole)
+            )
+        )
+    }
+
+    suspend fun enableVolatileCloudMode(deviceRole: String, workspaceId: String = "") {
+        _volatileCloudActive.value = true
+        _volatileDeviceRole.value = deviceRole
+        if (workspaceId.isNotBlank()) {
+            _volatileWorkspaceId.value = workspaceId
+        }
+        wipeNonAdminLocalCompanyData()
+    }
+
+    suspend fun disableVolatileCloudMode() {
+        _volatileCloudActive.value = false
+        _volatileDeviceRole.value = "admin"
+    }
+
+    suspend fun clearVolatileSessionCache() {
+        _volatileBills.value = emptyList()
+        _volatileCustomers.value = emptyList()
+        _volatileHelpRequests.value = emptyList()
+        _volatileSettlements.value = emptyList()
+        if (_volatileCloudActive.value && _volatileDeviceRole.value.equals("technician", ignoreCase = true)) {
+            wipeNonAdminLocalCompanyData()
+        }
+    }
+
+    suspend fun wipeNonAdminLocalCompanyData() {
+        db.withTransaction {
+            billDao.deleteAll()
+            customerDao.deleteAll()
+            helpDao.deleteAll()
+            settlementDao.deleteAll()
+            userDao.deleteAll()
+            productDao.deleteAll()
+        }
+    }
+
+    suspend fun applyCloudSnapshot(snapshot: CloudWorkspaceSnapshot) {
+        saveWorkspaceMetadata(snapshot.workspace)
+        val role = snapshot.workspace.deviceRole.lowercase(Locale.ROOT)
+        if (role == "admin") {
+            _volatileCloudActive.value = false
+            mergeCloudMetaIntoAdmin(
+                snapshot.companySettings,
+                snapshot.upiSettings,
+                snapshot.voiceAndNoteSettings
+            )
+            mergeCloudAccountsIntoAdmin(snapshot.accounts)
+            mergeCloudProductsIntoAdmin(snapshot.products)
+            mergeCloudCustomersIntoAdmin(snapshot.customers)
+            mergeCloudBillsIntoAdmin(snapshot.bills)
+            mergeCloudHelpsIntoAdmin(snapshot.helpRequests)
+            mergeCloudSettlementsIntoAdmin(snapshot.settlements)
+        } else {
+            enableVolatileCloudMode(role, snapshot.workspace.workspaceId)
+            _volatileCompany.value = snapshot.companySettings
+            _volatileUpi.value = snapshot.upiSettings
+            _volatileVoice.value = snapshot.voiceAndNoteSettings
+            _volatileAccounts.value = snapshot.accounts
+            _volatileProducts.value = snapshot.products
+            _volatileCustomers.value = snapshot.customers
+            _volatileBills.value = if (role == "super_admin") snapshot.bills else emptyList()
+            _volatileHelpRequests.value = snapshot.helpRequests
+            _volatileSettlements.value = if (role == "super_admin") snapshot.settlements else emptyList()
+        }
+    }
+
+    suspend fun mergeCloudMetaIntoAdmin(
+        company: CompanySettings,
+        upi: UpiSettings,
+        voice: VoiceAndNoteSettings
+    ) {
+        if (_volatileCloudActive.value) {
+            _volatileCompany.value = company
+            _volatileUpi.value = upi
+            _volatileVoice.value = voice
+            return
+        }
+        saveCompanySettings(company)
+        saveUpiSettings(upi.upiId, upi.payeeName)
+        if (upi.fallbackQrBase64.isNotBlank()) saveFallbackQrBase64(upi.fallbackQrBase64)
+        saveVoiceAndNoteSettings(voice)
+    }
+
+    suspend fun mergeCloudAccountsIntoAdmin(cloudAccounts: List<UserAccountEntity>) {
+        if (_volatileCloudActive.value) {
+            _volatileAccounts.value = cloudAccounts
+            return
+        }
+        if (cloudAccounts.isEmpty()) return
+        db.withTransaction {
+            cloudAccounts.forEach { acc ->
+                userDao.upsert(acc)
+            }
+        }
+    }
+
+    suspend fun mergeCloudProductsIntoAdmin(cloudProducts: List<ProductEntity>) {
+        if (_volatileCloudActive.value) {
+            _volatileProducts.value = cloudProducts
+            return
+        }
+        if (cloudProducts.isEmpty()) return
+        val existingByName = productDao.getAll().associateBy { it.name.lowercase(Locale.ROOT) }
+        cloudProducts.forEach { cp ->
+            val old = existingByName[cp.name.lowercase(Locale.ROOT)]
+            productDao.upsert(cp.copy(id = old?.id ?: cp.id))
+        }
+    }
+
+    suspend fun mergeCloudCustomersIntoAdmin(cloudCustomers: List<CustomerEntity>) {
+        if (_volatileCloudActive.value) {
+            _volatileCustomers.value = cloudCustomers
+            return
+        }
+        cloudCustomers.forEach { c ->
+            val old = customerDao.findByName(c.name)
+            if (old != null) {
+                customerDao.upsert(
+                    old.copy(
+                        details = c.details.ifBlank { old.details },
+                        phone = c.phone.ifBlank { old.phone },
+                        address = c.address.ifBlank { old.address },
+                        locationUrl = c.locationUrl.ifBlank { old.locationUrl }
+                    )
+                )
+            } else {
+                customerDao.upsert(c.copy(id = 0L))
+            }
+        }
+    }
+
+    suspend fun mergeCloudBillsIntoAdmin(cloudBills: List<BillEntity>) {
+        if (_volatileCloudActive.value) {
+            if (_volatileDeviceRole.value.equals("super_admin", ignoreCase = true)) {
+                _volatileBills.value = cloudBills
+            }
+            return
+        }
+        cloudBills.forEach { cb ->
+            val old = billDao.findById(cb.id)
+            if (old == null || cb.updatedAt >= old.updatedAt) {
+                billDao.upsert(cb)
+            }
+        }
+    }
+
+    suspend fun mergeCloudHelpsIntoAdmin(cloudHelps: List<CustomerHelpEntity>) {
+        if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value = cloudHelps
+            return
+        }
+        cloudHelps.forEach { ch ->
+            val old = helpDao.findById(ch.id)
+            if (old == null || ch.updatedAt >= old.updatedAt) {
+                helpDao.upsert(ch)
+            }
+        }
+    }
+
+    suspend fun mergeCloudSettlementsIntoAdmin(cloudSettlements: List<TechnicianSettlementEntity>) {
+        if (_volatileCloudActive.value) {
+            if (_volatileDeviceRole.value.equals("super_admin", ignoreCase = true)) {
+                _volatileSettlements.value = cloudSettlements
+            }
+            return
+        }
+        if (cloudSettlements.isEmpty()) return
+        val existing = settlementDao.getAll()
+        cloudSettlements.forEach { cs ->
+            val match = existing.any {
+                it.technicianUsername.equals(cs.technicianUsername, ignoreCase = true) &&
+                    it.createdAt == cs.createdAt &&
+                    kotlin.math.abs(it.amount - cs.amount) < 0.01
+            }
+            if (!match) {
+                settlementDao.insert(cs.copy(id = 0L))
+            }
+        }
+    }
+
+    suspend fun pushLocalDatasetToWorkspace(workspaceId: String) {
+        val sync = cloudSync ?: return
+        val cfgMap = configDao.getAll().associate { it.key to it.value }
+        val company = CompanySettings(
+            companyName = cfgMap[KEY_COMPANY_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_NAME,
+            mobile = cfgMap[KEY_COMPANY_MOBILE]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_MOBILE,
+            email = cfgMap[KEY_COMPANY_EMAIL]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_EMAIL,
+            address = cfgMap[KEY_COMPANY_ADDRESS]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_ADDRESS,
+            authorisedSignatureBase64 = cfgMap[KEY_AUTHORISED_SIGNATURE].orEmpty(),
+            logoBase64 = cfgMap[KEY_COMPANY_LOGO].orEmpty()
+        )
+        val upi = UpiSettings(
+            upiId = cfgMap[KEY_UPI_ID].orEmpty(),
+            payeeName = cfgMap[KEY_UPI_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_PAYEE_NAME,
+            fallbackQrBase64 = cfgMap[KEY_FALLBACK_QR].orEmpty()
+        )
+        val defaults = VoiceAndNoteSettings()
+        val voice = VoiceAndNoteSettings(
+            headerNote = cfgMap[KEY_HEADER_NOTE] ?: defaults.headerNote,
+            loginVoice = cfgMap[KEY_VOICE_LOGIN]?.takeIf { it.isNotBlank() } ?: defaults.loginVoice,
+            postLoginVoice = cfgMap[KEY_VOICE_POST_LOGIN]?.takeIf { it.isNotBlank() } ?: defaults.postLoginVoice,
+            billGeneratingVoice = cfgMap[KEY_VOICE_BILL_START]?.takeIf { it.isNotBlank() } ?: defaults.billGeneratingVoice,
+            billCompletedVoice = cfgMap[KEY_VOICE_BILL_DONE]?.takeIf { it.isNotBlank() } ?: defaults.billCompletedVoice,
+            voiceModelId = cfgMap[KEY_VOICE_MODEL_ID]?.takeIf { it.isNotBlank() } ?: defaults.voiceModelId
+        )
+        sync.uploadFullWorkspaceSnapshot(
+            workspaceId = workspaceId,
+            company = company,
+            upi = upi,
+            voice = voice,
+            accounts = userDao.getAll(),
+            products = productDao.getAll(),
+            customers = customerDao.getAll(),
+            bills = billDao.getAll(),
+            helpRequests = helpDao.getAll(),
+            settlements = settlementDao.getAll()
+        )
+    }
+
     companion object {
         const val HELP_SOLVE_WAIT_MS = 15 * 60 * 1000L
 
         const val KEY_SEEDED = "seeded_v1"
+        const val KEY_CLOUD_WORKSPACE_ID = "cloud_workspace_id"
+        const val KEY_CLOUD_OWNER_UID = "cloud_owner_uid"
+        const val KEY_CLOUD_TECH_CODE = "cloud_tech_share_code"
+        const val KEY_CLOUD_SUPER_CODE = "cloud_super_share_code"
+        const val KEY_CLOUD_DEVICE_ROLE = "cloud_device_role"
         const val KEY_COMPANY_NAME = "company_name"
         const val KEY_COMPANY_MOBILE = "company_mobile"
         const val KEY_COMPANY_EMAIL = "company_email"

@@ -1,0 +1,367 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===== Helper Functions =====
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && !id.matches('.*[/\\\\].*');
+    }
+
+    function isBootstrappedAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        (request.auth.token.email == 'rajrudra363@gmail.com' &&
+         request.auth.token.email_verified == true)
+      );
+    }
+
+    function workspaceDoc(workspaceId) {
+      return get(/databases/$(database)/documents/workspaces/$(workspaceId));
+    }
+
+    function memberDoc(workspaceId, uid) {
+      return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(uid));
+    }
+
+    function isWorkspaceOwner(workspaceId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
+        workspaceDoc(workspaceId).data.ownerUid == request.auth.uid;
+    }
+
+    function isWorkspaceAdmin(workspaceId) {
+      return isBootstrappedAdmin() || isWorkspaceOwner(workspaceId);
+    }
+
+    function isWorkspaceMember(workspaceId) {
+      return isSignedIn() && (
+        isWorkspaceAdmin(workspaceId) ||
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid))
+      );
+    }
+
+    function isTechnicianMember(workspaceId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+        memberDoc(workspaceId, request.auth.uid).data.role == 'technician';
+    }
+
+    function isValidWorkspaceCreate(workspaceId) {
+      let d = request.resource.data;
+      return d.keys().hasAll([
+          'workspaceId', 'ownerUid', 'ownerEmail', 'techShareCode', 'superShareCode',
+          'companyName', 'mobile', 'email', 'address', 'upiId', 'payeeName',
+          'logoBase64', 'authorisedSignatureBase64', 'fallbackQrBase64',
+          'headerNote', 'voiceLogin', 'voicePostLogin', 'voiceBillStart',
+          'voiceBillDone', 'voiceModelId', 'memberUids', 'createdAt', 'updatedAt'
+        ]) &&
+        d.keys().hasOnly([
+          'workspaceId', 'ownerUid', 'ownerEmail', 'techShareCode', 'superShareCode',
+          'companyName', 'mobile', 'email', 'address', 'upiId', 'payeeName',
+          'logoBase64', 'authorisedSignatureBase64', 'fallbackQrBase64',
+          'headerNote', 'voiceLogin', 'voicePostLogin', 'voiceBillStart',
+          'voiceBillDone', 'voiceModelId', 'memberUids', 'createdAt', 'updatedAt'
+        ]) &&
+        d.workspaceId == workspaceId &&
+        d.ownerUid == request.auth.uid &&
+        d.ownerEmail is string &&
+        d.techShareCode is string && d.techShareCode.size() >= 8 && d.techShareCode.size() <= 64 &&
+        d.superShareCode is string && d.superShareCode.size() >= 8 && d.superShareCode.size() <= 64 &&
+        d.companyName is string && d.companyName.size() >= 1 && d.companyName.size() <= 200 &&
+        d.mobile is string && d.email is string && d.address is string &&
+        d.upiId is string && d.payeeName is string &&
+        d.logoBase64 is string && d.authorisedSignatureBase64 is string && d.fallbackQrBase64 is string &&
+        d.headerNote is string && d.voiceLogin is string && d.voicePostLogin is string &&
+        d.voiceBillStart is string && d.voiceBillDone is string && d.voiceModelId is string &&
+        d.memberUids is list && d.memberUids.size() >= 1 && d.memberUids.size() <= 100 &&
+        request.auth.uid in d.memberUids &&
+        d.createdAt is timestamp && d.createdAt <= request.time &&
+        d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    function isValidBillData(d) {
+      return d.keys().hasAll([
+          'billId', 'invoiceNo', 'date', 'customerName', 'customerDetails',
+          'itemsJson', 'subtotal', 'discount', 'grandTotal', 'paidAmount',
+          'dueAmount', 'paymentMode', 'signatureBase64', 'customQrText',
+          'createdBy', 'createdByUid', 'extraChargeType', 'extraChargeAmount',
+          'staffRating', 'staffReviewNote', 'documentType', 'helpBill',
+          'helpRequestId', 'quotationNote', 'updatedAt'
+        ]) &&
+        d.keys().hasOnly([
+          'billId', 'invoiceNo', 'date', 'customerName', 'customerDetails',
+          'itemsJson', 'subtotal', 'discount', 'grandTotal', 'paidAmount',
+          'dueAmount', 'paymentMode', 'signatureBase64', 'customQrText',
+          'createdBy', 'createdByUid', 'extraChargeType', 'extraChargeAmount',
+          'staffRating', 'staffReviewNote', 'documentType', 'helpBill',
+          'helpRequestId', 'quotationNote', 'updatedAt'
+        ]) &&
+        d.billId is string && d.billId.size() >= 1 && d.billId.size() <= 128 &&
+        d.invoiceNo is string && d.invoiceNo.size() >= 1 && d.invoiceNo.size() <= 64 &&
+        d.date is string &&
+        d.customerName is string && d.customerDetails is string &&
+        d.itemsJson is string && d.itemsJson.size() <= 200000 &&
+        d.subtotal is number && d.subtotal >= 0 &&
+        d.discount is number && d.discount >= 0 &&
+        d.grandTotal is number && d.grandTotal >= 0 &&
+        d.paidAmount is number && d.paidAmount >= 0 &&
+        d.dueAmount is number && d.dueAmount >= 0 &&
+        d.paymentMode is string &&
+        d.signatureBase64 is string && d.customQrText is string &&
+        d.createdBy is string && d.createdBy.size() >= 1 &&
+        d.createdByUid is string && d.createdByUid.size() >= 1 &&
+        d.extraChargeType is string &&
+        d.extraChargeAmount is number && d.extraChargeAmount >= 0 &&
+        d.staffRating is int && d.staffRating >= 0 && d.staffRating <= 5 &&
+        d.staffReviewNote is string &&
+        d.documentType in ['BILL', 'QUOTATION'] &&
+        d.helpBill is bool &&
+        d.helpRequestId is int && d.helpRequestId >= 0 &&
+        d.quotationNote is string &&
+        d.updatedAt is timestamp && d.updatedAt <= request.time;
+    }
+
+    // ===== Collections =====
+
+    match /admins/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create, update: if isBootstrappedAdmin() &&
+        isValidId(userId) &&
+        request.resource.data.keys().hasAll(['userId', 'email', 'createdAt', 'updatedAt']) &&
+        request.resource.data.keys().hasOnly(['userId', 'email', 'createdAt', 'updatedAt']) &&
+        request.resource.data.userId == userId &&
+        request.resource.data.email is string &&
+        request.resource.data.createdAt is timestamp &&
+        request.resource.data.updatedAt is timestamp;
+      allow delete: if isBootstrappedAdmin();
+    }
+
+    match /workspaceDirectories/{shareCode} {
+      // Capability token lookup: list is disabled; get requires knowing exact high-entropy shareCode.
+      allow get: if isSignedIn() && isValidId(shareCode);
+      allow list: if false;
+      allow create: if isSignedIn() && isValidId(shareCode) &&
+        shareCode.size() >= 8 &&
+        request.resource.data.keys().hasAll(['shareCode', 'workspaceId', 'ownerUid', 'role', 'companyName', 'createdAt', 'updatedAt']) &&
+        request.resource.data.keys().hasOnly(['shareCode', 'workspaceId', 'ownerUid', 'role', 'companyName', 'createdAt', 'updatedAt']) &&
+        request.resource.data.shareCode == shareCode &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.role in ['technician', 'super_admin'] &&
+        request.resource.data.workspaceId is string && request.resource.data.workspaceId.size() >= 4 &&
+        request.resource.data.companyName is string &&
+        request.resource.data.createdAt is timestamp && request.resource.data.createdAt <= request.time &&
+        request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
+      allow update: if (isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerUid == request.auth.uid)) &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['companyName', 'updatedAt']) &&
+        request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
+      allow delete: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerUid == request.auth.uid);
+    }
+
+    match /workspaces/{workspaceId} {
+      allow get: if isSignedIn() && isValidId(workspaceId) && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        request.auth.uid in resource.data.memberUids ||
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid))
+      );
+      allow list: if isSignedIn() && (
+        isBootstrappedAdmin() ||
+        resource.data.ownerUid == request.auth.uid ||
+        request.auth.uid in resource.data.memberUids
+      );
+      allow create: if isSignedIn() && isValidId(workspaceId) && isValidWorkspaceCreate(workspaceId);
+      allow update: if isSignedIn() && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid) &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        request.resource.data.workspaceId == resource.data.workspaceId &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'companyName', 'mobile', 'email', 'address', 'upiId', 'payeeName',
+          'logoBase64', 'authorisedSignatureBase64', 'fallbackQrBase64',
+          'headerNote', 'voiceLogin', 'voicePostLogin', 'voiceBillStart',
+          'voiceBillDone', 'voiceModelId', 'memberUids', 'techShareCode',
+          'superShareCode', 'updatedAt'
+        ]) &&
+        request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
+      allow delete: if isBootstrappedAdmin() || (isSignedIn() && resource.data.ownerUid == request.auth.uid);
+
+      match /members/{memberUid} {
+        allow get: if isWorkspaceMember(workspaceId) || (isSignedIn() && request.auth.uid == memberUid);
+        allow list: if isWorkspaceAdmin(workspaceId);
+        allow create: if isSignedIn() && isValidId(memberUid) &&
+          request.resource.data.keys().hasAll(['userId', 'email', 'displayName', 'role', 'inviteCode', 'createdAt', 'updatedAt']) &&
+          request.resource.data.keys().hasOnly(['userId', 'email', 'displayName', 'role', 'inviteCode', 'createdAt', 'updatedAt']) &&
+          request.resource.data.userId == memberUid &&
+          request.resource.data.email is string &&
+          request.resource.data.displayName is string &&
+          request.resource.data.inviteCode is string &&
+          request.resource.data.createdAt is timestamp && request.resource.data.createdAt <= request.time &&
+          request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time &&
+          (
+            isWorkspaceAdmin(workspaceId) ||
+            (
+              request.auth.uid == memberUid &&
+              (
+                (request.resource.data.role == 'technician' &&
+                  request.resource.data.inviteCode == workspaceDoc(workspaceId).data.techShareCode) ||
+                (request.resource.data.role == 'super_admin' &&
+                  request.resource.data.inviteCode == workspaceDoc(workspaceId).data.superShareCode)
+              )
+            )
+          );
+        allow update: if isWorkspaceAdmin(workspaceId) &&
+          request.resource.data.userId == resource.data.userId &&
+          request.resource.data.createdAt == resource.data.createdAt &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'email', 'role', 'updatedAt']) &&
+          request.resource.data.role in ['admin', 'technician', 'super_admin'] &&
+          request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
+        allow delete: if isWorkspaceAdmin(workspaceId);
+      }
+
+      match /accounts/{accountId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if isWorkspaceAdmin(workspaceId) && isValidId(accountId) &&
+          request.resource.data.keys().hasAll(['username', 'displayName', 'passwordHash', 'role', 'phone', 'photoBase64', 'updatedAt']) &&
+          request.resource.data.keys().hasOnly(['username', 'displayName', 'passwordHash', 'role', 'phone', 'photoBase64', 'updatedAt']) &&
+          request.resource.data.username is string && request.resource.data.username.size() >= 3 &&
+          request.resource.data.displayName is string &&
+          request.resource.data.passwordHash is string && request.resource.data.passwordHash.size() >= 16 &&
+          request.resource.data.role in ['admin', 'technician', 'super_admin'] &&
+          request.resource.data.phone is string &&
+          request.resource.data.photoBase64 is string &&
+          request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
+        allow update: if isWorkspaceAdmin(workspaceId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'username', 'displayName', 'passwordHash', 'role', 'phone', 'photoBase64', 'updatedAt'
+          ]) &&
+          request.resource.data.role in ['admin', 'technician', 'super_admin'] &&
+          request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
+        allow delete: if isWorkspaceAdmin(workspaceId);
+      }
+
+      match /products/{productId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if isWorkspaceAdmin(workspaceId) && isValidId(productId) &&
+          request.resource.data.keys().hasAll(['productId', 'name', 'unit', 'defaultRate', 'folder', 'updatedAt']) &&
+          request.resource.data.keys().hasOnly(['productId', 'name', 'unit', 'defaultRate', 'folder', 'updatedAt']) &&
+          request.resource.data.productId == productId &&
+          request.resource.data.name is string && request.resource.data.name.size() >= 1 &&
+          request.resource.data.unit is string &&
+          request.resource.data.defaultRate is number && request.resource.data.defaultRate >= 0 &&
+          request.resource.data.folder is string &&
+          request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
+        allow update: if isWorkspaceAdmin(workspaceId) &&
+          request.resource.data.productId == resource.data.productId &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'unit', 'defaultRate', 'folder', 'updatedAt']) &&
+          request.resource.data.defaultRate is number && request.resource.data.defaultRate >= 0 &&
+          request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
+        allow delete: if isWorkspaceAdmin(workspaceId);
+      }
+
+      match /customers/{customerId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if (isWorkspaceAdmin(workspaceId) || isTechnicianMember(workspaceId)) && isValidId(customerId) &&
+          request.resource.data.keys().hasAll(['customerId', 'name', 'details', 'phone', 'address', 'locationUrl', 'updatedByUid', 'updatedAt']) &&
+          request.resource.data.keys().hasOnly(['customerId', 'name', 'details', 'phone', 'address', 'locationUrl', 'updatedByUid', 'updatedAt']) &&
+          request.resource.data.customerId == customerId &&
+          request.resource.data.name is string && request.resource.data.name.size() >= 1 &&
+          request.resource.data.details is string &&
+          request.resource.data.phone is string &&
+          request.resource.data.address is string &&
+          request.resource.data.locationUrl is string &&
+          request.resource.data.updatedByUid == request.auth.uid &&
+          request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
+        allow update: if (isWorkspaceAdmin(workspaceId) || isTechnicianMember(workspaceId)) &&
+          request.resource.data.customerId == resource.data.customerId &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'name', 'details', 'phone', 'address', 'locationUrl', 'updatedByUid', 'updatedAt'
+          ]) &&
+          request.resource.data.updatedByUid == request.auth.uid &&
+          request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
+        allow delete: if isWorkspaceAdmin(workspaceId);
+      }
+
+      match /bills/{billId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if isValidId(billId) &&
+          isValidBillData(request.resource.data) &&
+          request.resource.data.billId == billId &&
+          (
+            isWorkspaceAdmin(workspaceId) ||
+            (isTechnicianMember(workspaceId) && request.resource.data.createdByUid == request.auth.uid)
+          );
+        allow update: if isValidBillData(request.resource.data) &&
+          request.resource.data.billId == resource.data.billId &&
+          request.resource.data.createdByUid == resource.data.createdByUid &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'invoiceNo', 'date', 'customerName', 'customerDetails', 'itemsJson',
+            'subtotal', 'discount', 'grandTotal', 'paidAmount', 'dueAmount',
+            'paymentMode', 'signatureBase64', 'customQrText', 'createdBy',
+            'extraChargeType', 'extraChargeAmount', 'staffRating', 'staffReviewNote',
+            'documentType', 'helpBill', 'helpRequestId', 'quotationNote', 'updatedAt'
+          ]) &&
+          (resource.data.staffRating == 0 ||
+            (request.resource.data.staffRating == resource.data.staffRating &&
+             request.resource.data.staffReviewNote == resource.data.staffReviewNote)) &&
+          (
+            isWorkspaceAdmin(workspaceId) ||
+            (isTechnicianMember(workspaceId) && resource.data.createdByUid == request.auth.uid && resource.data.staffRating == 0)
+          );
+        allow delete: if isWorkspaceAdmin(workspaceId) && resource.data.staffRating == 0;
+      }
+
+      match /helpRequests/{helpId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if isWorkspaceAdmin(workspaceId) && isValidId(helpId) &&
+          request.resource.data.keys().hasAll([
+            'helpId', 'customerName', 'phone', 'address', 'locationUrl',
+            'helpDescription', 'status', 'createdAt', 'updatedAt',
+            'acceptedBy', 'acceptedByUid', 'acceptedByName', 'acceptedByPhone',
+            'acceptedAt', 'solvedAt', 'billId'
+          ]) &&
+          request.resource.data.keys().hasOnly([
+            'helpId', 'customerName', 'phone', 'address', 'locationUrl',
+            'helpDescription', 'status', 'createdAt', 'updatedAt',
+            'acceptedBy', 'acceptedByUid', 'acceptedByName', 'acceptedByPhone',
+            'acceptedAt', 'solvedAt', 'billId'
+          ]) &&
+          request.resource.data.status in ['OPEN', 'ACCEPTED', 'SOLVED', 'NOT_SOLVED', 'RESOLVED'];
+        allow update: if isWorkspaceAdmin(workspaceId) || (
+          isTechnicianMember(workspaceId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'status', 'acceptedBy', 'acceptedByUid', 'acceptedByName',
+            'acceptedByPhone', 'acceptedAt', 'solvedAt', 'billId', 'updatedAt'
+          ]) &&
+          request.resource.data.status in ['ACCEPTED', 'SOLVED', 'NOT_SOLVED'] &&
+          (resource.data.acceptedByUid == '' || resource.data.acceptedByUid == request.auth.uid)
+        );
+        allow delete: if isWorkspaceAdmin(workspaceId);
+      }
+
+      match /settlements/{settlementId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if isWorkspaceAdmin(workspaceId) && isValidId(settlementId) &&
+          request.resource.data.keys().hasAll([
+            'settlementId', 'technicianUsername', 'amount', 'note', 'recordedBy', 'createdAt'
+          ]) &&
+          request.resource.data.keys().hasOnly([
+            'settlementId', 'technicianUsername', 'amount', 'note', 'recordedBy', 'createdAt'
+          ]) &&
+          request.resource.data.settlementId == settlementId &&
+          request.resource.data.amount is number && request.resource.data.amount > 0;
+        allow update, delete: if isWorkspaceAdmin(workspaceId);
+      }
+    }
+
+    // Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

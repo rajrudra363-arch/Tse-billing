@@ -1,0 +1,13 @@
+{
+  "firestore": {
+    "database": "ai-studio-android-tsebilli-812e5e23-5be6-4359-ba54-48c3c2747cb2",
+    "rules": "firestore.rules"
+  },
+  "emulators": {
+    "firestore": {
+      "host": "127.0.0.1",
+      "port": 8085
+    },
+    "singleProjectMode": true
+  }
+}

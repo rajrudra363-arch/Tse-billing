@@ -1,9 +1,11 @@
 package com.example.data
 
 import androidx.room.withTransaction
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.MessageDigest
@@ -979,11 +981,20 @@ class BillingRepository(private val db: AppDatabase) {
         return root.toString(2)
     }
 
-    suspend fun importBackupJson(rawJson: String): Result<BackupImportSummary> {
-        return try {
-            val root = JSONObject(rawJson)
-            val billsArr = root.optJSONArray("bills") ?: return Result.failure(IllegalArgumentException("Missing bills"))
-            val productsArr = root.optJSONArray("products") ?: return Result.failure(IllegalArgumentException("Missing products"))
+    suspend fun importBackupJson(rawJson: String): Result<BackupImportSummary> = withContext(Dispatchers.IO) {
+        try {
+            val root = JSONObject(rawJson.trim())
+            val hasRecognizedSection = root.has("bills") ||
+                root.has("products") ||
+                root.has("customers") ||
+                root.has("accounts") ||
+                root.has("settings") ||
+                root.has("helpRequests")
+            if (!hasRecognizedSection) {
+                return@withContext Result.failure(IllegalArgumentException("Not a valid TSE Billing backup file"))
+            }
+            val billsArr = root.optJSONArray("bills") ?: JSONArray()
+            val productsArr = root.optJSONArray("products") ?: JSONArray()
 
             var billsCount = 0
             var customersCount = 0
@@ -1119,7 +1130,10 @@ class BillingRepository(private val db: AppDatabase) {
                         userDao.deleteAll()
                         var adminImported = false
                         for (i in 0 until accArr.length()) {
-                            val u = accArr.getJSONObject(i)
+                            val u = accArr.optJSONObject(i) ?: continue
+                            val uname = u.optString("username", "").trim()
+                            val passHash = u.optString("passwordHash", "").trim()
+                            if (uname.isEmpty() || passHash.isEmpty()) continue
                             val normalizedRole = normalizeRole(u.optString("role", "technician"))
                             if (normalizedRole == "admin") {
                                 if (adminImported) continue
@@ -1127,9 +1141,9 @@ class BillingRepository(private val db: AppDatabase) {
                             }
                             userDao.upsert(
                                 UserAccountEntity(
-                                    username = u.getString("username"),
-                                    displayName = u.optString("displayName", u.getString("username")),
-                                    passwordHash = u.getString("passwordHash"),
+                                    username = uname,
+                                    displayName = u.optString("displayName", uname),
+                                    passwordHash = passHash,
                                     role = normalizedRole,
                                     phone = u.optString("phone", ""),
                                     photoBase64 = u.optString("photoBase64", "")
@@ -1195,8 +1209,8 @@ class BillingRepository(private val db: AppDatabase) {
                     settlementsCount = settlementsCount
                 )
             )
-        } catch (e: Exception) {
-            Result.failure(e)
+        } catch (t: Throwable) {
+            Result.failure(t)
         }
     }
 

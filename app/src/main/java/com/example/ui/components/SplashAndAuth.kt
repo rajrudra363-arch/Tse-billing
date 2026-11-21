@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -79,6 +80,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -118,6 +120,7 @@ import com.example.ui.theme.RedDueDark
 import com.example.ui.theme.TealAccent
 import com.example.util.InvoicePdfPrinter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.random.Random
 
@@ -355,19 +358,59 @@ private fun FirstTimeAdminSetupForm(
     var password by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var showPass by remember { mutableStateOf(false) }
+    var showPasteBackupDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
 
-    val importBackupLauncher = rememberLauncherForActivityResult(
+    fun handleBackupUri(uri: android.net.Uri?) {
+        if (uri == null) return
+        scope.launch {
+            val res = readBackupTextFromUri(context, uri)
+            res.onSuccess { text ->
+                onImportBackup(text)
+            }.onFailure { err ->
+                Toast.makeText(
+                    context,
+                    err.message ?: "Could not read selected backup file.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    val importBackupOpenDocLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
-        if (uri != null) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-            }.getOrNull()?.let { text ->
-                onImportBackup(text)
-            }
+        handleBackupUri(uri)
+    }
+
+    val importBackupGetContentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        handleBackupUri(uri)
+    }
+
+    fun launchSafeBackupPicker() {
+        clearFocusAndHideToolbar(focusManager, textToolbar)
+        val launchedOpenDoc = runCatching {
+            importBackupOpenDocLauncher.launch(arrayOf("*/*"))
+            true
+        }.getOrDefault(false)
+        if (launchedOpenDoc) return
+
+        val launchedGetContent = runCatching {
+            importBackupGetContentLauncher.launch("*/*")
+            true
+        }.getOrDefault(false)
+        if (!launchedGetContent) {
+            Toast.makeText(
+                context,
+                "No system file picker responded. You can paste your backup JSON below.",
+                Toast.LENGTH_LONG
+            ).show()
+            showPasteBackupDialog = true
         }
     }
 
@@ -490,10 +533,7 @@ private fun FirstTimeAdminSetupForm(
             }
 
             OutlinedButton(
-                onClick = {
-                    clearFocusAndHideToolbar(focusManager, textToolbar)
-                    importBackupLauncher.launch(arrayOf("application/json", "*/*"))
-                },
+                onClick = { launchSafeBackupPicker() },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp)
@@ -503,7 +543,39 @@ private fun FirstTimeAdminSetupForm(
                 Spacer(Modifier.width(8.dp))
                 Text("Sign In & Restore Backup (.json)", fontWeight = FontWeight.Bold)
             }
+
+            TextButton(
+                onClick = {
+                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                    showPasteBackupDialog = true
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("setup_paste_backup_button")
+            ) {
+                Text("Or Paste Backup JSON Manually")
+            }
+
+            if (authError.isNotEmpty()) {
+                Text(
+                    text = authError,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
+    }
+
+    if (showPasteBackupDialog) {
+        BackupPasteImportDialog(
+            onDismiss = { showPasteBackupDialog = false },
+            onRetryFilePicker = {
+                showPasteBackupDialog = false
+                launchSafeBackupPicker()
+            },
+            onImportJsonText = onImportBackup
+        )
     }
 }
 

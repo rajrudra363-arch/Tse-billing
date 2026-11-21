@@ -1,9 +1,11 @@
 package com.example.ui.screens
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -107,11 +109,13 @@ import com.example.data.UserSession
 import com.example.data.VoiceAndNoteSettings
 import com.example.data.VoicePreset
 import com.example.ui.TechnicianPerformanceSummary
+import com.example.ui.components.BackupPasteImportDialog
 import com.example.ui.components.ProvideSafeTextToolbar
 import com.example.ui.components.QrCodeImage
 import com.example.ui.components.TseShieldLogo
 import com.example.ui.components.bringIntoViewOnFocus
 import com.example.ui.components.clearFocusAndHideToolbar
+import com.example.ui.components.readBackupTextFromUri
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.GreenPaidBg
@@ -123,7 +127,9 @@ import com.example.ui.theme.TealAccent
 import com.example.util.DeviceAuthHelper
 import com.example.util.InvoicePdfPrinter
 import com.example.util.QrGenerator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -1161,16 +1167,46 @@ fun SettingsScreen(
         }
     }
 
+    var showPasteBackupDialog by remember { mutableStateOf(false) }
+
+    fun handleImportedUri(uri: Uri?) {
+        if (uri == null || !canEditSettings) return
+        scope.launch {
+            val res = readBackupTextFromUri(context, uri)
+            res.onSuccess { text ->
+                onImportBackup(text)
+            }.onFailure { err ->
+                Toast.makeText(
+                    context,
+                    err.message ?: "Unable to read selected backup file.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
     val exportDocLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
         if (uri != null && canEditSettings) {
             scope.launch {
-                val json = onExportBackup()
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(json.toByteArray(Charsets.UTF_8))
+                val writeResult = runCatching {
+                    val json = onExportBackup()
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            out.write(json.toByteArray(Charsets.UTF_8))
+                        } ?: error("Output stream unavailable")
+                    }
                 }
-                onBackupExported()
+                if (writeResult.isSuccess) {
+                    onBackupExported()
+                } else {
+                    Toast.makeText(
+                        context,
+                        writeResult.exceptionOrNull()?.message ?: "Could not save backup file.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
         }
     }
@@ -1178,12 +1214,34 @@ fun SettingsScreen(
     val importDocLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
-        if (uri != null && canEditSettings) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-            }.getOrNull()?.let { text ->
-                onImportBackup(text)
-            }
+        handleImportedUri(uri)
+    }
+
+    val importGetContentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        handleImportedUri(uri)
+    }
+
+    fun launchSafeSettingsBackupImport() {
+        clearFocusAndHideToolbar(focusManager, textToolbar)
+        val launchedOpenDoc = runCatching {
+            importDocLauncher.launch(arrayOf("*/*"))
+            true
+        }.getOrDefault(false)
+        if (launchedOpenDoc) return
+
+        val launchedGetContent = runCatching {
+            importGetContentLauncher.launch("*/*")
+            true
+        }.getOrDefault(false)
+        if (!launchedGetContent) {
+            Toast.makeText(
+                context,
+                "No system file picker available. Paste your backup JSON below.",
+                Toast.LENGTH_LONG
+            ).show()
+            showPasteBackupDialog = true
         }
     }
 
@@ -1509,7 +1567,25 @@ fun SettingsScreen(
                             Button(
                                 onClick = {
                                     clearFocusAndHideToolbar(focusManager, textToolbar)
-                                    exportDocLauncher.launch("TSE-Billing-Backup.json")
+                                    val launched = runCatching {
+                                        exportDocLauncher.launch("TSE-Billing-Backup.json")
+                                        true
+                                    }.getOrDefault(false)
+                                    if (!launched) {
+                                        scope.launch {
+                                            val json = onExportBackup()
+                                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                                type = "text/plain"
+                                                putExtra(Intent.EXTRA_SUBJECT, "TSE-Billing-Backup.json")
+                                                putExtra(Intent.EXTRA_TEXT, json)
+                                            }
+                                            runCatching {
+                                                context.startActivity(Intent.createChooser(shareIntent, "Save / Share Backup JSON"))
+                                            }.onFailure {
+                                                Toast.makeText(context, "Unable to open file exporter.", Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    }
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
                                 modifier = Modifier.testTag("export_backup_button")
@@ -1519,15 +1595,21 @@ fun SettingsScreen(
                                 Text("Export Backup")
                             }
                             OutlinedButton(
-                                onClick = {
-                                    clearFocusAndHideToolbar(focusManager, textToolbar)
-                                    importDocLauncher.launch(arrayOf("application/json", "*/*"))
-                                },
+                                onClick = { launchSafeSettingsBackupImport() },
                                 modifier = Modifier.testTag("import_backup_button")
                             ) {
                                 Icon(Icons.Default.CloudUpload, contentDescription = null)
                                 Spacer(Modifier.width(6.dp))
                                 Text("Import Backup")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    showPasteBackupDialog = true
+                                },
+                                modifier = Modifier.testTag("paste_import_backup_button")
+                            ) {
+                                Text("Paste JSON")
                             }
                             Button(
                                 onClick = {
@@ -1549,5 +1631,16 @@ fun SettingsScreen(
         }
 
         item { Spacer(Modifier.height(16.dp)) }
+    }
+
+    if (showPasteBackupDialog) {
+        BackupPasteImportDialog(
+            onDismiss = { showPasteBackupDialog = false },
+            onRetryFilePicker = {
+                showPasteBackupDialog = false
+                launchSafeSettingsBackupImport()
+            },
+            onImportJsonText = onImportBackup
+        )
     }
 }

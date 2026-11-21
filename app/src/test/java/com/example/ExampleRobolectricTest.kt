@@ -883,6 +883,13 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("setup_tab_restore").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("setup_import_backup_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("setup_import_backup_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("setup_paste_backup_button").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("backup_paste_json_input").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Cancel").performClick()
+        composeTestRule.waitForIdle()
 
         isConfigured = true
         composeTestRule.waitForIdle()
@@ -1102,5 +1109,13 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("login_lockout_banner").assertIsDisplayed()
         composeTestRule.onNodeWithTag("login_submit_button").assertIsNotEnabled()
+    }
+
+    @Test
+    fun backupImport_handlesCorruptJsonWithoutCrashing() = runTest {
+        val badRes = repo.importBackupJson("{ not valid json !!!")
+        assertTrue(badRes.isFailure)
+        val emptyObjRes = repo.importBackupJson("""{"unrelated": 123}""")
+        assertTrue(emptyObjRes.isFailure)
     }
 }

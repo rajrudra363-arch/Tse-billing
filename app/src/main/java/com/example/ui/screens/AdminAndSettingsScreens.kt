@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -42,6 +41,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.FolderShared
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonAdd
@@ -58,14 +59,17 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -84,6 +88,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -100,8 +105,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.fragment.app.FragmentActivity
 import com.example.BuildConfig
+import com.example.data.CloudAuthUser
+import com.example.data.CloudWorkspaceInfo
 import com.example.data.CompanySettings
 import com.example.data.UpiSettings
 import com.example.data.UserAccountEntity
@@ -124,12 +132,18 @@ import com.example.ui.theme.RedDue
 import com.example.ui.theme.RedDueBg
 import com.example.ui.theme.RedDueDark
 import com.example.ui.theme.TealAccent
+import com.example.util.ApkShareHelper
+import com.example.util.BackupFileHelper
+import com.example.util.BackupSaveOutcome
+import com.example.util.BitmapUtils
 import com.example.util.DeviceAuthHelper
+import com.example.util.GitHubReleaseInfo
 import com.example.util.InvoicePdfPrinter
 import com.example.util.QrGenerator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -140,6 +154,10 @@ fun AdminPanelScreen(
     technicianPerformance: List<TechnicianPerformanceSummary>,
     voiceAndNoteSettings: VoiceAndNoteSettings,
     systemVoiceOptions: List<Pair<String, String>>,
+    cloudUser: CloudAuthUser? = null,
+    cloudWorkspaceInfo: CloudWorkspaceInfo = CloudWorkspaceInfo(),
+    cloudBusy: Boolean = false,
+    availableUpdate: GitHubReleaseInfo? = null,
     onSaveUpi: (upiId: String, payeeName: String) -> Unit,
     onClearUpi: () -> Unit,
     onAddTechnician: (name: String, phone: String, username: String, password: String, photoBitmap: Bitmap?, onDone: () -> Unit) -> Unit,
@@ -149,9 +167,14 @@ fun AdminPanelScreen(
     onRemoveSuperAdmin: (username: String) -> Unit,
     onRecordCashSettlement: (technicianUsername: String, amountText: String, note: String, onDone: () -> Unit) -> Unit,
     onSaveVoiceAndNoteSettings: (VoiceAndNoteSettings) -> Unit,
-    onTestVoice: (script: String, modelId: String) -> Unit
+    onTestVoice: (script: String, modelId: String) -> Unit,
+    onSignInGoogle: () -> Unit = {},
+    onEnsureCloudWorkspace: () -> Unit = {},
+    onShareApkWhatsApp: (targetRole: String) -> Unit = {},
+    onUpdateAdminVerifyCode: (currentAdminPass: String, newCode: String, onSuccess: () -> Unit) -> Unit = { _, _, _ -> }
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var upiId by remember(upiSettings.upiId) { mutableStateOf(upiSettings.upiId) }
     var payeeName by remember(upiSettings.payeeName) { mutableStateOf(upiSettings.payeeName) }
 
@@ -160,26 +183,57 @@ fun AdminPanelScreen(
     var techUsername by remember { mutableStateOf("") }
     var techPassword by remember { mutableStateOf("") }
     var techPhotoBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var pendingTechCamPath by rememberSaveable { mutableStateOf<String?>(null) }
+
+    var curAdminPassFor2Way by remember { mutableStateOf("") }
+    var newAdmin2WayCode by remember { mutableStateOf("") }
 
     val techPhotoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.use { stream ->
-                    BitmapFactory.decodeStream(stream)?.let { bmp ->
-                        techPhotoBitmap = bmp
-                    }
+            scope.launch {
+                val bmp = BitmapUtils.decodeSampledBitmapFromUri(context, uri, 900, 900)
+                if (bmp != null) {
+                    techPhotoBitmap = bmp
+                } else {
+                    Toast.makeText(context, "Could not load selected image.", Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
 
     val techCameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicturePreview()
-    ) { bmp ->
-        if (bmp != null) {
-            techPhotoBitmap = bmp
+        contract = ActivityResultContracts.TakePicture()
+    ) { saved ->
+        val path = pendingTechCamPath
+        pendingTechCamPath = null
+        if (saved && !path.isNullOrBlank()) {
+            scope.launch {
+                val file = File(path)
+                val bmp = BitmapUtils.decodeSampledBitmapFromFile(file, 900, 900)
+                runCatching { file.delete() }
+                if (bmp != null) {
+                    techPhotoBitmap = bmp
+                } else {
+                    Toast.makeText(context, "Could not read camera photo.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    fun launchSafeTechCamera() {
+        val launched = runCatching {
+            val dir = File(context.cacheDir, "captured_photos").apply { mkdirs() }
+            val photoFile = File.createTempFile("tech_", ".jpg", dir)
+            pendingTechCamPath = photoFile.absolutePath
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
+            techCameraLauncher.launch(uri)
+            true
+        }.getOrDefault(false)
+        if (!launched) {
+            pendingTechCamPath = null
+            Toast.makeText(context, "Camera unavailable on this device. Please use Upload Pic.", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -187,7 +241,7 @@ fun AdminPanelScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            techCameraLauncher.launch(null)
+            launchSafeTechCamera()
         } else {
             Toast.makeText(context, "Camera permission needed to capture technician photo", Toast.LENGTH_SHORT).show()
         }
@@ -238,6 +292,125 @@ fun AdminPanelScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item { Spacer(Modifier.height(4.dp)) }
+
+        // 0. Cloud Workspace & WhatsApp APK Sharing (Technician & Super Admin)
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.testTag("admin_cloud_apk_share_card")
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.Cloud, contentDescription = null, tint = TealAccent)
+                        Text("Cloud Sync & Share APK (WhatsApp)", style = MaterialTheme.typography.titleLarge)
+                    }
+                    Text(
+                        text = "Share the APK + Workspace Invite Code to Technicians or Super Admins on WhatsApp. They open straight to Login and all their bills sync to Admin.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (cloudUser == null) {
+                        Button(
+                            onClick = onSignInGoogle,
+                            enabled = !cloudBusy,
+                            colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                            modifier = Modifier.fillMaxWidth().height(48.dp).testTag("admin_google_signin_btn")
+                        ) {
+                            if (cloudBusy) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Icon(Icons.Default.Cloud, contentDescription = null, tint = Color.White)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Sign in with Google for Cloud Sync", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    } else if (cloudWorkspaceInfo.workspaceId.isBlank()) {
+                        Button(
+                            onClick = onEnsureCloudWorkspace,
+                            enabled = !cloudBusy,
+                            colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
+                            modifier = Modifier.fillMaxWidth().height(48.dp)
+                        ) {
+                            Text("Activate Admin Cloud Workspace", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    } else {
+                        Surface(
+                            color = GreenPaidBg,
+                            border = BorderStroke(1.dp, GreenPaid),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = "Cloud Active (${cloudUser.email})",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = GreenPaid
+                                )
+                                Text(
+                                    text = "Technician Invite Code: ${cloudWorkspaceInfo.techShareCode}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NavyPrimary
+                                )
+                                Text(
+                                    text = "Super Admin Invite Code: ${cloudWorkspaceInfo.superShareCode}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NavyPrimary
+                                )
+                            }
+                        }
+                    }
+
+                    val pendingUpdate = availableUpdate
+                    if (pendingUpdate != null) {
+                        Surface(
+                            color = RedDueBg,
+                            border = BorderStroke(1.2.dp, RedDue),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth().testTag("apk_share_update_required_banner")
+                        ) {
+                            Text(
+                                text = "Update v${pendingUpdate.versionName} available! Admin must update first before sharing APK to Technician or Super Admin.",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = RedDueDark,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { onShareApkWhatsApp(ApkShareHelper.ROLE_TECHNICIAN) },
+                            enabled = availableUpdate == null,
+                            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+                            modifier = Modifier.testTag("share_apk_technician_btn")
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Share Technician APK", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                        Button(
+                            onClick = { onShareApkWhatsApp(ApkShareHelper.ROLE_SUPER_ADMIN) },
+                            enabled = availableUpdate == null,
+                            colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                            modifier = Modifier.testTag("share_apk_super_admin_btn")
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Share Super Admin APK", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+            }
+        }
 
         // 1. Technician Accounts & Cash/Folder Manager
         item {
@@ -334,13 +507,18 @@ fun AdminPanelScreen(
                                     OutlinedButton(
                                         onClick = {
                                             clearFocusAndHideToolbar(focusManager, textToolbar)
-                                            techPhotoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                            runCatching {
+                                                techPhotoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                            }.onFailure {
+                                                Toast.makeText(context, "Unable to open photo picker.", Toast.LENGTH_SHORT).show()
+                                            }
                                         },
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
                                         modifier = Modifier.testTag("new_tech_pick_photo_button")
                                     ) {
-                                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp), tint = NavyPrimary)
                                         Spacer(Modifier.width(4.dp))
-                                        Text("Upload Pic")
+                                        Text("Upload Pic", color = NavyPrimary, fontWeight = FontWeight.Bold)
                                     }
                                     OutlinedButton(
                                         onClick = {
@@ -349,14 +527,15 @@ fun AdminPanelScreen(
                                                 context,
                                                 Manifest.permission.CAMERA
                                             ) == PackageManager.PERMISSION_GRANTED
-                                            if (granted) techCameraLauncher.launch(null)
+                                            if (granted) launchSafeTechCamera()
                                             else techCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                                         },
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
                                         modifier = Modifier.testTag("new_tech_camera_photo_button")
                                     ) {
-                                        Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp), tint = NavyPrimary)
                                         Spacer(Modifier.width(4.dp))
-                                        Text("Take Pic")
+                                        Text("Take Pic", color = NavyPrimary, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -374,10 +553,10 @@ fun AdminPanelScreen(
                                 techPhotoBitmap = null
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                        colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                         modifier = Modifier.fillMaxWidth().height(48.dp).testTag("add_technician_button")
                     ) {
-                        Text("Add Technician", fontWeight = FontWeight.Bold)
+                        Text("Add Technician", fontWeight = FontWeight.Bold, color = Color.White)
                     }
 
                     HorizontalDivider()
@@ -918,6 +1097,59 @@ fun AdminPanelScreen(
             }
         }
 
+        // 6. Admin 2-Way Verification Code
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.testTag("admin_verify_code_card")
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = TealAccent)
+                        Text("Admin 2-Way Verification Code", style = MaterialTheme.typography.titleLarge)
+                    }
+                    Text(
+                        text = "Require a second Verification Code whenever Admin logs in (after Username & Password).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = curAdminPassFor2Way,
+                        onValueChange = { curAdminPassFor2Way = it },
+                        label = { Text("Current Admin Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("current_admin_pass_input")
+                    )
+                    OutlinedTextField(
+                        value = newAdmin2WayCode,
+                        onValueChange = { newAdmin2WayCode = it },
+                        label = { Text("New 2-Way Verification Code (min 4 chars)") },
+                        leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_admin_verify_code_input")
+                    )
+                    Button(
+                        onClick = {
+                            clearFocusAndHideToolbar(focusManager, textToolbar)
+                            onUpdateAdminVerifyCode(curAdminPassFor2Way, newAdmin2WayCode) {
+                                curAdminPassFor2Way = ""
+                                newAdmin2WayCode = ""
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("save_admin_verify_code_button")
+                    ) {
+                        Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Color.White)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Save 2-Way Verification Code", fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                }
+            }
+        }
+
         item { Spacer(Modifier.height(16.dp)) }
     }
 
@@ -943,11 +1175,13 @@ private fun EditTechnicianDialog(
     onSave: (newUsername: String, name: String, phone: String, newPassword: String, newPhotoBitmap: Bitmap?) -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var name by remember(account.username) { mutableStateOf(account.displayName) }
     var phone by remember(account.username) { mutableStateOf(account.phone) }
     var username by remember(account.username) { mutableStateOf(account.username) }
     var newPassword by remember(account.username) { mutableStateOf("") }
     var newPhotoBitmap by remember(account.username) { mutableStateOf<Bitmap?>(null) }
+    var pendingEditCamPath by rememberSaveable { mutableStateOf<String?>(null) }
     val existingPhotoBitmap = remember(account.photoBase64) {
         account.photoBase64.takeIf { it.isNotBlank() }?.let { InvoicePdfPrinter.decodeBase64Bitmap(it) }
     }
@@ -957,22 +1191,52 @@ private fun EditTechnicianDialog(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.use { stream ->
-                    BitmapFactory.decodeStream(stream)?.let { bmp -> newPhotoBitmap = bmp }
+            scope.launch {
+                val bmp = BitmapUtils.decodeSampledBitmapFromUri(context, uri, 900, 900)
+                if (bmp != null) {
+                    newPhotoBitmap = bmp
+                } else {
+                    Toast.makeText(context, "Could not load selected image.", Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
     val editCameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicturePreview()
-    ) { bmp ->
-        if (bmp != null) newPhotoBitmap = bmp
+        contract = ActivityResultContracts.TakePicture()
+    ) { saved ->
+        val path = pendingEditCamPath
+        pendingEditCamPath = null
+        if (saved && !path.isNullOrBlank()) {
+            scope.launch {
+                val file = File(path)
+                val bmp = BitmapUtils.decodeSampledBitmapFromFile(file, 900, 900)
+                runCatching { file.delete() }
+                if (bmp != null) {
+                    newPhotoBitmap = bmp
+                } else {
+                    Toast.makeText(context, "Could not read camera photo.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+    fun launchSafeEditCamera() {
+        val launched = runCatching {
+            val dir = File(context.cacheDir, "captured_photos").apply { mkdirs() }
+            val photoFile = File.createTempFile("tech_edit_", ".jpg", dir)
+            pendingEditCamPath = photoFile.absolutePath
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", photoFile)
+            editCameraLauncher.launch(uri)
+            true
+        }.getOrDefault(false)
+        if (!launched) {
+            pendingEditCamPath = null
+            Toast.makeText(context, "Camera unavailable on this device. Please use Change Pic.", Toast.LENGTH_SHORT).show()
+        }
     }
     val editCameraPermLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (granted) editCameraLauncher.launch(null)
+        if (granted) launchSafeEditCamera()
     }
 
     val focusManager = LocalFocusManager.current
@@ -1016,11 +1280,14 @@ private fun EditTechnicianDialog(
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             OutlinedButton(
                                 onClick = {
-                                    editPhotoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                    runCatching {
+                                        editPhotoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                    }
                                 },
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
                                 modifier = Modifier.testTag("edit_tech_pick_photo_button")
                             ) {
-                                Text("Change Pic")
+                                Text("Change Pic", color = NavyPrimary, fontWeight = FontWeight.Bold)
                             }
                             OutlinedButton(
                                 onClick = {
@@ -1028,11 +1295,12 @@ private fun EditTechnicianDialog(
                                         context,
                                         Manifest.permission.CAMERA
                                     ) == PackageManager.PERMISSION_GRANTED
-                                    if (granted) editCameraLauncher.launch(null)
+                                    if (granted) launchSafeEditCamera()
                                     else editCameraPermLauncher.launch(Manifest.permission.CAMERA)
-                                }
+                                },
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary)
                             ) {
-                                Text("Camera")
+                                Text("Camera", color = NavyPrimary, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -1075,10 +1343,10 @@ private fun EditTechnicianDialog(
                     clearFocusAndHideToolbar(focusManager, textToolbar)
                     onSave(username, name, phone, newPassword, newPhotoBitmap)
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                 modifier = Modifier.testTag("save_edit_tech_button")
             ) {
-                Text("Save Changes", fontWeight = FontWeight.Bold)
+                Text("Save Changes", fontWeight = FontWeight.Bold, color = Color.White)
             }
         },
         dismissButton = {
@@ -1110,6 +1378,7 @@ fun SettingsScreen(
     onCheckForUpdates: () -> Unit = {}
 ) {
     val canEditSettings = user.isAdmin && !user.isSuperAdmin
+    val canExportPhoneBackup = user.isAdmin || user.isSuperAdmin
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
@@ -1129,12 +1398,10 @@ fun SettingsScreen(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null && canEditSettings) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.use { stream ->
-                    BitmapFactory.decodeStream(stream)?.let { bmp ->
-                        onPickCompanyLogoBitmap(bmp)
-                    }
-                }
+            scope.launch {
+                val bmp = BitmapUtils.decodeSampledBitmapFromUri(context, uri, 900, 900)
+                if (bmp != null) onPickCompanyLogoBitmap(bmp)
+                else Toast.makeText(context, "Could not decode selected logo image.", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -1143,12 +1410,10 @@ fun SettingsScreen(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null && canEditSettings) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.use { stream ->
-                    BitmapFactory.decodeStream(stream)?.let { bmp ->
-                        onPickFallbackQrBitmap(bmp)
-                    }
-                }
+            scope.launch {
+                val bmp = BitmapUtils.decodeSampledBitmapFromUri(context, uri, 900, 900)
+                if (bmp != null) onPickFallbackQrBitmap(bmp)
+                else Toast.makeText(context, "Could not decode selected QR image.", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -1157,12 +1422,10 @@ fun SettingsScreen(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null && canEditSettings) {
-            runCatching {
-                context.contentResolver.openInputStream(uri)?.use { stream ->
-                    BitmapFactory.decodeStream(stream)?.let { bmp ->
-                        onPickAuthorisedSignatureBitmap(bmp)
-                    }
-                }
+            scope.launch {
+                val bmp = BitmapUtils.decodeSampledBitmapFromUri(context, uri, 900, 900)
+                if (bmp != null) onPickAuthorisedSignatureBitmap(bmp)
+                else Toast.makeText(context, "Could not decode signature image.", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -1188,7 +1451,7 @@ fun SettingsScreen(
     val exportDocLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
-        if (uri != null && canEditSettings) {
+        if (uri != null && canExportPhoneBackup) {
             scope.launch {
                 val writeResult = runCatching {
                     val json = onExportBackup()
@@ -1242,6 +1505,40 @@ fun SettingsScreen(
                 Toast.LENGTH_LONG
             ).show()
             showPasteBackupDialog = true
+        }
+    }
+
+    fun launchDirectPhoneBackupExport() {
+        clearFocusAndHideToolbar(focusManager, textToolbar)
+        scope.launch {
+            val json = onExportBackup()
+            when (val outcome = BackupFileHelper.saveBackupDirectlyToPhoneDownloads(context, json)) {
+                is BackupSaveOutcome.SavedToPhone -> {
+                    Toast.makeText(context, "Saved to ${outcome.displayPath}", Toast.LENGTH_LONG).show()
+                    onBackupExported()
+                }
+                is BackupSaveOutcome.LaunchPickerFallback -> {
+                    val launched = runCatching {
+                        exportDocLauncher.launch(outcome.suggestedFileName)
+                        true
+                    }.getOrDefault(false)
+                    if (!launched) {
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_SUBJECT, outcome.suggestedFileName)
+                            putExtra(Intent.EXTRA_TEXT, json)
+                        }
+                        runCatching {
+                            context.startActivity(Intent.createChooser(shareIntent, "Save / Share Backup JSON"))
+                        }.onFailure {
+                            Toast.makeText(context, "Unable to open file exporter.", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+                is BackupSaveOutcome.Error -> {
+                    Toast.makeText(context, outcome.message, Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 
@@ -1319,11 +1616,12 @@ fun SettingsScreen(
                                         onError = { err -> testLockResult = err }
                                     )
                                 },
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
                                 modifier = Modifier.testTag("test_device_auth_button")
                             ) {
-                                Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(18.dp), tint = NavyPrimary)
                                 Spacer(Modifier.width(6.dp))
-                                Text("Test Device Lock Prompt", color = Color(0xFF0B2238))
+                                Text("Test Device Lock Prompt", color = NavyPrimary, fontWeight = FontWeight.Bold)
                             }
                             if (testLockResult.isNotBlank()) {
                                 Text(testLockResult, style = MaterialTheme.typography.bodySmall, color = NavyPrimary)
@@ -1391,16 +1689,16 @@ fun SettingsScreen(
                                     )
                                 )
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
+                            colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
                             modifier = Modifier.fillMaxWidth().height(48.dp).testTag("save_settings_button")
                         ) {
-                            Icon(Icons.Default.Save, contentDescription = null)
+                            Icon(Icons.Default.Save, contentDescription = null, tint = Color.White)
                             Spacer(Modifier.width(6.dp))
-                            Text("Save Company Settings", fontWeight = FontWeight.Bold)
+                            Text("Save Company Settings", fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     } else {
                         Text(
-                            text = "Technicians can view company contact details and configure Device Authentication above.",
+                            text = "View company contact details. Technicians have no backup access; Admin & Super Admin manage backups below.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1442,21 +1740,24 @@ fun SettingsScreen(
                                 Button(
                                     onClick = {
                                         clearFocusAndHideToolbar(focusManager, textToolbar)
-                                        logoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                        runCatching {
+                                            logoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                        }
                                     },
-                                    colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
+                                    colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
                                     modifier = Modifier.testTag("upload_company_logo_button")
                                 ) {
-                                    Icon(Icons.Default.PhotoLibrary, contentDescription = null)
+                                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color.White)
                                     Spacer(Modifier.width(6.dp))
-                                    Text("Change Logo")
+                                    Text("Change Logo", color = Color.White, fontWeight = FontWeight.Bold)
                                 }
                                 if (settings.logoBase64.isNotBlank()) {
                                     OutlinedButton(
                                         onClick = { onPickCompanyLogoBitmap(null) },
+                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
                                         modifier = Modifier.testTag("reset_company_logo_button")
                                     ) {
-                                        Text("Reset Default")
+                                        Text("Reset Default", color = NavyPrimary)
                                     }
                                 }
                             }
@@ -1507,16 +1808,18 @@ fun SettingsScreen(
                             Button(
                                 onClick = {
                                     clearFocusAndHideToolbar(focusManager, textToolbar)
-                                    authSignaturePicker.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                    )
+                                    runCatching {
+                                        authSignaturePicker.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    }
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
+                                colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
                                 modifier = Modifier.testTag("upload_auth_signature_button")
                             ) {
-                                Icon(Icons.Default.PhotoLibrary, contentDescription = null)
+                                Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color.White)
                                 Spacer(Modifier.width(6.dp))
-                                Text("Upload Signatory", fontWeight = FontWeight.Bold)
+                                Text("Upload Signatory", fontWeight = FontWeight.Bold, color = Color.White)
                             }
                             if (authSigPreview != null) {
                                 OutlinedButton(
@@ -1524,28 +1827,36 @@ fun SettingsScreen(
                                         clearFocusAndHideToolbar(focusManager, textToolbar)
                                         onPickAuthorisedSignatureBitmap(null)
                                     },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = RedDueDark),
                                     modifier = Modifier.testTag("clear_auth_signature_button")
                                 ) {
-                                    Icon(Icons.Default.Clear, contentDescription = null)
+                                    Icon(Icons.Default.Clear, contentDescription = null, tint = RedDueDark)
                                     Spacer(Modifier.width(4.dp))
-                                    Text("Clear Photo")
+                                    Text("Clear Photo", color = RedDueDark)
                                 }
                             }
                         }
                     }
                 }
             }
+        }
 
-            // Full Backup & In-App GitHub Auto-Update
+        // Backup (Admin & Super Admin Phone Downloads) + Fallback QR & In-App App Updates
+        if (canExportPhoneBackup) {
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    modifier = Modifier.testTag("backup_updates_card")
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Backup, Fallback QR & App Updates (v${BuildConfig.VERSION_NAME})", style = MaterialTheme.typography.titleLarge)
+                        Text("Backup & App Updates (v${BuildConfig.VERSION_NAME})", style = MaterialTheme.typography.titleLarge)
                         Text(
-                            text = "Export/Import a .json backup preserving all Bills, Accounts, Technicians, Customers, Products, Settlements, and Voice Settings. Check GitHub Releases directly inside the app for APK updates.",
+                            text = if (canEditSettings) {
+                                "Save backups directly into phone Downloads/TSE_Billing or import from phone storage. Check GitHub Releases for APK updates."
+                            } else {
+                                "Super Admin can export a full backup directly to phone Downloads/TSE_Billing and check for updates. Technicians have no backup access."
+                            },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1553,63 +1864,51 @@ fun SettingsScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            OutlinedButton(
-                                onClick = {
-                                    clearFocusAndHideToolbar(focusManager, textToolbar)
-                                    photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                                },
-                                modifier = Modifier.testTag("pick_qr_image_button")
-                            ) {
-                                Icon(Icons.Default.PhotoLibrary, contentDescription = null)
-                                Spacer(Modifier.width(6.dp))
-                                Text("Upload Fallback QR")
+                            if (canEditSettings) {
+                                OutlinedButton(
+                                    onClick = {
+                                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                                        runCatching {
+                                            photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                        }
+                                    },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                                    modifier = Modifier.testTag("pick_qr_image_button")
+                                ) {
+                                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = NavyPrimary)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Upload Fallback QR", color = NavyPrimary, fontWeight = FontWeight.Bold)
+                                }
                             }
                             Button(
-                                onClick = {
-                                    clearFocusAndHideToolbar(focusManager, textToolbar)
-                                    val launched = runCatching {
-                                        exportDocLauncher.launch("TSE-Billing-Backup.json")
-                                        true
-                                    }.getOrDefault(false)
-                                    if (!launched) {
-                                        scope.launch {
-                                            val json = onExportBackup()
-                                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                                type = "text/plain"
-                                                putExtra(Intent.EXTRA_SUBJECT, "TSE-Billing-Backup.json")
-                                                putExtra(Intent.EXTRA_TEXT, json)
-                                            }
-                                            runCatching {
-                                                context.startActivity(Intent.createChooser(shareIntent, "Save / Share Backup JSON"))
-                                            }.onFailure {
-                                                Toast.makeText(context, "Unable to open file exporter.", Toast.LENGTH_LONG).show()
-                                            }
-                                        }
-                                    }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                                onClick = { launchDirectPhoneBackupExport() },
+                                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                                 modifier = Modifier.testTag("export_backup_button")
                             ) {
-                                Icon(Icons.Default.CloudDownload, contentDescription = null)
+                                Icon(Icons.Default.CloudDownload, contentDescription = null, tint = Color.White)
                                 Spacer(Modifier.width(6.dp))
-                                Text("Export Backup")
+                                Text("Save Backup to Phone", fontWeight = FontWeight.Bold, color = Color.White)
                             }
-                            OutlinedButton(
-                                onClick = { launchSafeSettingsBackupImport() },
-                                modifier = Modifier.testTag("import_backup_button")
-                            ) {
-                                Icon(Icons.Default.CloudUpload, contentDescription = null)
-                                Spacer(Modifier.width(6.dp))
-                                Text("Import Backup")
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    clearFocusAndHideToolbar(focusManager, textToolbar)
-                                    showPasteBackupDialog = true
-                                },
-                                modifier = Modifier.testTag("paste_import_backup_button")
-                            ) {
-                                Text("Paste JSON")
+                            if (canEditSettings) {
+                                OutlinedButton(
+                                    onClick = { launchSafeSettingsBackupImport() },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                                    modifier = Modifier.testTag("import_backup_button")
+                                ) {
+                                    Icon(Icons.Default.CloudUpload, contentDescription = null, tint = NavyPrimary)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Import Backup", color = NavyPrimary, fontWeight = FontWeight.Bold)
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                                        showPasteBackupDialog = true
+                                    },
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                                    modifier = Modifier.testTag("paste_import_backup_button")
+                                ) {
+                                    Text("Paste JSON", color = NavyPrimary, fontWeight = FontWeight.Bold)
+                                }
                             }
                             Button(
                                 onClick = {
@@ -1617,12 +1916,12 @@ fun SettingsScreen(
                                     onCheckForUpdates()
                                 },
                                 enabled = !updateCheckBusy,
-                                colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
+                                colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
                                 modifier = Modifier.testTag("online_update_button")
                             ) {
-                                Icon(Icons.Default.SystemUpdate, contentDescription = null)
+                                Icon(Icons.Default.SystemUpdate, contentDescription = null, tint = Color.White)
                                 Spacer(Modifier.width(6.dp))
-                                Text(if (updateCheckBusy) "Checking..." else "Check App Update")
+                                Text(if (updateCheckBusy) "Checking..." else "Check App Update", color = Color.White, fontWeight = FontWeight.Bold)
                             }
                         }
                     }

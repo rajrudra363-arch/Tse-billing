@@ -28,7 +28,8 @@ object DispatchCardGenerator {
 
     fun renderDispatchCardBitmap(
         company: CompanySettings,
-        request: CustomerHelpEntity
+        request: CustomerHelpEntity,
+        technicianPhotoBase64: String = ""
     ): Bitmap {
         val bitmap = Bitmap.createBitmap(CARD_W, CARD_H, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
@@ -60,7 +61,7 @@ object DispatchCardGenerator {
         canvas.drawLine(36f, 290f, CARD_W - 36f, 290f, goldLine)
 
         // Company Logo
-        val customLogo = InvoicePdfPrinter.decodeBase64Bitmap(company.logoBase64)
+        val customLogo = BitmapUtils.decodeBase64Bitmap(company.logoBase64, 360)
         val logoBounds = RectF(72f, 70f, 206f, 204f)
         if (customLogo != null) {
             canvas.drawBitmap(customLogo, null, logoBounds, null)
@@ -135,7 +136,7 @@ object DispatchCardGenerator {
 
         // Assigned Technician Box
         var y = 434f
-        y = drawSectionBox(
+        val techEndY = drawSectionBox(
             canvas = canvas,
             top = y,
             title = "ASSIGNED TECHNICIAN DETAILS",
@@ -146,8 +147,28 @@ object DispatchCardGenerator {
                 "Technician Name: ${request.acceptedByName.ifBlank { request.acceptedBy.ifBlank { "Assigned Technician" } }}",
                 "Technician Mobile: ${request.acceptedByPhone.ifBlank { company.mobile }}",
                 "Username ID: @${request.acceptedBy.ifBlank { "technician" }}"
-            )
+            ),
+            rightPaddingPx = if (technicianPhotoBase64.isNotBlank()) 175 else 0
         )
+        val techPortrait = BitmapUtils.decodeBase64Bitmap(technicianPhotoBase64, 320)
+        if (techPortrait != null) {
+            val boxCenterY = (y + techEndY) / 2f
+            val r = 64f
+            val cx = CARD_W - 156f
+            val photoRect = RectF(cx - r, boxCenterY - r, cx + r, boxCenterY + r)
+            val clipPath = android.graphics.Path().apply { addCircle(cx, boxCenterY, r, android.graphics.Path.Direction.CW) }
+            canvas.save()
+            canvas.clipPath(clipPath)
+            canvas.drawBitmap(techPortrait, null, photoRect, null)
+            canvas.restore()
+            val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.parseColor("#16845B")
+                style = Paint.Style.STROKE
+                strokeWidth = 5f
+            }
+            canvas.drawCircle(cx, boxCenterY, r, ringPaint)
+        }
+        y = techEndY
 
         y += 26f
 
@@ -211,7 +232,8 @@ object DispatchCardGenerator {
         bgHex: String,
         borderHex: String,
         titleHex: String,
-        lines: List<String>
+        lines: List<String>,
+        rightPaddingPx: Int = 0
     ): Float {
         val contentText = lines.joinToString("\n")
         val bodyPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -224,7 +246,7 @@ object DispatchCardGenerator {
             textSize = 23f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
-        val maxW = CARD_W - 196
+        val maxW = (CARD_W - 196 - rightPaddingPx).coerceAtLeast(240)
         val layout = StaticLayout.Builder.obtain(contentText, 0, contentText.length, bodyPaint, maxW)
             .setAlignment(Layout.Alignment.ALIGN_NORMAL)
             .setLineSpacing(6f, 1f)
@@ -271,10 +293,11 @@ object DispatchCardGenerator {
     fun shareDispatchCardToCustomerWhatsApp(
         context: Context,
         company: CompanySettings,
-        request: CustomerHelpEntity
+        request: CustomerHelpEntity,
+        technicianPhotoBase64: String = ""
     ): Boolean {
         return try {
-            val bmp = renderDispatchCardBitmap(company, request)
+            val bmp = renderDispatchCardBitmap(company, request, technicianPhotoBase64)
             val dir = File(context.cacheDir, "photos").apply { mkdirs() }
             val file = File(dir, "TSE_Dispatch_${request.id}.png")
             FileOutputStream(file).use { out ->

@@ -58,10 +58,9 @@ fun InvoiceSheetPreview(
     val isQuotation = draft.documentType == DocumentType.QUOTATION
     val waUri = remember(company.mobile) { QrGenerator.buildWhatsAppSupportUri(company.mobile) }
 
-    // QR uses paidAmount exclusively when Online Payment is selected and paidAmount > 0; otherwise 0.0 (no bill total hardcoded)
-    val qrPayAmt = if (draft.paymentMode == PaymentMode.ONLINE && draft.paidAmount > 0.009) draft.paidAmount else 0.0
-    val upiUri = remember(upi.upiId, upi.payeeName, qrPayAmt, draft.invoiceNo) {
-        if (upi.upiId.isNotBlank()) QrGenerator.buildUpiUri(upi.upiId, upi.payeeName, qrPayAmt, draft.invoiceNo)
+    // Printed A4 & sheet preview UPI QR never embeds an amount (amount-free static business UPI QR)
+    val upiUri = remember(upi.upiId, upi.payeeName, draft.invoiceNo) {
+        if (upi.upiId.isNotBlank()) QrGenerator.buildUpiUri(upi.upiId, upi.payeeName, 0.0, draft.invoiceNo)
         else ""
     }
     val signatureBmp = remember(draft.signatureBase64) {
@@ -259,11 +258,19 @@ fun InvoiceSheetPreview(
                 TableCell("Amount", 1.1f, bold = true, align = TextAlign.End)
             }
             HorizontalDivider(color = sheetBorder, thickness = 1.dp)
-            val previewItems = remember(draft.items, draft.extraChargeType, draft.extraChargeAmount) {
+            val previewItems = remember(
+                draft.items,
+                draft.extraChargeType,
+                draft.extraChargeAmount,
+                draft.secondaryChargeType,
+                draft.secondaryChargeAmount
+            ) {
                 InvoicePdfPrinter.buildEffectivePrintItems(
                     draft.items,
                     draft.extraChargeType,
-                    draft.extraChargeAmount
+                    draft.extraChargeAmount,
+                    draft.secondaryChargeType,
+                    draft.secondaryChargeAmount
                 )
             }
             if (previewItems.isEmpty()) {

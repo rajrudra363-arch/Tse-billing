@@ -1,5 +1,6 @@
 package com.example.ui
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.util.Base64
 import androidx.lifecycle.ViewModel
@@ -11,10 +12,14 @@ import com.example.data.BillEntity
 import com.example.data.BillingRepository
 import com.example.data.BillingTimePolicy
 import com.example.data.ChargeType
+import com.example.data.CloudAuthUser
+import com.example.data.CloudSyncRepository
+import com.example.data.CloudWorkspaceInfo
 import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
 import com.example.data.CustomerHelpEntity
 import com.example.data.DocumentType
+import com.example.data.GoogleAuthHelper
 import com.example.data.InvoiceItem
 import com.example.data.InvoiceItemJson
 import com.example.data.LoginSecurityState
@@ -25,11 +30,13 @@ import com.example.data.UpiSettings
 import com.example.data.UserAccountEntity
 import com.example.data.UserSession
 import com.example.data.VoiceAndNoteSettings
+import com.example.util.ApkShareHelper
 import com.example.util.AppUpdateChecker
 import com.example.util.GitHubReleaseInfo
 import com.example.util.InvoicePrintPayload
 import com.example.util.SoundCue
 import com.example.util.SoundEngine
+import com.example.util.WhatsAppHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -116,6 +123,8 @@ data class BillDraft(
     val items: List<InvoiceItem> = listOf(InvoiceItem()),
     val extraChargeType: ChargeType = ChargeType.NONE,
     val extraChargeAmountText: String = "0",
+    val secondaryChargeType: ChargeType = ChargeType.NONE,
+    val secondaryChargeAmountText: String = "0",
     val discountText: String = "0",
     val paidAmountText: String = "0",
     val paymentMode: PaymentMode = PaymentMode.ONLINE,
@@ -130,7 +139,10 @@ data class BillDraft(
     val extraChargeAmount: Double
         get() = if (extraChargeType == ChargeType.NONE) 0.0
         else (extraChargeAmountText.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
-    val subtotal: Double get() = itemsSubtotal + extraChargeAmount
+    val secondaryChargeAmount: Double
+        get() = if (secondaryChargeType == ChargeType.NONE || secondaryChargeType == extraChargeType) 0.0
+        else (secondaryChargeAmountText.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
+    val subtotal: Double get() = itemsSubtotal + extraChargeAmount + secondaryChargeAmount
     val discount: Double get() = (discountText.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
     val grandTotal: Double get() = (subtotal - discount).coerceAtLeast(0.0)
     val paidAmount: Double get() = (paidAmountText.toDoubleOrNull() ?: 0.0).coerceAtLeast(0.0)
@@ -149,11 +161,17 @@ sealed interface BillingEvent {
         val subtitle: String
     ) : BillingEvent
     data class NotifyAppUpdate(val release: GitHubReleaseInfo) : BillingEvent
+    data class NotifyTechnicianBill(
+        val invoiceNo: String,
+        val technicianUsername: String,
+        val customerName: String
+    ) : BillingEvent
 }
 
 class BillingViewModel(
     private val repository: BillingRepository,
-    private val soundEngine: SoundEngine
+    private val soundEngine: SoundEngine,
+    private val cloudSync: CloudSyncRepository? = repository.cloudSync
 ) : ViewModel() {
 
     private val _splashVisible = MutableStateFlow(true)
@@ -189,12 +207,33 @@ class BillingViewModel(
     private val _updateCheckBusy = MutableStateFlow(false)
     val updateCheckBusy: StateFlow<Boolean> = _updateCheckBusy.asStateFlow()
 
-    private val _events = MutableSharedFlow<BillingEvent>(extraBufferCapacity = 12)
+    private val _cloudUser = MutableStateFlow<CloudAuthUser?>(null)
+    val cloudUser: StateFlow<CloudAuthUser?> = _cloudUser.asStateFlow()
+
+    private val _cloudBusy = MutableStateFlow(false)
+    val cloudBusy: StateFlow<Boolean> = _cloudBusy.asStateFlow()
+
+    private val _cloudStatusMessage = MutableStateFlow("")
+    val cloudStatusMessage: StateFlow<String> = _cloudStatusMessage.asStateFlow()
+
+    private val seenRemoteBillIds = mutableSetOf<String>()
+    private var initialRemoteBillsLoaded = false
+
+    private val _events = MutableSharedFlow<BillingEvent>(extraBufferCapacity = 16)
     val events: SharedFlow<BillingEvent> = _events.asSharedFlow()
 
     val isAdminConfigured: StateFlow<Boolean?> = repository.isAdminConfigured
         .map<Boolean, Boolean?> { it }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val hasAdminVerifyCode: StateFlow<Boolean> = repository.hasAdminVerificationCode
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val isVolatileCloudMode: StateFlow<Boolean> = repository.isVolatileCloudMode
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val cloudWorkspaceInfo: StateFlow<CloudWorkspaceInfo> = repository.cloudWorkspaceInfo
+        .stateIn(viewModelScope, SharingStarted.Eagerly, CloudWorkspaceInfo())
 
     val accounts: StateFlow<List<UserAccountEntity>> = repository.accounts
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -359,6 +398,234 @@ class BillingViewModel(
             _splashVisible.value = false
         }
         checkForAppUpdates(manual = false)
+        initCloudSessionOnLaunch()
+    }
+
+    private fun initCloudSessionOnLaunch() {
+        val sync = cloudSync ?: return
+        viewModelScope.launch {
+            val savedWs = repository.cloudWorkspaceInfo.first()
+            if (savedWs.workspaceId.isNotBlank() && savedWs.deviceRole != "admin") {
+                repository.enableVolatileCloudMode(savedWs.deviceRole, savedWs.workspaceId)
+            }
+            val currentAuth = GoogleAuthHelper.currentUser(sync.contextForAuth())
+            if (currentAuth != null) {
+                _cloudUser.value = currentAuth
+                syncExistingCloudWorkspace()
+            } else {
+                val silent = GoogleAuthHelper.trySilentGoogleSignIn(sync.contextForAuth()).getOrNull()
+                if (silent != null) {
+                    _cloudUser.value = silent
+                    syncExistingCloudWorkspace()
+                }
+            }
+        }
+    }
+
+    private fun CloudSyncRepository.contextForAuth(): Context {
+        val field = this.javaClass.getDeclaredField("context").apply { isAccessible = true }
+        return field.get(this) as Context
+    }
+
+    private suspend fun syncExistingCloudWorkspace() {
+        val sync = cloudSync ?: return
+        val savedWs = repository.cloudWorkspaceInfo.first()
+        val discovered = sync.discoverWorkspaceForSignedInUser().getOrNull()
+        val wsInfo = discovered ?: savedWs.takeIf { it.workspaceId.isNotBlank() } ?: return
+        val snap = sync.fetchFullWorkspaceSnapshot(wsInfo.workspaceId, wsInfo.deviceRole).getOrNull()
+        if (snap != null) {
+            seenRemoteBillIds.clear()
+            seenRemoteBillIds.addAll(snap.bills.map { it.id })
+            initialRemoteBillsLoaded = true
+            repository.applyCloudSnapshot(snap)
+            startCloudRealtimeSync(snap.workspace)
+            _cloudStatusMessage.value = "Cloud Connected (${snap.workspace.deviceRole.uppercase(Locale.US)})"
+        }
+    }
+
+    private fun startCloudRealtimeSync(ws: CloudWorkspaceInfo) {
+        val sync = cloudSync ?: return
+        sync.startRealtimeWorkspaceSync(
+            workspaceId = ws.workspaceId,
+            deviceRole = ws.deviceRole,
+            onWorkspaceMetaChanged = { info, company, upi, voice ->
+                viewModelScope.launch {
+                    repository.saveWorkspaceMetadata(info)
+                    repository.mergeCloudMetaIntoAdmin(company, upi, voice)
+                }
+            },
+            onAccountsChanged = { list ->
+                viewModelScope.launch { repository.mergeCloudAccountsIntoAdmin(list) }
+            },
+            onProductsChanged = { list ->
+                viewModelScope.launch { repository.mergeCloudProductsIntoAdmin(list) }
+            },
+            onCustomersChanged = { list ->
+                viewModelScope.launch { repository.mergeCloudCustomersIntoAdmin(list) }
+            },
+            onBillsChanged = { list ->
+                viewModelScope.launch {
+                    val activeAdmin = _session.value?.takeIf { it.isAdmin }
+                    if (initialRemoteBillsLoaded && activeAdmin != null) {
+                        val newlyArrived = list.filter { b ->
+                            b.id !in seenRemoteBillIds &&
+                                DocumentType.fromString(b.documentType) == DocumentType.BILL &&
+                                !b.createdBy.equals(activeAdmin.username, ignoreCase = true)
+                        }
+                        newlyArrived.forEach { b ->
+                            emitToast("New bill ${b.invoiceNo} created by @${b.createdBy} — Send Bill PDF to customer!")
+                            _events.tryEmit(
+                                BillingEvent.NotifyTechnicianBill(
+                                    invoiceNo = b.invoiceNo,
+                                    technicianUsername = b.createdBy,
+                                    customerName = b.customerName
+                                )
+                            )
+                        }
+                    }
+                    seenRemoteBillIds.addAll(list.map { it.id })
+                    initialRemoteBillsLoaded = true
+                    repository.mergeCloudBillsIntoAdmin(list)
+                }
+            },
+            onHelpRequestsChanged = { list ->
+                viewModelScope.launch { repository.mergeCloudHelpsIntoAdmin(list) }
+            },
+            onSettlementsChanged = { list ->
+                viewModelScope.launch { repository.mergeCloudSettlementsIntoAdmin(list) }
+            }
+        )
+    }
+
+    fun signInWithGoogle(activityContext: Context, onReady: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            _cloudBusy.value = true
+            _authError.value = ""
+            val res = GoogleAuthHelper.signInWithGoogle(activityContext)
+            if (res.isFailure) {
+                _cloudBusy.value = false
+                val msg = res.exceptionOrNull()?.message ?: "Google Sign-In failed."
+                _authError.value = msg
+                emitToast(msg, isError = true)
+                return@launch
+            }
+            val authUser = res.getOrNull()!!
+            _cloudUser.value = authUser
+            val sync = cloudSync
+            if (sync != null) {
+                val discovered = sync.discoverWorkspaceForSignedInUser().getOrNull()
+                if (discovered != null) {
+                    val snap = sync.fetchFullWorkspaceSnapshot(discovered.workspaceId, discovered.deviceRole).getOrNull()
+                    if (snap != null) {
+                        seenRemoteBillIds.clear()
+                        seenRemoteBillIds.addAll(snap.bills.map { it.id })
+                        initialRemoteBillsLoaded = true
+                        repository.applyCloudSnapshot(snap)
+                        startCloudRealtimeSync(snap.workspace)
+                        emitToast("Cloud synced as ${authUser.email}")
+                    }
+                } else if (repository.isAdminConfigured.first()) {
+                    ensureAdminCloudWorkspaceInternal(pushLocal = true)
+                } else {
+                    emitToast("Google signed in (${authUser.email}). Enter Invite Code or Create Admin.")
+                }
+            }
+            _cloudBusy.value = false
+            onReady?.invoke()
+        }
+    }
+
+    fun joinWorkspaceWithInviteCode(inviteCode: String) {
+        val sync = cloudSync ?: run {
+            emitToast("Cloud service not initialized", isError = true)
+            return
+        }
+        val clean = inviteCode.trim()
+        if (clean.length < 8) {
+            _authError.value = "Enter valid Workspace Invite Code from Admin."
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
+        viewModelScope.launch {
+            _cloudBusy.value = true
+            _authError.value = ""
+            val joined = sync.joinWorkspaceByInviteCode(clean)
+            if (joined.isFailure) {
+                _cloudBusy.value = false
+                val msg = joined.exceptionOrNull()?.message ?: "Invalid Invite Code."
+                _authError.value = msg
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(msg, isError = true)
+                return@launch
+            }
+            val info = joined.getOrNull()!!
+            val snapRes = sync.fetchFullWorkspaceSnapshot(info.workspaceId, info.deviceRole)
+            if (snapRes.isSuccess) {
+                val snap = snapRes.getOrNull()!!
+                seenRemoteBillIds.clear()
+                seenRemoteBillIds.addAll(snap.bills.map { it.id })
+                initialRemoteBillsLoaded = true
+                repository.applyCloudSnapshot(snap)
+                startCloudRealtimeSync(snap.workspace)
+                soundEngine.play(SoundCue.SAVE)
+                emitToast("Connected to ${snap.workspace.companyName}. Select your username & password to log in.")
+            } else {
+                val msg = snapRes.exceptionOrNull()?.message ?: "Could not load workspace."
+                _authError.value = msg
+                emitToast(msg, isError = true)
+            }
+            _cloudBusy.value = false
+        }
+    }
+
+    fun ensureAdminCloudWorkspace() {
+        viewModelScope.launch {
+            _cloudBusy.value = true
+            ensureAdminCloudWorkspaceInternal(pushLocal = true)
+            _cloudBusy.value = false
+        }
+    }
+
+    private suspend fun ensureAdminCloudWorkspaceInternal(pushLocal: Boolean) {
+        val sync = cloudSync ?: return
+        val existingId = repository.getActiveWorkspaceId()
+        val res = sync.ensureAdminWorkspace(
+            company = companySettings.value,
+            upi = upiSettings.value,
+            voice = voiceAndNoteSettings.value,
+            existingWorkspaceId = existingId
+        )
+        if (res.isSuccess) {
+            val info = res.getOrNull()!!
+            repository.saveWorkspaceMetadata(info)
+            if (pushLocal) {
+                repository.pushLocalDatasetToWorkspace(info.workspaceId)
+            }
+            startCloudRealtimeSync(info)
+            _cloudStatusMessage.value = "Cloud Workspace Active"
+            emitToast("Cloud Sync Active! Technician & Super Admin codes ready.")
+        } else {
+            val msg = res.exceptionOrNull()?.message ?: "Could not initialize Cloud Workspace."
+            emitToast(msg, isError = true)
+        }
+    }
+
+    fun signOutGoogleAccount(context: Context) {
+        viewModelScope.launch {
+            cloudSync?.stopListeners()
+            GoogleAuthHelper.signOutGoogle(context)
+            _cloudUser.value = null
+            _cloudStatusMessage.value = ""
+            emitToast("Google account signed out")
+        }
+    }
+
+    suspend fun shouldPromptInitialPermissions(): Boolean = !repository.hasPromptedPermissions()
+
+    fun markInitialPermissionsPrompted() {
+        viewModelScope.launch {
+            repository.markPermissionsPrompted()
+        }
     }
 
     fun dismissSplash() {
@@ -446,7 +713,8 @@ class BillingViewModel(
                 tab == MainTab.SAVED ||
                 tab == MainTab.CUSTOMERS ||
                 tab == MainTab.HELP ||
-                tab == MainTab.PRODUCTS
+                tab == MainTab.PRODUCTS ||
+                tab == MainTab.SETTINGS
             else -> tab == MainTab.BILL ||
                 tab == MainTab.SAVED ||
                 tab == MainTab.CUSTOMERS ||
@@ -457,7 +725,7 @@ class BillingViewModel(
         if (!allowed) {
             soundEngine.play(SoundCue.ERROR)
             val msg = if (currentSession.isSuperAdmin) {
-                "Super Admin is view-only (Analytics & History)"
+                "Super Admin is view-only (Analytics, History & Backups)"
             } else {
                 "Admin access required"
             }
@@ -473,8 +741,14 @@ class BillingViewModel(
         _authError.value = ""
     }
 
-    fun setupAdmin(username: String, password: String, confirmPassword: String) {
+    fun setupAdmin(
+        username: String,
+        password: String,
+        confirmPassword: String,
+        adminVerifyCode: String = ""
+    ) {
         val cleanUser = username.trim()
+        val cleanCode = adminVerifyCode.trim()
         if (cleanUser.length < 3) {
             _authError.value = "Admin username must be at least 3 characters."
             soundEngine.play(SoundCue.ERROR)
@@ -490,11 +764,46 @@ class BillingViewModel(
             soundEngine.play(SoundCue.ERROR)
             return
         }
+        if (cleanCode.isNotEmpty() && cleanCode.length < 4) {
+            _authError.value = "2-Way Verification Code must be at least 4 characters."
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
         viewModelScope.launch {
-            repository.setupAdmin(cleanUser, password)
+            repository.setupAdmin(cleanUser, password, cleanCode)
+            if (cloudSync != null && _cloudUser.value != null) {
+                ensureAdminCloudWorkspaceInternal(pushLocal = true)
+            }
             _authError.value = ""
             soundEngine.play(SoundCue.SAVE)
             emitToast("Admin account created. Please log in.")
+        }
+    }
+
+    fun updateAdminVerifyCode(
+        currentAdminPassword: String,
+        newVerifyCode: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        val admin = _session.value ?: return
+        if (!admin.isAdmin) return
+        val cleanCode = newVerifyCode.trim()
+        if (cleanCode.length < 4) {
+            emitToast("Verification code must be at least 4 characters", isError = true)
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
+        viewModelScope.launch {
+            val verified = repository.authenticate(admin.username, currentAdminPassword)
+            if (verified == null) {
+                soundEngine.play(SoundCue.ERROR)
+                emitToast("Incorrect current Admin password", isError = true)
+                return@launch
+            }
+            repository.updateFinalCode(cleanCode)
+            soundEngine.play(SoundCue.SAVE)
+            emitToast("Admin 2-Way Verification Code updated!")
+            onSuccess()
         }
     }
 
@@ -502,7 +811,8 @@ class BillingViewModel(
         username: String,
         password: String,
         antiRobotPassed: Boolean = true,
-        nowMillis: Long = System.currentTimeMillis()
+        nowMillis: Long = System.currentTimeMillis(),
+        adminVerifyCode: String = ""
     ) {
         val cachedSecurity = loginSecurityState.value
         if (cachedSecurity.isLocked(nowMillis)) {
@@ -544,16 +854,34 @@ class BillingViewModel(
                     _authError.value = "Incorrect password (${updated.failedAttempts}/${LoginSecurityState.MAX_ATTEMPTS}). $rem attempt(s) remaining before 2-hour lock."
                 }
                 soundEngine.play(SoundCue.ERROR)
-            } else {
-                repository.resetLoginSecurityState()
-                _authError.value = ""
-                _session.value = user
-                _activeTab.value = if (user.isSuperAdmin) MainTab.ANALYTICS else MainTab.BILL
-                soundEngine.play(SoundCue.SAVE)
-                emitToast("Login successful — Welcome ${user.displayName} (${user.roleDisplayLabel})")
-                val cfg = voiceAndNoteSettings.value
-                soundEngine.speakEnglish(cfg.postLoginVoice, cfg.voiceModelId)
+                return@launch
             }
+            if (user.isAdmin && repository.isAdminVerificationCodeSet()) {
+                if (adminVerifyCode.isBlank()) {
+                    _authError.value = "Please enter Admin 2-Way Verification Code."
+                    soundEngine.play(SoundCue.ERROR)
+                    return@launch
+                }
+                if (!repository.verifyFinalCode(adminVerifyCode)) {
+                    val updated = repository.recordLoginFailure(nowMillis)
+                    val rem = updated.remainingAttempts(nowMillis)
+                    _authError.value = if (updated.isLocked(nowMillis)) {
+                        "Wrong verification attempts (5/5). Login locked for 2 hours (02:00:00)."
+                    } else {
+                        "Incorrect Admin 2-Way Verification Code (${updated.failedAttempts}/${LoginSecurityState.MAX_ATTEMPTS}). $rem attempt(s) left."
+                    }
+                    soundEngine.play(SoundCue.ERROR)
+                    return@launch
+                }
+            }
+            repository.resetLoginSecurityState()
+            _authError.value = ""
+            _session.value = user
+            _activeTab.value = if (user.isSuperAdmin) MainTab.ANALYTICS else MainTab.BILL
+            soundEngine.play(SoundCue.SAVE)
+            emitToast("Login successful — Welcome ${user.displayName} (${user.roleDisplayLabel})")
+            val cfg = voiceAndNoteSettings.value
+            soundEngine.speakEnglish(cfg.postLoginVoice, cfg.voiceModelId)
         }
     }
 
@@ -566,6 +894,9 @@ class BillingViewModel(
     }
 
     fun logout() {
+        viewModelScope.launch {
+            repository.clearVolatileSessionCache()
+        }
         _session.value = null
         _billDraft.update { it.copy(summaryOpen = false) }
         _summaryError.value = ""
@@ -693,8 +1024,76 @@ class BillingViewModel(
         }
     }
 
+    fun toggleDualExtraChargeType(type: ChargeType) {
+        if (type == ChargeType.NONE) {
+            soundEngine.play(SoundCue.CLICK)
+            _billDraft.update {
+                it.copy(
+                    extraChargeType = ChargeType.NONE,
+                    extraChargeAmountText = "0",
+                    secondaryChargeType = ChargeType.NONE,
+                    secondaryChargeAmountText = "0"
+                )
+            }
+            return
+        }
+        soundEngine.play(SoundCue.CLICK)
+        _billDraft.update { d ->
+            when {
+                d.extraChargeType == type -> d.copy(
+                    extraChargeType = d.secondaryChargeType,
+                    extraChargeAmountText = if (d.secondaryChargeType == ChargeType.NONE) "0" else d.secondaryChargeAmountText,
+                    secondaryChargeType = ChargeType.NONE,
+                    secondaryChargeAmountText = "0"
+                )
+                d.secondaryChargeType == type -> d.copy(
+                    secondaryChargeType = ChargeType.NONE,
+                    secondaryChargeAmountText = "0"
+                )
+                d.extraChargeType == ChargeType.NONE -> d.copy(
+                    extraChargeType = type,
+                    extraChargeAmountText = clampChargeValue(type, d.extraChargeAmountText)
+                )
+                d.secondaryChargeType == ChargeType.NONE -> d.copy(
+                    secondaryChargeType = type,
+                    secondaryChargeAmountText = clampChargeValue(type, d.secondaryChargeAmountText)
+                )
+                else -> {
+                    // Replace whichever slot isn't Customer Care & Support (so user keeps Customer Care + swaps other)
+                    if (d.extraChargeType == ChargeType.CUSTOMER_CARE_AND_SUPPORT) {
+                        d.copy(secondaryChargeType = type, secondaryChargeAmountText = clampChargeValue(type, d.secondaryChargeAmountText))
+                    } else if (d.secondaryChargeType == ChargeType.CUSTOMER_CARE_AND_SUPPORT) {
+                        d.copy(extraChargeType = type, extraChargeAmountText = clampChargeValue(type, d.extraChargeAmountText))
+                    } else {
+                        d.copy(secondaryChargeType = type, secondaryChargeAmountText = clampChargeValue(type, d.secondaryChargeAmountText))
+                    }
+                }
+            }
+        }
+    }
+
     fun updateExtraChargeAmount(value: String) {
-        _billDraft.update { it.copy(extraChargeAmountText = value) }
+        val currentType = _billDraft.value.extraChargeType
+        val clamped = clampChargeValue(currentType, value)
+        if (currentType == ChargeType.CUSTOMER_CARE_AND_SUPPORT && (value.toDoubleOrNull() ?: 0.0) > MAX_CUSTOMER_CARE_CHARGE) {
+            emitToast("Customer Care & Support Charge maximum limit is ₹300", isError = true)
+        }
+        _billDraft.update { it.copy(extraChargeAmountText = clamped) }
+    }
+
+    fun updateSecondaryChargeAmount(value: String) {
+        val currentType = _billDraft.value.secondaryChargeType
+        val clamped = clampChargeValue(currentType, value)
+        if (currentType == ChargeType.CUSTOMER_CARE_AND_SUPPORT && (value.toDoubleOrNull() ?: 0.0) > MAX_CUSTOMER_CARE_CHARGE) {
+            emitToast("Customer Care & Support Charge maximum limit is ₹300", isError = true)
+        }
+        _billDraft.update { it.copy(secondaryChargeAmountText = clamped) }
+    }
+
+    private fun clampChargeValue(type: ChargeType, raw: String): String {
+        if (type != ChargeType.CUSTOMER_CARE_AND_SUPPORT) return raw
+        val parsed = raw.toDoubleOrNull() ?: return raw
+        return if (parsed > MAX_CUSTOMER_CARE_CHARGE) "300" else raw
     }
 
     fun updateDiscount(value: String) {
@@ -844,7 +1243,8 @@ class BillingViewModel(
             return
         }
         val hasItems = draft.items.any { it.description.isNotBlank() || it.rate > 0.0 } ||
-            (draft.extraChargeType != ChargeType.NONE && draft.extraChargeAmount > 0.0)
+            (draft.extraChargeType != ChargeType.NONE && draft.extraChargeAmount > 0.0) ||
+            (draft.secondaryChargeType != ChargeType.NONE && draft.secondaryChargeAmount > 0.0)
         if (!hasItems) {
             soundEngine.play(SoundCue.ERROR)
             emitToast("Please add at least one product or service charge first", isError = true)
@@ -944,6 +1344,8 @@ class BillingViewModel(
             updatedAt = System.currentTimeMillis(),
             extraChargeType = draft.extraChargeType.name,
             extraChargeAmount = draft.extraChargeAmount,
+            secondaryChargeType = draft.secondaryChargeType.name,
+            secondaryChargeAmount = draft.secondaryChargeAmount,
             staffRating = ratingVal,
             staffReviewNote = reviewVal,
             documentType = draft.documentType.name,
@@ -970,8 +1372,10 @@ class BillingViewModel(
 
             val payload = billToPayload(entity)
             _exportOptionsPayload.value = payload
+            val createdByTech = currentUser.isTechnician
             emitToast(
                 if (isQuotation) "Quotation ${entity.invoiceNo} generated & saved!"
+                else if (createdByTech) "Bill ${entity.invoiceNo} saved & Admin notified to send PDF to customer!"
                 else "Bill ${entity.invoiceNo} generated & saved!"
             )
             onDone?.invoke()
@@ -1003,6 +1407,8 @@ class BillingViewModel(
             items = parsedItems,
             extraChargeType = ChargeType.fromString(bill.extraChargeType),
             extraChargeAmountText = formatInputNum(bill.extraChargeAmount),
+            secondaryChargeType = ChargeType.fromString(bill.secondaryChargeType),
+            secondaryChargeAmountText = formatInputNum(bill.secondaryChargeAmount),
             discountText = formatInputNum(bill.discount),
             paidAmountText = formatInputNum(bill.paidAmount),
             paymentMode = PaymentMode.fromString(bill.paymentMode),
@@ -1026,6 +1432,11 @@ class BillingViewModel(
     }
 
     fun shareBillPdfDirect(bill: BillEntity) {
+        if (_session.value?.isAdmin != true) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Only Admin can share Bills & PDFs", isError = true)
+            return
+        }
         soundEngine.play(SoundCue.CLICK)
         _events.tryEmit(BillingEvent.SharePdf(billToPayload(bill)))
     }
@@ -1036,8 +1447,107 @@ class BillingViewModel(
     }
 
     fun shareBillPhotoDirect(bill: BillEntity) {
+        if (_session.value?.isAdmin != true) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Only Admin can share Bill Photos", isError = true)
+            return
+        }
         soundEngine.play(SoundCue.CLICK)
         _events.tryEmit(BillingEvent.SharePhoto(billToPayload(bill)))
+    }
+
+    fun shareBillPdfToCustomerWhatsApp(context: Context, bill: BillEntity) {
+        if (_session.value?.isAdmin != true) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Only Admin can send Bill PDF to customer", isError = true)
+            return
+        }
+        val phone = customers.value.firstOrNull {
+            it.name.equals(bill.customerName.trim(), ignoreCase = true)
+        }?.phone.orEmpty()
+        soundEngine.play(SoundCue.CLICK)
+        val ok = WhatsAppHelper.sharePdfDirectToCustomerWhatsApp(context, billToPayload(bill), phone)
+        if (!ok) {
+            emitToast("Unable to open WhatsApp to send PDF", isError = true)
+        }
+    }
+
+    fun shareDueQrToCustomerWhatsApp(context: Context, bill: BillEntity) {
+        if (_session.value?.isAdmin != true) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Only Admin can send Due Balance QR", isError = true)
+            return
+        }
+        if (bill.dueAmount <= 0.009) {
+            emitToast("This bill has no due balance.")
+            return
+        }
+        soundEngine.play(SoundCue.CLICK)
+        val ok = WhatsAppHelper.shareDueQrToCustomerWhatsApp(context, companySettings.value, upiSettings.value, bill)
+        if (!ok) {
+            emitToast("Unable to share Due Payment QR", isError = true)
+        }
+    }
+
+    fun markDuePaidInFull(bill: BillEntity) {
+        if (_session.value?.isAdmin != true) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Only Admin can mark due payments received", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            val updated = repository.updateBillSettlementAndReview(
+                billId = bill.id,
+                discount = bill.discount,
+                grandTotal = bill.grandTotal,
+                paidAmount = bill.grandTotal,
+                dueAmount = 0.0,
+                staffRating = bill.staffRating,
+                staffReviewNote = bill.staffReviewNote
+            )
+            if (updated != null) {
+                soundEngine.play(SoundCue.SAVE)
+                emitToast("Due payment received for ${bill.invoiceNo}! Due balance is now ₹0.00")
+            } else {
+                soundEngine.play(SoundCue.ERROR)
+                emitToast("Bill record not found", isError = true)
+            }
+        }
+    }
+
+    fun shareApkViaWhatsApp(context: Context, targetRole: String) {
+        if (_session.value?.isAdmin != true) {
+            emitToast("Only Admin can share the app APK", isError = true)
+            return
+        }
+        val pendingUpdate = _availableUpdate.value
+        if (pendingUpdate != null) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Update to v${pendingUpdate.versionName} first before sharing APK!", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            val wsInfo = cloudWorkspaceInfo.value
+            val shareCode = if (targetRole == ApkShareHelper.ROLE_SUPER_ADMIN) {
+                wsInfo.superShareCode
+            } else {
+                wsInfo.techShareCode
+            }
+            val res = ApkShareHelper.shareLatestApkOnWhatsApp(
+                context = context,
+                targetRole = targetRole,
+                shareCode = shareCode,
+                companyName = companySettings.value.companyName
+            )
+            if (res.isSuccess) {
+                soundEngine.play(SoundCue.SAVE)
+                val label = if (targetRole == ApkShareHelper.ROLE_SUPER_ADMIN) "Super Admin" else "Technician"
+                emitToast("Sharing latest APK for $label via WhatsApp")
+            } else {
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(res.exceptionOrNull()?.message ?: "Could not prepare APK share", isError = true)
+            }
+        }
     }
 
     fun billToPayload(bill: BillEntity): InvoicePrintPayload {
@@ -1059,6 +1569,8 @@ class BillingViewModel(
             customQrText = bill.customQrText,
             extraChargeType = ChargeType.fromString(bill.extraChargeType),
             extraChargeAmount = bill.extraChargeAmount,
+            secondaryChargeType = ChargeType.fromString(bill.secondaryChargeType),
+            secondaryChargeAmount = bill.secondaryChargeAmount,
             documentType = DocumentType.fromString(bill.documentType),
             isHelpBill = bill.isHelpBill,
             helpRequestId = bill.helpRequestId,
@@ -1113,6 +1625,11 @@ class BillingViewModel(
     }
 
     fun triggerSharePdf(payload: InvoicePrintPayload) {
+        if (_session.value?.isAdmin != true) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Only Admin can share Bills & PDFs", isError = true)
+            return
+        }
         soundEngine.play(SoundCue.CLICK)
         _events.tryEmit(BillingEvent.SharePdf(payload))
     }
@@ -1123,6 +1640,11 @@ class BillingViewModel(
     }
 
     fun triggerSharePhoto(payload: InvoicePrintPayload) {
+        if (_session.value?.isAdmin != true) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Only Admin can share Bill Photos", isError = true)
+            return
+        }
         soundEngine.play(SoundCue.CLICK)
         _events.tryEmit(BillingEvent.SharePhoto(payload))
     }
@@ -1738,6 +2260,8 @@ class BillingViewModel(
     }
 
     companion object {
+        const val MAX_CUSTOMER_CARE_CHARGE = 300.0
+
         fun buildCustomerFolders(
             docs: List<BillEntity>,
             customers: List<CustomerEntity>
@@ -1789,11 +2313,12 @@ class BillingViewModel(
 
     class Factory(
         private val repository: BillingRepository,
-        private val soundEngine: SoundEngine
+        private val soundEngine: SoundEngine,
+        private val cloudSync: CloudSyncRepository? = repository.cloudSync
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return BillingViewModel(repository, soundEngine) as T
+            return BillingViewModel(repository, soundEngine, cloudSync) as T
         }
     }
 }

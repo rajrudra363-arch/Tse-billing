@@ -27,6 +27,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
@@ -37,6 +39,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
@@ -48,6 +51,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -84,6 +88,7 @@ import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.GreenPaidBg
+import com.example.ui.theme.NavyDeep
 import com.example.ui.theme.NavyPrimary
 import com.example.ui.theme.RedDue
 import com.example.ui.theme.RedDueBg
@@ -110,7 +115,10 @@ fun SavedBillsScreen(
     onSavePhoto: (BillEntity) -> Unit,
     onSharePhoto: (BillEntity) -> Unit,
     onDeleteBill: (String) -> Unit,
-    onOpenPaymentReview: (BillEntity) -> Unit = {}
+    onOpenPaymentReview: (BillEntity) -> Unit = {},
+    onWhatsAppPdf: (BillEntity) -> Unit = {},
+    onSendDueQr: (BillEntity) -> Unit = {},
+    onMarkDuePaid: (BillEntity) -> Unit = {}
 ) {
     // 0 = All Bills, 1 = Customer Folders, 2 = Quotations
     var viewTab by remember { mutableIntStateOf(0) }
@@ -177,6 +185,11 @@ fun SavedBillsScreen(
                         modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("bill_search_input")
                     )
 
+                    val chipColors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = NavyPrimary,
+                        selectedLabelColor = Color.White,
+                        selectedLeadingIconColor = Color.White
+                    )
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -184,20 +197,23 @@ fun SavedBillsScreen(
                         FilterChip(
                             selected = viewTab == 0,
                             onClick = { viewTab = 0 },
-                            label = { Text("Bills (${filteredTaxBills.size})") },
+                            label = { Text("Bills (${filteredTaxBills.size})", fontWeight = FontWeight.SemiBold) },
+                            colors = chipColors,
                             modifier = Modifier.testTag("saved_tab_ALL")
                         )
                         FilterChip(
                             selected = viewTab == 1,
                             onClick = { viewTab = 1 },
-                            label = { Text("Customer Folders (${filteredFolders.size})") },
+                            label = { Text("Customer Folders (${filteredFolders.size})", fontWeight = FontWeight.SemiBold) },
                             leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                            colors = chipColors,
                             modifier = Modifier.testTag("saved_tab_FOLDERS")
                         )
                         FilterChip(
                             selected = viewTab == 2,
                             onClick = { viewTab = 2 },
-                            label = { Text("Quotations (${quotationsOnly.size})") },
+                            label = { Text("Quotations (${quotationsOnly.size})", fontWeight = FontWeight.SemiBold) },
+                            colors = chipColors,
                             modifier = Modifier.testTag("saved_tab_QUOTATIONS")
                         )
                     }
@@ -332,6 +348,9 @@ fun SavedBillsScreen(
                                                 onSavePhoto = { onSavePhoto(doc) },
                                                 onSharePhoto = { onSharePhoto(doc) },
                                                 onOpenPaymentReview = { onOpenPaymentReview(doc) },
+                                                onWhatsAppPdf = { onWhatsAppPdf(doc) },
+                                                onSendDueQr = { onSendDueQr(doc) },
+                                                onMarkDuePaid = { onMarkDuePaid(doc) },
                                                 onOpenBill = { onOpenBill(doc) },
                                                 onDeleteBill = { onDeleteBill(doc.id) }
                                             )
@@ -364,6 +383,9 @@ fun SavedBillsScreen(
                             onSavePhoto = { onSavePhoto(doc) },
                             onSharePhoto = { onSharePhoto(doc) },
                             onOpenPaymentReview = { onOpenPaymentReview(doc) },
+                            onWhatsAppPdf = { onWhatsAppPdf(doc) },
+                            onSendDueQr = { onSendDueQr(doc) },
+                            onMarkDuePaid = { onMarkDuePaid(doc) },
                             onOpenBill = { onOpenBill(doc) },
                             onDeleteBill = { onDeleteBill(doc.id) }
                         )
@@ -391,6 +413,9 @@ fun SavedBillsScreen(
                             onSavePhoto = { onSavePhoto(doc) },
                             onSharePhoto = { onSharePhoto(doc) },
                             onOpenPaymentReview = { onOpenPaymentReview(doc) },
+                            onWhatsAppPdf = { onWhatsAppPdf(doc) },
+                            onSendDueQr = { onSendDueQr(doc) },
+                            onMarkDuePaid = { onMarkDuePaid(doc) },
                             onOpenBill = { onOpenBill(doc) },
                             onDeleteBill = { onDeleteBill(doc.id) }
                         )
@@ -419,6 +444,8 @@ fun SavedBillsScreen(
                 items = InvoiceItemJson.fromJson(billToPreview.itemsJson),
                 extraChargeType = ChargeType.fromString(billToPreview.extraChargeType),
                 extraChargeAmountText = if (billToPreview.extraChargeAmount == 0.0) "0" else billToPreview.extraChargeAmount.toString(),
+                secondaryChargeType = ChargeType.fromString(billToPreview.secondaryChargeType),
+                secondaryChargeAmountText = if (billToPreview.secondaryChargeAmount == 0.0) "0" else billToPreview.secondaryChargeAmount.toString(),
                 discountText = billToPreview.discount.toString(),
                 paidAmountText = billToPreview.paidAmount.toString(),
                 paymentMode = PaymentMode.fromString(billToPreview.paymentMode),
@@ -476,6 +503,9 @@ private fun SavedDocCard(
     onSavePhoto: () -> Unit,
     onSharePhoto: () -> Unit,
     onOpenPaymentReview: () -> Unit,
+    onWhatsAppPdf: () -> Unit,
+    onSendDueQr: () -> Unit,
+    onMarkDuePaid: () -> Unit,
     onOpenBill: () -> Unit,
     onDeleteBill: () -> Unit
 ) {
@@ -536,13 +566,21 @@ private fun SavedDocCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (bill.createdBy.isNotBlank()) {
-                        Text(
-                            text = "Technician: @${bill.createdBy}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = TealAccent,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.testTag("saved_bill_creator_${bill.invoiceNo}")
-                        )
+                        Surface(
+                            color = Color(0xFFD7F0F3),
+                            border = BorderStroke(1.dp, TealAccent),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                text = "Technician: @${bill.createdBy}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = NavyDeep,
+                                fontWeight = FontWeight.Black,
+                                modifier = Modifier
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                                    .testTag("saved_bill_creator_${bill.invoiceNo}")
+                            )
+                        }
                     }
                 }
 
@@ -666,13 +704,15 @@ private fun SavedDocCard(
                     Text("PDF")
                 }
 
-                OutlinedButton(
-                    onClick = onSharePdf,
-                    modifier = Modifier.testTag("share_pdf_saved_${bill.invoiceNo}")
-                ) {
-                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Share PDF")
+                if (isAdmin && !isSuperAdmin) {
+                    OutlinedButton(
+                        onClick = onSharePdf,
+                        modifier = Modifier.testTag("share_pdf_saved_${bill.invoiceNo}")
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Share PDF")
+                    }
                 }
 
                 OutlinedButton(
@@ -684,31 +724,62 @@ private fun SavedDocCard(
                     Text("Photo")
                 }
 
-                OutlinedButton(
-                    onClick = onSharePhoto,
-                    modifier = Modifier.testTag("share_photo_saved_${bill.invoiceNo}")
-                ) {
-                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("Share Photo")
-                }
-
                 if (isAdmin && !isSuperAdmin) {
+                    OutlinedButton(
+                        onClick = onSharePhoto,
+                        modifier = Modifier.testTag("share_photo_saved_${bill.invoiceNo}")
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Share Photo")
+                    }
+
+                    Button(
+                        onClick = onWhatsAppPdf,
+                        colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+                        modifier = Modifier.testTag("wa_pdf_saved_${bill.invoiceNo}")
+                    ) {
+                        Icon(Icons.Default.Chat, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("WhatsApp PDF", fontWeight = FontWeight.Bold)
+                    }
+
                     if (!isQuotation) {
                         Button(
                             onClick = onOpenPaymentReview,
-                            colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
+                            colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
                             modifier = Modifier.testTag("review_bill_${bill.invoiceNo}")
                         ) {
                             Icon(Icons.Default.Payments, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
                             Text(if (bill.staffRating > 0) "Pay / View ★" else "Pay / 5★")
                         }
+
+                        if (hasDue) {
+                            Button(
+                                onClick = onSendDueQr,
+                                colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                                modifier = Modifier.testTag("send_due_qr_${bill.invoiceNo}")
+                            ) {
+                                Icon(Icons.Default.QrCode2, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Send Due QR", fontWeight = FontWeight.Bold)
+                            }
+                            Button(
+                                onClick = onMarkDuePaid,
+                                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+                                modifier = Modifier.testTag("mark_due_paid_${bill.invoiceNo}")
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Due Paid (₹0)", fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
 
                     Button(
                         onClick = onOpenBill,
-                        colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
+                        colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
                         modifier = Modifier.testTag("open_saved_${bill.invoiceNo}")
                     ) {
                         Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -719,7 +790,7 @@ private fun SavedDocCard(
                     if (bill.staffRating == 0) {
                         Button(
                             onClick = onDeleteBill,
-                            colors = ButtonDefaults.buttonColors(containerColor = RedDue),
+                            colors = ButtonDefaults.buttonColors(containerColor = RedDue, contentColor = Color.White),
                             modifier = Modifier.testTag("delete_saved_${bill.invoiceNo}")
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -729,7 +800,7 @@ private fun SavedDocCard(
                     }
                 } else {
                     Text(
-                        text = if (isSuperAdmin) "View only (Super Admin)" else "View only — Admin can edit or delete",
+                        text = if (isSuperAdmin) "View only (Super Admin)" else "View / Print / Save only (Admin handles Share & Edit)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.align(Alignment.CenterVertically)

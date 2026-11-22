@@ -54,6 +54,8 @@ data class InvoicePrintPayload(
     val customQrText: String,
     val extraChargeType: ChargeType = ChargeType.NONE,
     val extraChargeAmount: Double = 0.0,
+    val secondaryChargeType: ChargeType = ChargeType.NONE,
+    val secondaryChargeAmount: Double = 0.0,
     val documentType: DocumentType = DocumentType.BILL,
     val isHelpBill: Boolean = false,
     val helpRequestId: Long = 0L,
@@ -413,7 +415,13 @@ object InvoicePdfPrinter {
         }
 
         // 4. ITEMS TABLE (Header + 15+ Fixed Rows)
-        val effectiveItems = buildEffectivePrintItems(p.items, p.extraChargeType, p.extraChargeAmount)
+        val effectiveItems = buildEffectivePrintItems(
+            items = p.items,
+            extraChargeType = p.extraChargeType,
+            extraChargeAmount = p.extraChargeAmount,
+            secondaryChargeType = p.secondaryChargeType,
+            secondaryChargeAmount = p.secondaryChargeAmount
+        )
         val tableTop = metaBottom + 5f
         val tableLeft = left + 5f
         val tableRight = right - 5f
@@ -623,11 +631,10 @@ object InvoicePdfPrinter {
         val qrColCenterX = qrColStart + (qrColW / 2f)
         canvas.drawText("Online QR Payment :-", qrColCenterX, sumTop + 13f, smallBold)
 
-        // Generate UPI QR strictly for paidAmount when Online Payment is selected; no hardcoded full bill amount otherwise
-        val qrPaidAmount = if (p.paymentMode == PaymentMode.ONLINE && p.paidAmount > 0.009) p.paidAmount else 0.0
+        // Print / PDF A4 QR intentionally omits am= amount parameter ("print payment qr me koi amount add nahi hoga")
         val payQrBitmap = when {
             p.upi.upiId.isNotBlank() -> QrGenerator.generateQrBitmap(
-                QrGenerator.buildUpiUri(p.upi.upiId, p.upi.payeeName, qrPaidAmount, p.invoiceNo),
+                QrGenerator.buildUpiUri(p.upi.upiId, p.upi.payeeName, 0.0, p.invoiceNo),
                 200
             )
             p.upi.fallbackQrBase64.isNotBlank() -> decodeBase64Bitmap(p.upi.fallbackQrBase64)
@@ -873,7 +880,9 @@ object InvoicePdfPrinter {
     fun buildEffectivePrintItems(
         items: List<InvoiceItem>,
         extraChargeType: ChargeType,
-        extraChargeAmount: Double
+        extraChargeAmount: Double,
+        secondaryChargeType: ChargeType = ChargeType.NONE,
+        secondaryChargeAmount: Double = 0.0
     ): List<InvoiceItem> {
         val active = items.filter { it.description.isNotBlank() || it.rate > 0.0 }.toMutableList()
         if (extraChargeType != ChargeType.NONE && extraChargeAmount > 0.0) {
@@ -887,17 +896,19 @@ object InvoicePdfPrinter {
                 )
             )
         }
+        if (secondaryChargeType != ChargeType.NONE && secondaryChargeType != extraChargeType && secondaryChargeAmount > 0.0) {
+            active.add(
+                InvoiceItem(
+                    localId = -998L,
+                    description = secondaryChargeType.label,
+                    qty = 1.0,
+                    unit = "Job",
+                    rate = secondaryChargeAmount
+                )
+            )
+        }
         return active
     }
 
-    fun decodeBase64Bitmap(raw: String): Bitmap? {
-        if (raw.isBlank()) return null
-        return try {
-            val clean = if (raw.contains(",")) raw.substringAfter(",") else raw
-            val bytes = Base64.decode(clean, Base64.DEFAULT)
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-        } catch (_: Exception) {
-            null
-        }
-    }
+    fun decodeBase64Bitmap(raw: String): Bitmap? = BitmapUtils.decodeBase64Bitmap(raw, 900)
 }

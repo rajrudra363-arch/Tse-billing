@@ -89,6 +89,16 @@ class ExampleRobolectricTest {
 
     private lateinit var db: AppDatabase
     private lateinit var repo: BillingRepository
+    private val createdStores = mutableListOf<androidx.lifecycle.ViewModelStore>()
+
+    private fun createTestVm(soundEngine: SoundEngine): BillingViewModel {
+        val store = androidx.lifecycle.ViewModelStore()
+        createdStores += store
+        return androidx.lifecycle.ViewModelProvider(
+            store,
+            BillingViewModel.Factory(repo, soundEngine)
+        )[BillingViewModel::class.java]
+    }
 
     @Before
     fun setUp() {
@@ -101,6 +111,10 @@ class ExampleRobolectricTest {
 
     @After
     fun tearDown() {
+        createdStores.forEach { it.clear() }
+        createdStores.clear()
+        org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+        Thread.sleep(100)
         db.close()
     }
 
@@ -373,7 +387,7 @@ class ExampleRobolectricTest {
 
         val context = ApplicationProvider.getApplicationContext<Context>()
         val soundEngine = SoundEngine(context)
-        val vm = BillingViewModel(repo, soundEngine)
+        val vm = createTestVm(soundEngine)
 
         val deadline = System.currentTimeMillis() + 5000L
         while (vm.technicianPerformance.value.none { it.username == "rahul_tech" && it.cashTotal > 0.0 && it.settledToAdminTotal > 0.0 } &&
@@ -394,7 +408,7 @@ class ExampleRobolectricTest {
         repo.setupAdmin("admin1", "Pass1234")
         val context = ApplicationProvider.getApplicationContext<Context>()
         val soundEngine = SoundEngine(context)
-        val vm = BillingViewModel(repo, soundEngine)
+        val vm = createTestVm(soundEngine)
 
         vm.login("admin1", "Pass1234")
         val deadline = System.currentTimeMillis() + 5000L
@@ -712,11 +726,11 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToNode(hasTestTag("new_tech_photo_status"))
         composeTestRule.onNodeWithTag("new_tech_photo_status").assertIsDisplayed()
         composeTestRule.onNodeWithTag("new_tech_pick_photo_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToIndex(2)
+        composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToNode(hasTestTag("technician_folders_card"))
         composeTestRule.onNodeWithTag("technician_folders_card").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("tech_folder_rahul_tech").performClick()
+        composeTestRule.onNodeWithTag("tech_folder_rahul_tech").performScrollTo().performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("tech_admin_due_rahul_tech").assertTextContains("5000", substring = true)
+        composeTestRule.onNodeWithTag("tech_admin_due_rahul_tech").performScrollTo().assertTextContains("5000", substring = true)
     }
 
     @Test
@@ -872,8 +886,8 @@ class ExampleRobolectricTest {
                     accounts = accounts,
                     authError = "",
                     onClearError = {},
-                    onSetupAdmin = { _, _, _ -> },
-                    onLogin = { _, _, _ -> },
+                    onSetupAdmin = { _, _, _, _ -> },
+                    onLogin = { _, _, _, _ -> },
                     onImportBackup = {},
                     onResetAdminPassword = { _, _, _, _, _ -> }
                 )
@@ -968,7 +982,7 @@ class ExampleRobolectricTest {
         repo.setupAdmin("admin1", "Pass1234")
         val context = ApplicationProvider.getApplicationContext<Context>()
         val soundEngine = SoundEngine(context)
-        val vm = BillingViewModel(repo, soundEngine)
+        val vm = createTestVm(soundEngine)
 
         suspend fun awaitUntil(cond: suspend () -> Boolean) {
             val deadline = System.currentTimeMillis() + 5000L
@@ -1047,7 +1061,7 @@ class ExampleRobolectricTest {
 
         val context = ApplicationProvider.getApplicationContext<Context>()
         val soundEngine = SoundEngine(context)
-        val vm = BillingViewModel(repo, soundEngine)
+        val vm = createTestVm(soundEngine)
 
         vm.login("admin1", "Pass1234", antiRobotPassed = true)
         val deadline = System.currentTimeMillis() + 5000L
@@ -1099,8 +1113,8 @@ class ExampleRobolectricTest {
                         lockUntilMillis = System.currentTimeMillis() + 3_600_000L
                     ),
                     onClearError = {},
-                    onSetupAdmin = { _, _, _ -> },
-                    onLogin = { _, _, _ -> },
+                    onSetupAdmin = { _, _, _, _ -> },
+                    onLogin = { _, _, _, _ -> },
                     onImportBackup = {},
                     onResetAdminPassword = { _, _, _, _, _ -> }
                 )
@@ -1117,5 +1131,115 @@ class ExampleRobolectricTest {
         assertTrue(badRes.isFailure)
         val emptyObjRes = repo.importBackupJson("""{"unrelated": 123}""")
         assertTrue(emptyObjRes.isFailure)
+    }
+
+    @Test
+    fun dualExtraCharge_customerCareMax300_andPrintQrOmitsAmount() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val soundEngine = SoundEngine(context)
+        val vm = createTestVm(soundEngine)
+
+        vm.toggleDualExtraChargeType(ChargeType.CUSTOMER_CARE_AND_SUPPORT)
+        vm.updateExtraChargeAmount("450")
+        assertEquals("300", vm.billDraft.value.extraChargeAmountText)
+        assertEquals(300.0, vm.billDraft.value.extraChargeAmount, 0.01)
+
+        vm.toggleDualExtraChargeType(ChargeType.SERVICE)
+        vm.updateSecondaryChargeAmount("500")
+        assertEquals(800.0, vm.billDraft.value.subtotal, 0.01)
+
+        val printUri = QrGenerator.buildUpiUri("7083805120@ybl", "Total Solution Enterprises", 0.0, "TSE-101")
+        assertTrue(printUri.contains("pa=7083805120%40ybl"))
+        assertFalse(printUri.contains("am="))
+        soundEngine.release()
+    }
+
+    @Test
+    fun admin2WayVerificationCode_blocksWrongCode_andAllowsCorrectCode() = kotlinx.coroutines.runBlocking {
+        repo.setupAdmin("admin2fa", "Pass1234", finalCode = "8899")
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val soundEngine = SoundEngine(context)
+        val vm = createTestVm(soundEngine)
+
+        suspend fun awaitUntil(cond: suspend () -> Boolean) {
+            val deadline = System.currentTimeMillis() + 5000L
+            while (System.currentTimeMillis() < deadline) {
+                org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+                if (cond()) return
+                Thread.sleep(25)
+            }
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+        }
+
+        vm.login("admin2fa", "Pass1234", antiRobotPassed = true, adminVerifyCode = "0000")
+        awaitUntil { vm.authError.value.contains("2-Way Verification Code", ignoreCase = true) }
+        assertNull(vm.session.value)
+
+        vm.clearAuthError()
+        vm.login("admin2fa", "Pass1234", antiRobotPassed = true, adminVerifyCode = "8899")
+        awaitUntil { vm.session.value != null }
+        assertTrue(vm.session.value!!.isAdmin)
+        soundEngine.release()
+    }
+
+    @Test
+    fun technicianShareBlocked_andDuePaymentClearsDuePreservingRating() = kotlinx.coroutines.runBlocking {
+        repo.setupAdmin("admin_main", "Pass1234")
+        val techBmp = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val soundEngine = SoundEngine(context)
+        val vm = createTestVm(soundEngine)
+
+        suspend fun awaitUntil(cond: suspend () -> Boolean) {
+            val deadline = System.currentTimeMillis() + 5000L
+            while (System.currentTimeMillis() < deadline) {
+                org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+                if (cond()) return
+                Thread.sleep(25)
+            }
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+        }
+
+        val b = BillEntity(
+            id = "b_due_test",
+            invoiceNo = "TSE-901",
+            date = "2026-11-22",
+            customerName = "Ramesh",
+            customerDetails = "9876543210",
+            itemsJson = InvoiceItemJson.toJson(listOf(InvoiceItem(description = "DVR", qty = 1.0, rate = 2000.0))),
+            subtotal = 2000.0,
+            discount = 0.0,
+            grandTotal = 2000.0,
+            paidAmount = 1200.0,
+            dueAmount = 800.0,
+            paymentMode = PaymentMode.ONLINE.label,
+            signatureBase64 = "",
+            customQrText = "",
+            createdBy = "tech1",
+            staffRating = 5,
+            staffReviewNote = "Great installation"
+        )
+        repo.saveBill(b)
+
+        // Login as Technician -> Share blocked
+        repo.addTechnician("Tech One", "9876500000", "tech1", "Pass1234", photoBase64 = "abc")
+        vm.login("tech1", "Pass1234", antiRobotPassed = true)
+        awaitUntil { vm.session.value != null }
+        vm.shareBillPdfDirect(b)
+        org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+
+        // Login as Admin -> Mark Due Paid -> due becomes 0 while 5-star review remains intact
+        vm.logout()
+        vm.login("admin_main", "Pass1234", antiRobotPassed = true)
+        awaitUntil { vm.session.value?.isAdmin == true }
+        vm.markDuePaidInFull(b)
+        awaitUntil { (repo.getBillById("b_due_test")?.dueAmount ?: 1.0) == 0.0 }
+        val cleared = repo.getBillById("b_due_test")!!
+        assertEquals(0.0, cleared.dueAmount, 0.01)
+        assertEquals(2000.0, cleared.paidAmount, 0.01)
+        assertEquals(5, cleared.staffRating)
+        assertEquals("Great installation", cleared.staffReviewNote)
+        assertTrue(techBmp.width > 0)
+        soundEngine.release()
     }
 }

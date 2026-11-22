@@ -33,6 +33,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,8 +52,10 @@ import androidx.core.content.FileProvider
 import com.example.R
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.NavyDeep
+import com.example.util.BitmapUtils
 import com.example.util.InvoicePdfPrinter
 import com.example.util.QrGenerator
+import kotlinx.coroutines.launch
 import java.io.File
 
 @Composable
@@ -132,26 +136,30 @@ fun CameraSignatureBox(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val decodedBitmap = remember(signatureBase64) {
         InvoicePdfPrinter.decodeBase64Bitmap(signatureBase64)
     }
-    var pendingCaptureFile by remember { mutableStateOf<File?>(null) }
+    var pendingCapturePath by rememberSaveable { mutableStateOf<String?>(null) }
 
     val takePictureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
-        val file = pendingCaptureFile
-        pendingCaptureFile = null
+        val path = pendingCapturePath
+        pendingCapturePath = null
+        val file = path?.let { File(it) }
         if (success && file != null && file.exists()) {
-            val bmp = decodeScaledSignatureFile(file, maxDim = 800)
-            file.delete()
-            if (bmp != null) {
-                onSignatureChanged(bmp)
-            } else {
-                Toast.makeText(context, "Could not read scanned signature photo", Toast.LENGTH_SHORT).show()
+            scope.launch {
+                val bmp = BitmapUtils.decodeSampledBitmapFromFile(file, 800, 800)
+                runCatching { file.delete() }
+                if (bmp != null) {
+                    onSignatureChanged(bmp)
+                } else {
+                    Toast.makeText(context, "Could not read scanned signature photo", Toast.LENGTH_SHORT).show()
+                }
             }
         } else {
-            file?.delete()
+            runCatching { file?.delete() }
         }
     }
 
@@ -169,8 +177,14 @@ fun CameraSignatureBox(
             Toast.makeText(context, "Camera storage error", Toast.LENGTH_SHORT).show()
             return
         }
-        pendingCaptureFile = photoFile
-        takePictureLauncher.launch(uri)
+        pendingCapturePath = photoFile.absolutePath
+        runCatching {
+            takePictureLauncher.launch(uri)
+        }.onFailure {
+            pendingCapturePath = null
+            runCatching { photoFile.delete() }
+            Toast.makeText(context, "No camera app available on this device", Toast.LENGTH_SHORT).show()
+        }
     }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(

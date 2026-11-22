@@ -4,7 +4,11 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -18,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -60,7 +65,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalTextToolbar
@@ -72,10 +80,12 @@ import com.example.data.BillingRepository
 import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
 import com.example.data.CustomerHelpEntity
+import com.example.data.UserAccountEntity
 import com.example.data.UserSession
 import com.example.ui.components.bringIntoViewOnFocus
 import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.theme.AmberWarn
+import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.GreenPaidBg
 import com.example.ui.theme.NavyPrimary
@@ -83,6 +93,7 @@ import com.example.ui.theme.RedDue
 import com.example.ui.theme.RedDueBg
 import com.example.ui.theme.RedDueDark
 import com.example.ui.theme.TealAccent
+import com.example.util.BitmapUtils
 import com.example.util.DispatchCardGenerator
 import com.example.util.LocationHelper
 import kotlinx.coroutines.delay
@@ -108,7 +119,8 @@ fun CustomerHelpScreen(
     onMarkSolved: (Long) -> Unit,
     onMarkNotSolved: (Long) -> Unit,
     onGetBillFromHelp: (CustomerHelpEntity) -> Unit,
-    onDeleteHelpRequest: (Long) -> Unit
+    onDeleteHelpRequest: (Long) -> Unit,
+    accounts: List<UserAccountEntity> = emptyList()
 ) {
     val canManage = user.isAdmin && !user.isSuperAdmin
     val context = LocalContext.current
@@ -626,21 +638,102 @@ fun CustomerHelpScreen(
                             }
                         }
 
+                        val assignedTechAccount = remember(accounts, req.acceptedBy) {
+                            accounts.firstOrNull { it.username.equals(req.acceptedBy, ignoreCase = true) }
+                        }
+
                         if (req.acceptedBy.isNotBlank()) {
-                            Surface(
-                                color = Color.White,
-                                shape = RoundedCornerShape(8.dp),
-                                border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    text = "Assigned Technician: ${req.acceptedByName.ifBlank { req.acceptedBy }} (@${req.acceptedBy})" +
-                                        if (req.acceptedByPhone.isNotBlank()) " · ${req.acceptedByPhone}" else "",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
+                            if (canManage) {
+                                // Admin-Only Technician ID Card with Portrait & Complete Details
+                                val techPhotoBmp = remember(assignedTechAccount?.photoBase64) {
+                                    BitmapUtils.decodeBase64Bitmap(assignedTechAccount?.photoBase64.orEmpty(), 240)
+                                }
+                                Surface(
                                     color = Color(0xFF0B2238),
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                )
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.5.dp, GoldAccent),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("admin_tech_id_card_${req.id}")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(56.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFF164E63))
+                                                .border(2.dp, GoldAccent, CircleShape),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            if (techPhotoBmp != null) {
+                                                Image(
+                                                    bitmap = techPhotoBmp.asImageBitmap(),
+                                                    contentDescription = "Technician ID photo",
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    contentScale = ContentScale.Crop
+                                                )
+                                            } else {
+                                                Icon(
+                                                    Icons.Default.Person,
+                                                    contentDescription = "Technician avatar",
+                                                    tint = GoldAccent,
+                                                    modifier = Modifier.size(30.dp)
+                                                )
+                                            }
+                                        }
+                                        Column(
+                                            modifier = Modifier.weight(1f),
+                                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                        ) {
+                                            Text(
+                                                text = "TECHNICIAN ID CARD • ADMIN ONLY",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Black,
+                                                color = GoldAccent
+                                            )
+                                            Text(
+                                                text = req.acceptedByName.ifBlank {
+                                                    assignedTechAccount?.displayName.orEmpty().ifBlank { req.acceptedBy }
+                                                },
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.Black,
+                                                color = Color.White
+                                            )
+                                            Text(
+                                                text = "ID: @${req.acceptedBy} · Mob: ${
+                                                    req.acceptedByPhone.ifBlank { assignedTechAccount?.phone.orEmpty().ifBlank { company.mobile } }
+                                                }",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = Color(0xFFE2E8F0)
+                                            )
+                                            Text(
+                                                text = "${company.companyName} · Ticket #${req.id} ($badgeText)",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color(0xFF67E8F9)
+                                            )
+                                        }
+                                    }
+                                }
+                            } else {
+                                Surface(
+                                    color = Color.White,
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "Assigned Technician: ${req.acceptedByName.ifBlank { req.acceptedBy }} (@${req.acceptedBy})" +
+                                            if (req.acceptedByPhone.isNotBlank()) " · ${req.acceptedByPhone}" else "",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF0B2238),
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                    )
+                                }
                             }
                         }
 
@@ -781,19 +874,28 @@ fun CustomerHelpScreen(
                                 }
                             }
 
+                            val techPhotoB64 = accounts
+                                .firstOrNull { it.username.equals(req.acceptedBy, ignoreCase = true) }
+                                ?.photoBase64
+                                .orEmpty()
+                            val isAssignedTech = !user.isSuperAdmin &&
+                                req.acceptedBy.isNotBlank() &&
+                                req.acceptedBy.equals(user.username, ignoreCase = true)
+
                             if (canManage && req.acceptedBy.isNotBlank()) {
                                 Button(
                                     onClick = {
                                         val ok = DispatchCardGenerator.shareDispatchCardToCustomerWhatsApp(
                                             context = context,
                                             company = company,
-                                            request = req
+                                            request = req,
+                                            technicianPhotoBase64 = techPhotoB64
                                         )
                                         if (!ok) {
                                             Toast.makeText(context, "Could not create Dispatch Card photo", Toast.LENGTH_SHORT).show()
                                         }
                                     },
-                                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                                     modifier = Modifier.testTag("dispatch_card_help_${req.id}")
                                 ) {
                                     Icon(Icons.Default.Badge, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -802,11 +904,11 @@ fun CustomerHelpScreen(
                                 }
                             }
 
-                            if (canManage && req.phone.isNotBlank()) {
+                            if ((canManage || isAssignedTech) && req.phone.isNotBlank()) {
                                 OutlinedButton(
                                     onClick = {
                                         val chatMsg = if (req.acceptedBy.isNotBlank()) {
-                                            "Hello ${req.customerName}, your CCTV technician ${req.acceptedByName.ifBlank { req.acceptedBy }} (${req.acceptedByPhone}) has been assigned by ${company.companyName}."
+                                            "Hello ${req.customerName}, I am ${req.acceptedByName.ifBlank { req.acceptedBy }} (${req.acceptedByPhone.ifBlank { company.mobile }}) from ${company.companyName} regarding your support ticket #${req.id}."
                                         } else {
                                             "Hello ${req.customerName}, regarding your support request with ${company.companyName}."
                                         }
@@ -815,11 +917,12 @@ fun CustomerHelpScreen(
                                             Toast.makeText(context, "WhatsApp not available", Toast.LENGTH_SHORT).show()
                                         }
                                     },
+                                    border = BorderStroke(1.2.dp, GreenPaid),
                                     modifier = Modifier.testTag("wa_chat_help_${req.id}")
                                 ) {
-                                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Icon(Icons.Default.Share, contentDescription = null, tint = GreenPaid, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text("WhatsApp Chat", color = GreenPaid)
+                                    Text("WhatsApp Chat", color = GreenPaid, fontWeight = FontWeight.Bold)
                                 }
                             }
 

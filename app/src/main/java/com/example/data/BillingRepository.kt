@@ -45,6 +45,7 @@ class BillingRepository(
     private val _volatileCloudActive = MutableStateFlow(false)
     val isVolatileCloudMode: StateFlow<Boolean> = _volatileCloudActive.asStateFlow()
 
+    private val _volatileWorkspaceId = MutableStateFlow("")
     private val _volatileDeviceRole = MutableStateFlow("")
     private val _volatileBills = MutableStateFlow<List<BillEntity>>(emptyList())
     private val _volatileCustomers = MutableStateFlow<List<CustomerEntity>>(emptyList())
@@ -189,6 +190,10 @@ class BillingRepository(
 
     val isAdminConfigured: Flow<Boolean> = accounts.map { users ->
         users.any { it.role.equals("admin", ignoreCase = true) }
+    }
+
+    val hasAdminVerificationCode: Flow<Boolean> = configMap.map { m ->
+        !m[KEY_FINAL_CODE_HASH].isNullOrBlank()
     }
 
     val soundEnabled: Flow<Boolean> = configMap.map { m ->
@@ -340,13 +345,28 @@ class BillingRepository(
         return configDao.getValue(key) == "1"
     }
 
+    suspend fun isAdminVerificationCodeSet(): Boolean =
+        !configDao.getValue(KEY_FINAL_CODE_HASH).isNullOrBlank()
+
     suspend fun verifyFinalCode(code: String): Boolean {
         val stored = configDao.getValue(KEY_FINAL_CODE_HASH) ?: return false
-        return stored == AuthHasher.sha256(code)
+        return stored == AuthHasher.sha256(code.trim())
     }
 
     suspend fun updateFinalCode(newCode: String) {
-        configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, AuthHasher.sha256(newCode)))
+        val trimmed = newCode.trim()
+        if (trimmed.isEmpty()) {
+            configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, ""))
+        } else {
+            configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, AuthHasher.sha256(trimmed)))
+        }
+    }
+
+    suspend fun hasPromptedPermissions(): Boolean =
+        configDao.getValue(KEY_PERMISSIONS_PROMPTED) == "1"
+
+    suspend fun markPermissionsPrompted() {
+        configDao.setValue(AppConfigEntity(KEY_PERMISSIONS_PROMPTED, "1"))
     }
 
     suspend fun addTechnician(
@@ -579,11 +599,13 @@ class BillingRepository(
 
             val custName = bill.customerName.trim()
             if (custName.isNotEmpty()) {
-                val old = _volatileCustomers.value.firstOrNull { it.name.equals(custName, ignoreCase = true) }
                 val (parsedPhone, parsedAddress) = parsePhoneAndAddress(bill.customerDetails)
+                val old = findMatchingCustomersByPhone(_volatileCustomers.value, parsedPhone).firstOrNull()
+                    ?: _volatileCustomers.value.firstOrNull { it.name.equals(custName, ignoreCase = true) }
                 val cleanLoc = customerLocationUrl.trim()
                 val syncedCust = if (old != null) {
                     old.copy(
+                        name = custName.ifBlank { old.name },
                         details = bill.customerDetails.ifBlank { old.details },
                         phone = parsedPhone.ifBlank { old.phone },
                         address = parsedAddress.ifBlank { old.address },
@@ -602,7 +624,9 @@ class BillingRepository(
                 if (wsId.isNotBlank()) {
                     cloudSync?.pushCustomer(wsId, syncedCust)
                 }
-                _volatileCustomers.value = (listOf(syncedCust) + _volatileCustomers.value.filterNot { it.name.equals(custName, ignoreCase = true) })
+                _volatileCustomers.value = (listOf(syncedCust) + _volatileCustomers.value.filterNot {
+                    it.id == syncedCust.id || it.name.equals(syncedCust.name, ignoreCase = true)
+                })
             }
             if (safeBill.helpRequestId > 0L) {
                 linkBillToHelpRequest(safeBill.helpRequestId, safeBill.id)
@@ -625,11 +649,14 @@ class BillingRepository(
         }
         val custName = bill.customerName.trim()
         if (custName.isNotEmpty()) {
-            val old = customerDao.findByName(custName)
             val (parsedPhone, parsedAddress) = parsePhoneAndAddress(bill.customerDetails)
+            val allCustomers = customerDao.getAll()
+            val old = findMatchingCustomersByPhone(allCustomers, parsedPhone).firstOrNull()
+                ?: customerDao.findByName(custName)
             val cleanLoc = customerLocationUrl.trim()
             val custEntity = if (old != null) {
                 old.copy(
+                    name = custName.ifBlank { old.name },
                     details = bill.customerDetails.ifBlank { old.details },
                     phone = parsedPhone.ifBlank { old.phone },
                     address = parsedAddress.ifBlank { old.address },
@@ -745,40 +772,45 @@ class BillingRepository(
         val finalPhone = cleanPhone.ifBlank { fallbackPhone }
         val finalAddress = cleanAddress.ifBlank { fallbackAddress }
 
-        if (id > 0L) {
-            customerDao.upsert(
-                CustomerEntity(
-                    id = id,
-                    name = clean,
-                    details = combinedDetails,
-                    phone = finalPhone,
-                    address = finalAddress,
-                    locationUrl = cleanLoc
-                )
+        val savedEntity: CustomerEntity = if (id > 0L) {
+            val entity = CustomerEntity(
+                id = id,
+                name = clean,
+                details = combinedDetails,
+                phone = finalPhone,
+                address = finalAddress,
+                locationUrl = cleanLoc
             )
-            return
-        }
-
-        val existing = customerDao.findByName(clean)
-        if (existing != null) {
-            customerDao.upsert(
-                existing.copy(
+            customerDao.upsert(entity)
+            entity
+        } else {
+            val existing = findMatchingCustomersByPhone(customerDao.getAll(), finalPhone).firstOrNull()
+                ?: customerDao.findByName(clean)
+            if (existing != null) {
+                val updated = existing.copy(
+                    name = clean.ifBlank { existing.name },
                     details = combinedDetails.ifBlank { existing.details },
                     phone = finalPhone.ifBlank { existing.phone },
                     address = finalAddress.ifBlank { existing.address },
                     locationUrl = cleanLoc.ifBlank { existing.locationUrl }
                 )
-            )
-        } else {
-            customerDao.upsert(
-                CustomerEntity(
+                customerDao.upsert(updated)
+                updated
+            } else {
+                val created = CustomerEntity(
                     name = clean,
                     details = combinedDetails,
                     phone = finalPhone,
                     address = finalAddress,
                     locationUrl = cleanLoc
                 )
-            )
+                val rowId = customerDao.upsert(created)
+                created.copy(id = rowId)
+            }
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushCustomer(wsId, savedEntity)
         }
     }
 
@@ -793,7 +825,14 @@ class BillingRepository(
         return (phoneLine ?: "") to addressLines.joinToString(", ")
     }
 
-    suspend fun deleteCustomer(id: Long) = customerDao.deleteById(id)
+    suspend fun deleteCustomer(id: Long) {
+        val existing = customerDao.getAll().firstOrNull { it.id == id }
+        customerDao.deleteById(id)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank() && existing != null) {
+            cloudSync?.deleteCustomer(wsId, existing)
+        }
+    }
 
     suspend fun saveHelpRequest(
         id: Long = 0L,
@@ -838,7 +877,12 @@ class BillingRepository(
             billId = existingHelp?.billId ?: ""
         )
         val rowId = helpDao.upsert(entity)
-        return if (entity.id > 0L) entity else entity.copy(id = rowId)
+        val saved = if (entity.id > 0L) entity else entity.copy(id = rowId)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushHelpRequest(wsId, saved, isTechnicianStatusUpdate = false)
+        }
+        return saved
     }
 
     suspend fun acceptHelpRequest(
@@ -1046,7 +1090,7 @@ class BillingRepository(
         }
     }
 
-    suspend fun saveCompanySettings(settings: CompanySettings) {
+    suspend fun saveCompanySettings(settings: CompanySettings, syncCloud: Boolean = true) {
         val entries = mutableListOf(
             AppConfigEntity(KEY_COMPANY_NAME, settings.companyName.trim().ifEmpty { DEFAULT_COMPANY_NAME }),
             AppConfigEntity(KEY_COMPANY_MOBILE, settings.mobile.trim().ifEmpty { DEFAULT_COMPANY_MOBILE }),
@@ -1060,9 +1104,10 @@ class BillingRepository(
             entries.add(AppConfigEntity(KEY_COMPANY_LOGO, settings.logoBase64))
         }
         configDao.setAll(entries)
+        if (syncCloud) pushCurrentWorkspaceConfigToCloud()
     }
 
-    suspend fun saveVoiceAndNoteSettings(settings: VoiceAndNoteSettings) {
+    suspend fun saveVoiceAndNoteSettings(settings: VoiceAndNoteSettings, syncCloud: Boolean = true) {
         configDao.setAll(
             listOf(
                 AppConfigEntity(KEY_HEADER_NOTE, settings.headerNote.trim()),
@@ -1073,31 +1118,67 @@ class BillingRepository(
                 AppConfigEntity(KEY_VOICE_MODEL_ID, settings.voiceModelId.trim().ifEmpty { VoicePreset.CLEAR.id })
             )
         )
+        if (syncCloud) pushCurrentWorkspaceConfigToCloud()
     }
 
-    suspend fun saveUpiSettings(upiId: String, payeeName: String) {
+    suspend fun saveUpiSettings(upiId: String, payeeName: String, syncCloud: Boolean = true) {
         configDao.setAll(
             listOf(
                 AppConfigEntity(KEY_UPI_ID, upiId.trim()),
                 AppConfigEntity(KEY_UPI_NAME, payeeName.trim().ifEmpty { DEFAULT_PAYEE_NAME })
             )
         )
+        if (syncCloud) pushCurrentWorkspaceConfigToCloud()
     }
 
-    suspend fun clearUpiId() {
+    suspend fun clearUpiId(syncCloud: Boolean = true) {
         configDao.setValue(AppConfigEntity(KEY_UPI_ID, ""))
+        if (syncCloud) pushCurrentWorkspaceConfigToCloud()
     }
 
-    suspend fun saveFallbackQrBase64(base64: String) {
+    suspend fun saveFallbackQrBase64(base64: String, syncCloud: Boolean = true) {
         configDao.setValue(AppConfigEntity(KEY_FALLBACK_QR, base64))
+        if (syncCloud) pushCurrentWorkspaceConfigToCloud()
     }
 
-    suspend fun saveAuthorisedSignatureBase64(base64: String) {
+    suspend fun saveAuthorisedSignatureBase64(base64: String, syncCloud: Boolean = true) {
         configDao.setValue(AppConfigEntity(KEY_AUTHORISED_SIGNATURE, base64))
+        if (syncCloud) pushCurrentWorkspaceConfigToCloud()
     }
 
-    suspend fun saveCompanyLogoBase64(base64: String) {
+    suspend fun saveCompanyLogoBase64(base64: String, syncCloud: Boolean = true) {
         configDao.setValue(AppConfigEntity(KEY_COMPANY_LOGO, base64))
+        if (syncCloud) pushCurrentWorkspaceConfigToCloud()
+    }
+
+    private suspend fun pushCurrentWorkspaceConfigToCloud() {
+        if (_volatileCloudActive.value) return
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isBlank()) return
+        val cfgMap = configDao.getAll().associate { it.key to it.value }
+        val company = CompanySettings(
+            companyName = cfgMap[KEY_COMPANY_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_NAME,
+            mobile = cfgMap[KEY_COMPANY_MOBILE]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_MOBILE,
+            email = cfgMap[KEY_COMPANY_EMAIL]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_EMAIL,
+            address = cfgMap[KEY_COMPANY_ADDRESS]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_ADDRESS,
+            authorisedSignatureBase64 = cfgMap[KEY_AUTHORISED_SIGNATURE].orEmpty(),
+            logoBase64 = cfgMap[KEY_COMPANY_LOGO].orEmpty()
+        )
+        val upi = UpiSettings(
+            upiId = cfgMap[KEY_UPI_ID].orEmpty(),
+            payeeName = cfgMap[KEY_UPI_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_PAYEE_NAME,
+            fallbackQrBase64 = cfgMap[KEY_FALLBACK_QR].orEmpty()
+        )
+        val defaults = VoiceAndNoteSettings()
+        val voice = VoiceAndNoteSettings(
+            headerNote = cfgMap[KEY_HEADER_NOTE] ?: defaults.headerNote,
+            loginVoice = cfgMap[KEY_VOICE_LOGIN]?.takeIf { it.isNotBlank() } ?: defaults.loginVoice,
+            postLoginVoice = cfgMap[KEY_VOICE_POST_LOGIN]?.takeIf { it.isNotBlank() } ?: defaults.postLoginVoice,
+            billGeneratingVoice = cfgMap[KEY_VOICE_BILL_START]?.takeIf { it.isNotBlank() } ?: defaults.billGeneratingVoice,
+            billCompletedVoice = cfgMap[KEY_VOICE_BILL_DONE]?.takeIf { it.isNotBlank() } ?: defaults.billCompletedVoice,
+            voiceModelId = cfgMap[KEY_VOICE_MODEL_ID]?.takeIf { it.isNotBlank() } ?: defaults.voiceModelId
+        )
+        cloudSync?.pushWorkspaceConfig(wsId, company, upi, voice)
     }
 
     suspend fun setSoundEnabled(enabled: Boolean) {
@@ -1149,7 +1230,7 @@ class BillingRepository(
         val settlementList = if (useVolatile) _volatileSettlements.value else settlementDao.getAll()
 
         val root = JSONObject()
-        root.put("schemaVersion", 5)
+        root.put("schemaVersion", 6)
         root.put("exportedAt", System.currentTimeMillis())
         root.put("bills", JSONArray().apply {
             bills.forEach { b ->
@@ -1172,6 +1253,8 @@ class BillingRepository(
                     put("updatedAt", b.updatedAt)
                     put("extraChargeType", b.extraChargeType)
                     put("extraChargeAmount", b.extraChargeAmount)
+                    put("secondaryChargeType", b.secondaryChargeType)
+                    put("secondaryChargeAmount", b.secondaryChargeAmount)
                     put("staffRating", b.staffRating)
                     put("staffReviewNote", b.staffReviewNote)
                     put("documentType", b.documentType)
@@ -1319,6 +1402,8 @@ class BillingRepository(
                             updatedAt = obj.optLong("updatedAt", System.currentTimeMillis()),
                             extraChargeType = obj.optString("extraChargeType", "NONE"),
                             extraChargeAmount = obj.optDouble("extraChargeAmount", 0.0),
+                            secondaryChargeType = obj.optString("secondaryChargeType", "NONE"),
+                            secondaryChargeAmount = obj.optDouble("secondaryChargeAmount", 0.0),
                             staffRating = obj.optInt("staffRating", 0).coerceIn(0, 5),
                             staffReviewNote = obj.optString("staffReviewNote", ""),
                             documentType = obj.optString("documentType", DocumentType.BILL.name),
@@ -1593,10 +1678,10 @@ class BillingRepository(
             _volatileVoice.value = voice
             return
         }
-        saveCompanySettings(company)
-        saveUpiSettings(upi.upiId, upi.payeeName)
-        if (upi.fallbackQrBase64.isNotBlank()) saveFallbackQrBase64(upi.fallbackQrBase64)
-        saveVoiceAndNoteSettings(voice)
+        saveCompanySettings(company, syncCloud = false)
+        saveUpiSettings(upi.upiId, upi.payeeName, syncCloud = false)
+        if (upi.fallbackQrBase64.isNotBlank()) saveFallbackQrBase64(upi.fallbackQrBase64, syncCloud = false)
+        saveVoiceAndNoteSettings(voice, syncCloud = false)
     }
 
     suspend fun mergeCloudAccountsIntoAdmin(cloudAccounts: List<UserAccountEntity>) {
@@ -1765,6 +1850,7 @@ class BillingRepository(
         const val KEY_DEVICE_AUTH_USER_PREFIX = "device_auth_user_"
         const val KEY_LOGIN_FAILED_ATTEMPTS = "login_failed_attempts"
         const val KEY_LOGIN_LOCK_UNTIL_MS = "login_lock_until_ms"
+        const val KEY_PERMISSIONS_PROMPTED = "permissions_prompted_v1"
 
         const val DEFAULT_ADMIN_RECOVERY_PASSWORD = "Manoj2007"
         const val DEFAULT_COMPANY_NAME = "TOTAL SOLUTION ENTERPRISES"

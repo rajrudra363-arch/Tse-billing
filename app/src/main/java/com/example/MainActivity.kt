@@ -109,6 +109,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppDatabase
 import com.example.data.BillingRepository
 import com.example.data.BillingTimePolicy
+import com.example.data.CloudSyncRepository
 import com.example.data.CompanySettings
 import com.example.data.DocumentType
 import com.example.data.UserSession
@@ -139,12 +140,15 @@ import com.example.ui.theme.NavyDeep
 import com.example.ui.theme.RedDue
 import com.example.ui.theme.TealAccent
 import com.example.ui.theme.TseBillingTheme
+import com.example.util.AdminNotificationHelper
 import com.example.util.AppUpdateChecker
 import com.example.util.DeviceAuthHelper
+import com.example.util.DownloadsSaveResult
 import com.example.util.GitHubReleaseInfo
 import com.example.util.InvoicePdfPrinter
 import com.example.util.InvoicePrintPayload
 import com.example.util.SoundEngine
+import com.example.util.WhatsAppHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -158,7 +162,8 @@ class MainActivity : FragmentActivity() {
 
     private val viewModel: BillingViewModel by viewModels {
         val db = AppDatabase.getInstance(applicationContext)
-        BillingViewModel.Factory(BillingRepository(db), soundEngine)
+        val cloudSync = CloudSyncRepository(applicationContext)
+        BillingViewModel.Factory(BillingRepository(db, cloudSync), soundEngine, cloudSync)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -229,6 +234,10 @@ fun TseBillingApp(viewModel: BillingViewModel) {
         val availableUpdate by viewModel.availableUpdate.collectAsStateWithLifecycle()
         val updateCheckBusy by viewModel.updateCheckBusy.collectAsStateWithLifecycle()
         val loginSecurityState by viewModel.loginSecurityState.collectAsStateWithLifecycle()
+        val cloudUser by viewModel.cloudUser.collectAsStateWithLifecycle()
+        val cloudBusy by viewModel.cloudBusy.collectAsStateWithLifecycle()
+        val cloudWorkspaceInfo by viewModel.cloudWorkspaceInfo.collectAsStateWithLifecycle()
+        val hasAdminVerifyCode by viewModel.hasAdminVerifyCode.collectAsStateWithLifecycle()
 
         val scope = rememberCoroutineScope()
         var pendingSavePdfPayload by remember { mutableStateOf<InvoicePrintPayload?>(null) }
@@ -295,6 +304,34 @@ fun TseBillingApp(viewModel: BillingViewModel) {
             }
         }
 
+        val initialPermissionsLauncher = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.RequestMultiplePermissions()
+        ) {
+            viewModel.markInitialPermissionsPrompted()
+        }
+
+        LaunchedEffect(splashVisible) {
+            if (!splashVisible && viewModel.shouldPromptInitialPermissions()) {
+                val perms = buildList {
+                    add(Manifest.permission.CAMERA)
+                    add(Manifest.permission.ACCESS_FINE_LOCATION)
+                    add(Manifest.permission.ACCESS_COARSE_LOCATION)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        add(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+                val missing = perms.filter {
+                    ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+                }
+                if (missing.isNotEmpty()) {
+                    runCatching { initialPermissionsLauncher.launch(missing.toTypedArray()) }
+                        .onFailure { viewModel.markInitialPermissionsPrompted() }
+                } else {
+                    viewModel.markInitialPermissionsPrompted()
+                }
+            }
+        }
+
         LaunchedEffect(availableUpdate) {
             if (availableUpdate != null) {
                 showUpdateDialog = true
@@ -307,20 +344,58 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     is BillingEvent.Toast -> snackbarHostState.showSnackbar(event.message)
                     is BillingEvent.PrintPdf -> InvoicePdfPrinter.printInvoice(context, event.payload)
                     is BillingEvent.SavePdf -> {
-                        pendingSavePdfPayload = event.payload
                         val prefix = if (event.payload.documentType == DocumentType.QUOTATION) "Quotation" else "Invoice"
                         val cleanNo = event.payload.invoiceNo.replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "Bill" }
-                        savePdfLauncher.launch("TSE_${prefix}_$cleanNo.pdf")
+                        val fileName = "TSE_${prefix}_$cleanNo.pdf"
+                        val saveRes = WhatsAppHelper.saveDocumentToDownloads(
+                            context = context,
+                            fileName = fileName,
+                            mimeType = "application/pdf"
+                        ) { out ->
+                            InvoicePdfPrinter.writePdfToStream(event.payload, out)
+                        }
+                        when (saveRes) {
+                            is DownloadsSaveResult.Saved -> {
+                                viewModel.notifyPdfSaved(true)
+                                snackbarHostState.showSnackbar("Saved PDF to ${saveRes.displayPath}")
+                            }
+                            is DownloadsSaveResult.NeedsPickerFallback -> {
+                                pendingSavePdfPayload = event.payload
+                                runCatching { savePdfLauncher.launch(fileName) }.onFailure {
+                                    pendingSavePdfPayload = null
+                                    snackbarHostState.showSnackbar("Unable to open PDF saver.")
+                                }
+                            }
+                        }
                     }
                     is BillingEvent.SharePdf -> {
                         val ok = InvoicePdfPrinter.sharePdf(context, event.payload)
                         if (!ok) snackbarHostState.showSnackbar("Could not share A4 PDF")
                     }
                     is BillingEvent.SavePhoto -> {
-                        pendingSavePhotoPayload = event.payload
                         val prefix = if (event.payload.documentType == DocumentType.QUOTATION) "Quotation" else "Invoice"
                         val cleanNo = event.payload.invoiceNo.replace(Regex("[^A-Za-z0-9_-]"), "_").ifBlank { "Bill" }
-                        savePhotoLauncher.launch("TSE_${prefix}_$cleanNo.png")
+                        val fileName = "TSE_${prefix}_$cleanNo.png"
+                        val saveRes = WhatsAppHelper.saveDocumentToDownloads(
+                            context = context,
+                            fileName = fileName,
+                            mimeType = "image/png"
+                        ) { out ->
+                            InvoicePdfPrinter.saveInvoicePhotoToStream(event.payload, out)
+                        }
+                        when (saveRes) {
+                            is DownloadsSaveResult.Saved -> {
+                                viewModel.notifyPhotoSaved(true)
+                                snackbarHostState.showSnackbar("Saved Photo to ${saveRes.displayPath}")
+                            }
+                            is DownloadsSaveResult.NeedsPickerFallback -> {
+                                pendingSavePhotoPayload = event.payload
+                                runCatching { savePhotoLauncher.launch(fileName) }.onFailure {
+                                    pendingSavePhotoPayload = null
+                                    snackbarHostState.showSnackbar("Unable to open Photo saver.")
+                                }
+                            }
+                        }
                     }
                     is BillingEvent.SharePhoto -> {
                         val ok = InvoicePdfPrinter.shareInvoicePhoto(context, event.payload)
@@ -358,6 +433,14 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                             AppUpdateChecker.postUpdateNotification(context, event.release)
                         }
                     }
+                    is BillingEvent.NotifyTechnicianBill -> {
+                        AdminNotificationHelper.notifyTechnicianBillCreated(
+                            context = context,
+                            invoiceNo = event.invoiceNo,
+                            technicianUsername = event.technicianUsername,
+                            customerName = event.customerName
+                        )
+                    }
                 }
             }
         }
@@ -383,7 +466,8 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     NavItem(MainTab.SAVED, "Saved", Icons.Default.ReceiptLong),
                     NavItem(MainTab.CUSTOMERS, "Customers", Icons.Default.People),
                     NavItem(MainTab.HELP, "Help Desk", Icons.Default.SupportAgent),
-                    NavItem(MainTab.PRODUCTS, "Products", Icons.Default.Inventory2)
+                    NavItem(MainTab.PRODUCTS, "Products", Icons.Default.Inventory2),
+                    NavItem(MainTab.SETTINGS, "Settings", Icons.Default.Settings)
                 )
                 s.isAdmin -> listOf(
                     NavItem(MainTab.BILL, "New Bill", Icons.Default.Receipt),
@@ -422,10 +506,17 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     authError = authError,
                     logoBase64 = company.logoBase64,
                     loginSecurityState = loginSecurityState,
+                    cloudUser = cloudUser,
+                    cloudBusy = cloudBusy,
+                    hasAdminVerifyCode = hasAdminVerifyCode,
                     onClearError = viewModel::clearAuthError,
                     onSetupAdmin = viewModel::setupAdmin,
-                    onLogin = { u, p, antiRobotPassed -> viewModel.login(u, p, antiRobotPassed) },
+                    onLogin = { u, p, antiRobotPassed, verifyCode ->
+                        viewModel.login(u, p, antiRobotPassed, adminVerifyCode = verifyCode)
+                    },
                     onImportBackup = { json -> viewModel.importBackupJson(json, allowPreSetupRestore = true) },
+                    onSignInGoogle = { viewModel.signInWithGoogle(context) },
+                    onJoinInviteCode = viewModel::joinWorkspaceWithInviteCode,
                     onResetAdminPassword = viewModel::resetAdminPassword
                 )
                 SnackbarHost(
@@ -604,6 +695,8 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         onRemoveItem = viewModel::removeItem,
                                         onExtraChargeTypeChange = viewModel::updateExtraChargeType,
                                         onExtraChargeAmountChange = viewModel::updateExtraChargeAmount,
+                                        onToggleDualExtraCharge = viewModel::toggleDualExtraChargeType,
+                                        onSecondaryChargeAmountChange = viewModel::updateSecondaryChargeAmount,
                                         onDiscountChange = viewModel::updateDiscount,
                                         onPaidAmountChange = viewModel::updatePaidAmount,
                                         onPaymentModeChange = viewModel::updatePaymentMode,
@@ -639,6 +732,9 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         onPrintBill = viewModel::printBillDirect,
                                         onSavePdf = viewModel::saveBillPdfDirect,
                                         onSharePdf = viewModel::shareBillPdfDirect,
+                                        onWhatsAppPdf = { bill -> viewModel.shareBillPdfToCustomerWhatsApp(context, bill) },
+                                        onSendDueQr = { bill -> viewModel.shareDueQrToCustomerWhatsApp(context, bill) },
+                                        onMarkDuePaid = viewModel::markDuePaidInFull,
                                         onSavePhoto = viewModel::saveBillPhotoDirect,
                                         onSharePhoto = viewModel::shareBillPhotoDirect,
                                         onDeleteBill = viewModel::deleteBill,
@@ -665,6 +761,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                     MainTab.HELP -> CustomerHelpScreen(
                                         helpRequests = visibleHelpRequests,
                                         customers = customers,
+                                        accounts = accounts,
                                         company = company,
                                         user = currentSession,
                                         onSaveHelpRequest = { id, name, phone, address, locationUrl, desc, status ->
@@ -707,6 +804,10 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         technicianPerformance = technicianPerformance,
                                         voiceAndNoteSettings = voiceAndNote,
                                         systemVoiceOptions = viewModel.availableSystemVoices(),
+                                        cloudUser = cloudUser,
+                                        cloudWorkspaceInfo = cloudWorkspaceInfo,
+                                        cloudBusy = cloudBusy,
+                                        availableUpdate = availableUpdate,
                                         onSaveUpi = viewModel::saveUpiSettings,
                                         onClearUpi = viewModel::clearUpiId,
                                         onAddTechnician = viewModel::addTechnician,
@@ -716,7 +817,11 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         onRemoveSuperAdmin = viewModel::removeSuperAdmin,
                                         onRecordCashSettlement = viewModel::recordTechnicianCashSettlement,
                                         onSaveVoiceAndNoteSettings = viewModel::saveVoiceAndNoteSettings,
-                                        onTestVoice = viewModel::testVoiceAnnouncement
+                                        onTestVoice = viewModel::testVoiceAnnouncement,
+                                        onSignInGoogle = { viewModel.signInWithGoogle(context) },
+                                        onEnsureCloudWorkspace = viewModel::ensureAdminCloudWorkspace,
+                                        onShareApkWhatsApp = { targetRole -> viewModel.shareApkViaWhatsApp(context, targetRole) },
+                                        onUpdateAdminVerifyCode = viewModel::updateAdminVerifyCode
                                     )
 
                                     MainTab.SETTINGS -> SettingsScreen(

@@ -23,6 +23,8 @@ data class BillEntity(
     val updatedAt: Long = System.currentTimeMillis(),
     val extraChargeType: String = "NONE",
     val extraChargeAmount: Double = 0.0,
+    val secondaryChargeType: String = "NONE",
+    val secondaryChargeAmount: Double = 0.0,
     val staffRating: Int = 0,
     val staffReviewNote: String = "",
     val documentType: String = "BILL",

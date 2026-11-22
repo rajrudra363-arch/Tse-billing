@@ -91,6 +91,7 @@ service cloud.firestore {
           'itemsJson', 'subtotal', 'discount', 'grandTotal', 'paidAmount',
           'dueAmount', 'paymentMode', 'signatureBase64', 'customQrText',
           'createdBy', 'createdByUid', 'extraChargeType', 'extraChargeAmount',
+          'secondaryChargeType', 'secondaryChargeAmount',
           'staffRating', 'staffReviewNote', 'documentType', 'helpBill',
           'helpRequestId', 'quotationNote', 'updatedAt'
         ]) &&
@@ -99,6 +100,7 @@ service cloud.firestore {
           'itemsJson', 'subtotal', 'discount', 'grandTotal', 'paidAmount',
           'dueAmount', 'paymentMode', 'signatureBase64', 'customQrText',
           'createdBy', 'createdByUid', 'extraChargeType', 'extraChargeAmount',
+          'secondaryChargeType', 'secondaryChargeAmount',
           'staffRating', 'staffReviewNote', 'documentType', 'helpBill',
           'helpRequestId', 'quotationNote', 'updatedAt'
         ]) &&
@@ -118,6 +120,8 @@ service cloud.firestore {
         d.createdByUid is string && d.createdByUid.size() >= 1 &&
         d.extraChargeType is string &&
         d.extraChargeAmount is number && d.extraChargeAmount >= 0 &&
+        d.secondaryChargeType is string &&
+        d.secondaryChargeAmount is number && d.secondaryChargeAmount >= 0 &&
         d.staffRating is int && d.staffRating >= 0 && d.staffRating <= 5 &&
         d.staffReviewNote is string &&
         d.documentType in ['BILL', 'QUOTATION'] &&
@@ -303,7 +307,8 @@ service cloud.firestore {
             'invoiceNo', 'date', 'customerName', 'customerDetails', 'itemsJson',
             'subtotal', 'discount', 'grandTotal', 'paidAmount', 'dueAmount',
             'paymentMode', 'signatureBase64', 'customQrText', 'createdBy',
-            'extraChargeType', 'extraChargeAmount', 'staffRating', 'staffReviewNote',
+            'extraChargeType', 'extraChargeAmount', 'secondaryChargeType', 'secondaryChargeAmount',
+            'staffRating', 'staffReviewNote',
             'documentType', 'helpBill', 'helpRequestId', 'quotationNote', 'updatedAt'
           ]) &&
           (resource.data.staffRating == 0 ||

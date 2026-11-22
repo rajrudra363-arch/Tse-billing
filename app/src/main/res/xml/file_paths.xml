@@ -4,4 +4,5 @@
     <cache-path name="shared_photos" path="photos/" />
     <cache-path name="scanned_signatures" path="signatures/" />
     <cache-path name="shared_apks" path="apks/" />
+    <cache-path name="tech_photos" path="tech_photos/" />
 </paths>

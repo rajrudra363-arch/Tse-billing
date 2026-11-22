@@ -71,6 +71,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -101,6 +102,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
@@ -168,6 +170,8 @@ fun BillScreen(
     onRemoveItem: (Int) -> Unit,
     onExtraChargeTypeChange: (ChargeType) -> Unit,
     onExtraChargeAmountChange: (String) -> Unit,
+    onToggleDualExtraCharge: (ChargeType) -> Unit = onExtraChargeTypeChange,
+    onSecondaryChargeAmountChange: (String) -> Unit = {},
     onDiscountChange: (String) -> Unit,
     onPaidAmountChange: (String) -> Unit,
     onPaymentModeChange: (PaymentMode) -> Unit,
@@ -668,7 +672,7 @@ fun BillScreen(
             )
         }
 
-        // Service / Installation / Customer Care & Support Charges
+        // Service / Installation / Customer Care & Support Charges (Dual selection + ₹300 Customer Care cap)
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -680,7 +684,11 @@ fun BillScreen(
                         Text("Service / Installation / Support Charges", style = MaterialTheme.typography.titleMedium)
                     }
                     Text(
-                        text = "Any selected charge is automatically appended to Product Details on print, PDF, and Photo.",
+                        text = if (draft.isHelpBill) {
+                            "Tick up to 2 charges (Customer Care & Support Charge max ₹300 + 1 Service/Installation charge)."
+                        } else {
+                            "Select up to 2 charges. Customer Care & Support maximum ₹300. Selected charges are added to Product Details."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -689,13 +697,34 @@ fun BillScreen(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         ChargeType.entries.forEach { chargeType ->
+                            val isSelected = if (chargeType == ChargeType.NONE) {
+                                draft.extraChargeType == ChargeType.NONE && draft.secondaryChargeType == ChargeType.NONE
+                            } else {
+                                draft.extraChargeType == chargeType || draft.secondaryChargeType == chargeType
+                            }
                             FilterChip(
-                                selected = draft.extraChargeType == chargeType,
+                                selected = isSelected,
                                 onClick = {
                                     clearFocusAndHideToolbar(focusManager, textToolbar)
-                                    onExtraChargeTypeChange(chargeType)
+                                    onToggleDualExtraCharge(chargeType)
                                 },
-                                label = { Text(chargeType.label) },
+                                label = {
+                                    Text(
+                                        text = if (chargeType == ChargeType.CUSTOMER_CARE_AND_SUPPORT) {
+                                            "${chargeType.label} (Max ₹300)"
+                                        } else {
+                                            chargeType.label
+                                        },
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = NavyPrimary,
+                                    selectedLabelColor = Color.White,
+                                    selectedLeadingIconColor = Color.White,
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    labelColor = MaterialTheme.colorScheme.onSurface
+                                ),
                                 modifier = Modifier.testTag("charge_chip_${chargeType.name}")
                             )
                         }
@@ -704,10 +733,44 @@ fun BillScreen(
                         OutlinedTextField(
                             value = draft.extraChargeAmountText,
                             onValueChange = onExtraChargeAmountChange,
-                            label = { Text("${draft.extraChargeType.label} (₹)") },
+                            label = {
+                                Text(
+                                    if (draft.extraChargeType == ChargeType.CUSTOMER_CARE_AND_SUPPORT) {
+                                        "${draft.extraChargeType.label} (₹, Max 300)"
+                                    } else {
+                                        "${draft.extraChargeType.label} (₹)"
+                                    }
+                                )
+                            },
+                            supportingText = if (draft.extraChargeType == ChargeType.CUSTOMER_CARE_AND_SUPPORT) {
+                                { Text("Maximum ₹300 allowed for Customer Care & Support Charge") }
+                            } else null,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("bill_extra_charge_amount")
+                        )
+                    }
+                    val hasSecondCharge = draft.secondaryChargeType != ChargeType.NONE &&
+                        draft.secondaryChargeType != draft.extraChargeType
+                    AnimatedVisibility(visible = hasSecondCharge) {
+                        OutlinedTextField(
+                            value = draft.secondaryChargeAmountText,
+                            onValueChange = onSecondaryChargeAmountChange,
+                            label = {
+                                Text(
+                                    if (draft.secondaryChargeType == ChargeType.CUSTOMER_CARE_AND_SUPPORT) {
+                                        "${draft.secondaryChargeType.label} (₹, Max 300)"
+                                    } else {
+                                        "${draft.secondaryChargeType.label} (₹)"
+                                    }
+                                )
+                            },
+                            supportingText = if (draft.secondaryChargeType == ChargeType.CUSTOMER_CARE_AND_SUPPORT) {
+                                { Text("Maximum ₹300 allowed for Customer Care & Support Charge") }
+                            } else null,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("bill_secondary_charge_amount")
                         )
                     }
                 }
@@ -879,6 +942,7 @@ fun BillScreen(
             summaryError = summaryError,
             onDiscountChange = onDiscountChange,
             onPaidAmountChange = onPaidAmountChange,
+            onPaymentModeChange = onPaymentModeChange,
             onRatingChange = onStaffRatingChange,
             onReviewChange = onStaffReviewChange,
             onDismiss = onCloseSummaryModal,
@@ -1218,6 +1282,7 @@ private fun BillSummaryDialog(
     summaryError: String,
     onDiscountChange: (String) -> Unit,
     onPaidAmountChange: (String) -> Unit,
+    onPaymentModeChange: (PaymentMode) -> Unit = {},
     onRatingChange: (Int) -> Unit,
     onReviewChange: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -1227,6 +1292,13 @@ private fun BillSummaryDialog(
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
     val hasDue = draft.dueAmount > 0.009
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    // True 1.5 inch x 1.5 inch physical QR size using screen xdpi (safe bounds on all screens/dialogs)
+    val qrPhysicalSizeDp = remember(density, context) {
+        val xdpi = context.resources.displayMetrics.xdpi.takeIf { it >= 72f } ?: 160f
+        with(density) { (1.5f * xdpi).toDp() }.coerceIn(135.dp, 220.dp)
+    }
 
     val dynamicOnlineUri = remember(upi.upiId, upi.payeeName, draft.paidAmount, draft.invoiceNo) {
         if (upi.upiId.isNotBlank()) {
@@ -1270,32 +1342,59 @@ private fun BillSummaryDialog(
                     )
 
                     if (!isQuotation) {
+                        // Strict ordered summary: Sub Total -> Discount -> Grand Total -> Paid Amount -> Due Balance -> Payment Mode
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column {
-                                TotalRow("SUB TOTAL", draft.subtotal)
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                // 1. Sub Total
+                                TotalRow("1. SUB TOTAL", draft.subtotal)
                                 HorizontalDivider()
+
+                                // 2. Discount
+                                OutlinedTextField(
+                                    value = draft.discountText,
+                                    onValueChange = onDiscountChange,
+                                    label = { Text("2. Discount (₹)") },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("summary_discount_input")
+                                )
+
+                                // 3. Grand Total
                                 TotalRow(
-                                    label = "GRAND TOTAL",
+                                    label = "3. GRAND TOTAL",
                                     amount = draft.grandTotal,
                                     bg = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
                                     bold = true
                                 )
-                                HorizontalDivider()
+
+                                // 4. Paid Amount
+                                OutlinedTextField(
+                                    value = draft.paidAmountText,
+                                    onValueChange = onPaidAmountChange,
+                                    label = { Text("4. Paid Amount (₹)") },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("summary_paid_input")
+                                )
+
+                                // 5. Due Balance (Grand Total - Paid Amount)
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
                                         .background(if (hasDue) RedDueBg else GreenPaidBg)
-                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Text(
-                                        text = if (hasDue) "DUE BALANCE" else "PAID IN FULL",
+                                        text = if (hasDue) "5. DUE BALANCE (Grand - Paid)" else "5. DUE BALANCE (PAID IN FULL)",
                                         fontWeight = FontWeight.Black,
-                                        color = if (hasDue) RedDueDark else GreenPaid
+                                        color = if (hasDue) RedDueDark else GreenPaid,
+                                        style = MaterialTheme.typography.bodySmall
                                     )
                                     Text(
                                         text = "₹${String.format(Locale.US, "%.2f", draft.dueAmount)}",
@@ -1304,58 +1403,83 @@ private fun BillSummaryDialog(
                                         modifier = Modifier.testTag("summary_due_amount")
                                     )
                                 }
-                            }
-                        }
 
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(
-                                value = draft.discountText,
-                                onValueChange = onDiscountChange,
-                                label = { Text("Discount (₹)") },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                singleLine = true,
-                                modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("summary_discount_input")
-                            )
-                            OutlinedTextField(
-                                value = draft.paidAmountText,
-                                onValueChange = onPaidAmountChange,
-                                label = { Text("Paid Amount (₹)") },
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                singleLine = true,
-                                modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("summary_paid_input")
-                            )
+                                HorizontalDivider()
+
+                                // 6. Payment Mode Toggle (Online Payment vs Cash)
+                                Text(
+                                    text = "6. Payment Mode",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = NavyPrimary
+                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    PaymentMode.entries.forEach { mode ->
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            RadioButton(
+                                                selected = draft.paymentMode == mode,
+                                                onClick = { onPaymentModeChange(mode) },
+                                                modifier = Modifier.testTag("summary_payment_mode_${mode.name}")
+                                            )
+                                            Text(mode.label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         if (draft.paymentMode == PaymentMode.ONLINE) {
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
                                 color = Color(0xFFE0F2FE),
-                                border = BorderStroke(1.dp, TealAccent),
+                                border = BorderStroke(1.2.dp, TealAccent),
                                 modifier = Modifier.fillMaxWidth().testTag("summary_online_qr_card")
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
+                                    Text(
+                                        text = "Scan & Pay Paid Amount: ₹${String.format(Locale.US, "%.2f", draft.paidAmount)}",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Black,
+                                        color = NavyPrimary
+                                    )
                                     QrCodeImage(
                                         content = dynamicOnlineUri,
                                         fallbackBase64 = upi.fallbackQrBase64,
-                                        contentDescription = "Dynamic Online Paid Amount UPI QR",
-                                        modifier = Modifier.size(92.dp)
+                                        contentDescription = "Dynamic Online Paid Amount UPI QR (1.5 inch)",
+                                        modifier = Modifier
+                                            .size(qrPhysicalSizeDp)
+                                            .testTag("summary_online_qr_image")
                                     )
-                                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        Text(
-                                            text = "Dynamic Payment QR: ₹${String.format(Locale.US, "%.2f", draft.paidAmount)}",
-                                            style = MaterialTheme.typography.labelLarge,
-                                            fontWeight = FontWeight.Black,
-                                            color = NavyPrimary
-                                        )
-                                        Text(
-                                            text = "Generated strictly for Paid Amount above. If customer pays less, adjust Paid Amount to record Due Balance.",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = Color(0xFF1E293B)
-                                        )
+                                    Text(
+                                        text = "1.5\" × 1.5\" dynamic QR strictly for ₹${String.format(Locale.US, "%.2f", draft.paidAmount)}. Printed A4 bill QR remains amount-free.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = Color(0xFF1E293B)
+                                    )
+                                    Button(
+                                        onClick = {
+                                            clearFocusAndHideToolbar(focusManager, textToolbar)
+                                            onGenerate()
+                                        },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = TealAccent,
+                                            contentColor = Color.White
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                            .testTag("confirm_online_pay_generate_button")
+                                    ) {
+                                        Icon(Icons.Default.Payments, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Payment Received -> Auto Generate Bill", fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -1425,7 +1549,10 @@ private fun BillSummaryDialog(
                     clearFocusAndHideToolbar(focusManager, textToolbar)
                     onGenerate()
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = GreenPaid,
+                    contentColor = Color.White
+                ),
                 modifier = Modifier.testTag("generate_final_bill_button")
             ) {
                 Icon(Icons.Default.Fingerprint, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -1458,6 +1585,7 @@ private fun ExportDocumentOptionsDialog(
     onOpenPaymentAndReview: () -> Unit
 ) {
     val isQuotation = payload.documentType == DocumentType.QUOTATION
+    val canAdminShare = currentUser.isAdmin && !currentUser.isSuperAdmin
     val docTitle = if (isQuotation) "Quotation Ready (${payload.invoiceNo})" else "Bill Ready (${payload.invoiceNo})"
 
     AlertDialog(
@@ -1470,12 +1598,16 @@ private fun ExportDocumentOptionsDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    text = "Saved by @${currentUser.username}. Export or share as A4 Print, PDF, or High-Res PNG Photo:",
+                    text = if (canAdminShare) {
+                        "Saved by @${currentUser.username}. Print, Save, or Share A4 PDF & Photo:"
+                    } else {
+                        "Saved by @${currentUser.username} & Admin notified. Technicians can Print, Preview, or Save locally (only Admin can share)."
+                    },
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Button(
                     onClick = onPrintA4,
-                    colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
+                    colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
                     modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_print_a4_button")
                 ) {
                     Icon(Icons.Default.Print, contentDescription = null)
@@ -1484,51 +1616,55 @@ private fun ExportDocumentOptionsDialog(
                 }
                 Button(
                     onClick = onSavePdf,
-                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                     modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_save_pdf_button")
                 ) {
                     Icon(Icons.Default.PictureAsPdf, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text("Save A4 PDF", fontWeight = FontWeight.Bold)
                 }
-                OutlinedButton(
-                    onClick = onSharePdf,
-                    modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_share_pdf_button")
-                ) {
-                    Icon(Icons.Default.Share, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Share A4 PDF", fontWeight = FontWeight.Bold)
+                if (canAdminShare) {
+                    OutlinedButton(
+                        onClick = onSharePdf,
+                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_share_pdf_button")
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, tint = NavyPrimary)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Share A4 PDF", fontWeight = FontWeight.Bold, color = NavyPrimary)
+                    }
                 }
                 Button(
                     onClick = onSavePhoto,
-                    colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
+                    colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
                     modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_save_photo_button")
                 ) {
                     Icon(Icons.Default.Image, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text("Save Photo (PNG)", fontWeight = FontWeight.Bold)
                 }
-                OutlinedButton(
-                    onClick = onSharePhoto,
-                    modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_share_photo_button")
-                ) {
-                    Icon(Icons.Default.Share, contentDescription = null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Share Photo (PNG)", fontWeight = FontWeight.Bold)
+                if (canAdminShare) {
+                    OutlinedButton(
+                        onClick = onSharePhoto,
+                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_share_photo_button")
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = null, tint = NavyPrimary)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Share Photo (PNG)", fontWeight = FontWeight.Bold, color = NavyPrimary)
+                    }
                 }
                 OutlinedButton(
                     onClick = onPreviewA4,
                     modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_preview_a4_button")
                 ) {
-                    Icon(Icons.Default.Visibility, contentDescription = null)
+                    Icon(Icons.Default.Visibility, contentDescription = null, tint = NavyPrimary)
                     Spacer(Modifier.width(8.dp))
-                    Text("View A4 Preview", fontWeight = FontWeight.Bold)
+                    Text("View A4 Preview", fontWeight = FontWeight.Bold, color = NavyPrimary)
                 }
-                if (!isQuotation && currentUser.isAdmin) {
+                if (!isQuotation && canAdminShare) {
                     HorizontalDivider()
                     Button(
                         onClick = onOpenPaymentAndReview,
-                        colors = ButtonDefaults.buttonColors(containerColor = AmberWarn),
+                        colors = ButtonDefaults.buttonColors(containerColor = AmberWarn, contentColor = Color.White),
                         modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_payment_review_button")
                     ) {
                         Icon(Icons.Default.Payments, contentDescription = null)

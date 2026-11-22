@@ -6,9 +6,8 @@ const {
   assertFails,
   assertSucceeds
 } = require("@firebase/rules-unit-testing");
-const { Timestamp } = require("firebase/firestore");
 
-const PROJECT_ID = "tse-billing-rules-test";
+const PROJECT_ID = process.env.GCP_PROJECT || "demo-no-project";
 const DB_ID = "ai-studio-android-tsebilli-812e5e23-5be6-4359-ba54-48c3c2747cb2";
 const RULES = fs.readFileSync("./firestore.rules", "utf8");
 
@@ -35,7 +34,7 @@ beforeEach(async () => {
 });
 
 function nowTs() {
-  return Timestamp.now();
+  return new Date(Date.now() - 1000);
 }
 
 function validWorkspaceData(ownerUid = "owner_1") {
@@ -87,6 +86,8 @@ function validBillData(billId = "b_1", createdBy = "rahul_tech", createdByUid = 
     createdByUid,
     extraChargeType: "NONE",
     extraChargeAmount: 0,
+    secondaryChargeType: "NONE",
+    secondaryChargeAmount: 0,
     staffRating,
     staffReviewNote: "",
     documentType: "BILL",

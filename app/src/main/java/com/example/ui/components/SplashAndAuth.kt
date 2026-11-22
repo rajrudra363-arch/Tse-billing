@@ -22,6 +22,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -44,7 +46,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockClock
 import androidx.compose.material.icons.filled.LockReset
@@ -53,6 +57,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -60,9 +65,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -104,6 +111,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.data.CloudAuthUser
 import com.example.data.LoginSecurityState
 import com.example.data.UserAccountEntity
 import com.example.ui.theme.AmberWarn
@@ -221,10 +229,15 @@ fun AuthScreen(
     authError: String,
     logoBase64: String = "",
     loginSecurityState: LoginSecurityState = LoginSecurityState(),
+    cloudUser: CloudAuthUser? = null,
+    cloudBusy: Boolean = false,
+    hasAdminVerifyCode: Boolean = false,
     onClearError: () -> Unit,
-    onSetupAdmin: (username: String, password: String, confirm: String) -> Unit,
-    onLogin: (username: String, password: String, antiRobotPassed: Boolean) -> Unit,
+    onSetupAdmin: (username: String, password: String, confirm: String, adminVerifyCode: String) -> Unit,
+    onLogin: (username: String, password: String, antiRobotPassed: Boolean, adminVerifyCode: String) -> Unit,
     onImportBackup: (String) -> Unit = {},
+    onSignInGoogle: () -> Unit = {},
+    onJoinInviteCode: (String) -> Unit = {},
     onResetAdminPassword: (
         recoveryPassword: String,
         targetAdminUsername: String?,
@@ -324,17 +337,26 @@ fun AuthScreen(
 
                             false -> FirstTimeAdminSetupForm(
                                 authError = authError,
+                                cloudUser = cloudUser,
+                                cloudBusy = cloudBusy,
                                 onClearError = onClearError,
                                 onSetupAdmin = onSetupAdmin,
-                                onImportBackup = onImportBackup
+                                onImportBackup = onImportBackup,
+                                onSignInGoogle = onSignInGoogle,
+                                onJoinInviteCode = onJoinInviteCode
                             )
 
                             true -> TechnicianAdminLoginForm(
                                 accounts = accounts,
                                 authError = authError,
                                 loginSecurityState = loginSecurityState,
+                                cloudUser = cloudUser,
+                                cloudBusy = cloudBusy,
+                                hasAdminVerifyCode = hasAdminVerifyCode,
                                 onClearError = onClearError,
                                 onLogin = onLogin,
+                                onSignInGoogle = onSignInGoogle,
+                                onJoinInviteCode = onJoinInviteCode,
                                 onResetAdminPassword = onResetAdminPassword
                             )
                         }
@@ -345,18 +367,25 @@ fun AuthScreen(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FirstTimeAdminSetupForm(
     authError: String,
+    cloudUser: CloudAuthUser?,
+    cloudBusy: Boolean,
     onClearError: () -> Unit,
-    onSetupAdmin: (String, String, String) -> Unit,
-    onImportBackup: (String) -> Unit
+    onSetupAdmin: (String, String, String, String) -> Unit,
+    onImportBackup: (String) -> Unit,
+    onSignInGoogle: () -> Unit,
+    onJoinInviteCode: (String) -> Unit
 ) {
-    // Mode 0 = Create Admin Account, Mode 1 = Sign In (Restore Backup)
+    // Mode 0 = Create Admin Account, Mode 1 = Technician / Super Admin Direct Login (Invite Code), Mode 2 = Sign In (Restore Backup)
     var setupMode by remember { mutableIntStateOf(0) }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
+    var adminVerifyCode by remember { mutableStateOf("") }
+    var inviteCode by remember { mutableStateOf("") }
     var showPass by remember { mutableStateOf(false) }
     var showPasteBackupDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -414,155 +443,308 @@ private fun FirstTimeAdminSetupForm(
         }
     }
 
+    val chipColors = FilterChipDefaults.filterChipColors(
+        selectedContainerColor = NavyPrimary,
+        selectedLabelColor = Color.White,
+        selectedLeadingIconColor = GoldSoft,
+        containerColor = Color(0xFFF1F5F9),
+        labelColor = NavyPrimary,
+        iconColor = NavyPrimary
+    )
+
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = TealAccent)
-            Text("Welcome — Account Setup", style = MaterialTheme.typography.titleLarge, color = NavyPrimary)
+            Text("Welcome — Sign In or Setup", style = MaterialTheme.typography.titleLarge, color = NavyPrimary)
         }
 
-        Row(
+        FlowRow(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             FilterChip(
                 selected = setupMode == 0,
                 onClick = { setupMode = 0; onClearError() },
+                colors = chipColors,
                 label = { Text("Create Admin", fontWeight = FontWeight.Bold) },
-                modifier = Modifier.weight(1f).testTag("setup_tab_create")
+                modifier = Modifier.testTag("setup_tab_create")
             )
             FilterChip(
                 selected = setupMode == 1,
                 onClick = { setupMode = 1; onClearError() },
+                colors = chipColors,
+                leadingIcon = { Icon(Icons.Default.Cloud, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                label = { Text("Direct Login (Invite)", fontWeight = FontWeight.Bold) },
+                modifier = Modifier.testTag("setup_tab_cloud")
+            )
+            FilterChip(
+                selected = setupMode == 2,
+                onClick = { setupMode = 2; onClearError() },
+                colors = chipColors,
+                leadingIcon = { Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp)) },
                 label = { Text("Sign In (Backup)", fontWeight = FontWeight.Bold) },
-                modifier = Modifier.weight(1f).testTag("setup_tab_restore")
+                modifier = Modifier.testTag("setup_tab_restore")
             )
         }
 
-        if (setupMode == 0) {
-            Text(
-                text = "Create your single Admin account. Device authentication (Fingerprint / Face / Screen Lock) will be configured in Settings after login.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            OutlinedTextField(
-                value = username,
-                onValueChange = { username = it; onClearError() },
-                label = { Text("Admin Username (min 3 chars)") },
-                leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_username")
-            )
-
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it; onClearError() },
-                label = { Text("Admin Password (min 6 chars)") },
-                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                trailingIcon = {
-                    IconButton(onClick = { showPass = !showPass }) {
-                        Icon(if (showPass) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = "Toggle password")
-                    }
-                },
-                visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_password")
-            )
-
-            OutlinedTextField(
-                value = confirm,
-                onValueChange = { confirm = it; onClearError() },
-                label = { Text("Confirm Admin Password") },
-                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = {
-                    clearFocusAndHideToolbar(focusManager, textToolbar)
-                    onSetupAdmin(username, password, confirm)
-                }),
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_confirm")
-            )
-
-            if (authError.isNotEmpty()) {
+        when (setupMode) {
+            0 -> {
                 Text(
-                    text = authError,
-                    color = MaterialTheme.colorScheme.error,
+                    text = "Create your single Admin account and optional 2-Way Verification Code. Technicians & Super Admins should use 'Direct Login (Invite)'.",
                     style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it; onClearError() },
+                    label = { Text("Admin Username (min 3 chars)") },
+                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_username")
+                )
+
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it; onClearError() },
+                    label = { Text("Admin Password (min 6 chars)") },
+                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                    trailingIcon = {
+                        IconButton(onClick = { showPass = !showPass }) {
+                            Icon(if (showPass) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = "Toggle password")
+                        }
+                    },
+                    visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_password")
+                )
+
+                OutlinedTextField(
+                    value = confirm,
+                    onValueChange = { confirm = it; onClearError() },
+                    label = { Text("Confirm Admin Password") },
+                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                    visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_confirm")
+                )
+
+                OutlinedTextField(
+                    value = adminVerifyCode,
+                    onValueChange = { adminVerifyCode = it; onClearError() },
+                    label = { Text("2-Way Verification Code (Optional, min 4 chars)") },
+                    leadingIcon = { Icon(Icons.Default.VerifiedUser, contentDescription = null) },
+                    visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = {
+                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                        onSetupAdmin(username, password, confirm, adminVerifyCode)
+                    }),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_verify_code")
+                )
+
+                if (authError.isNotEmpty()) {
+                    Text(
+                        text = authError,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                        onSetupAdmin(username, password, confirm, adminVerifyCode)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("create_admin_button")
+                ) {
+                    Text("Create Admin Account", fontWeight = FontWeight.Bold, color = Color.White)
+                }
             }
 
-            Button(
-                onClick = {
-                    clearFocusAndHideToolbar(focusManager, textToolbar)
-                    onSetupAdmin(username, password, confirm)
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(50.dp)
-                    .testTag("create_admin_button")
-            ) {
-                Text("Create Admin Account", fontWeight = FontWeight.Bold)
-            }
-        } else {
-            Surface(
-                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+            1 -> {
+                Surface(
+                    color = Color(0xFFF0F9FF),
+                    border = BorderStroke(1.dp, TealAccent),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "Technician / Super Admin Direct Login",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = NavyPrimary
+                        )
+                        Text(
+                            text = "Sign in with Google, enter the Workspace Invite Code shared by Admin on WhatsApp, and open Login directly (no Admin setup needed).",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF1E293B)
+                        )
+                    }
+                }
+
+                if (cloudUser != null) {
+                    Surface(
+                        color = GreenPaidBg,
+                        border = BorderStroke(1.dp, GreenPaid),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = GreenPaid)
+                            Text(
+                                text = "Google Connected: ${cloudUser.email}",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = GreenPaid
+                            )
+                        }
+                    }
+                } else {
+                    Button(
+                        onClick = {
+                            clearFocusAndHideToolbar(focusManager, textToolbar)
+                            onSignInGoogle()
+                        },
+                        enabled = !cloudBusy,
+                        colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .testTag("cloud_google_signin_button")
+                    ) {
+                        Icon(Icons.Default.Cloud, contentDescription = null, tint = Color.White)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Sign in with Google", fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                }
+
+                OutlinedTextField(
+                    value = inviteCode,
+                    onValueChange = { inviteCode = it; onClearError() },
+                    label = { Text("Admin Invite Code (e.g. TECH-... or SUPER-...)") },
+                    leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = {
+                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                        onJoinInviteCode(inviteCode)
+                    }),
+                    modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("cloud_invite_code_input")
+                )
+
+                if (authError.isNotEmpty()) {
                     Text(
-                        text = "Sign In with Existing Backup",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = NavyPrimary
+                        text = authError,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
                     )
+                }
+
+                Button(
+                    onClick = {
+                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                        onJoinInviteCode(inviteCode)
+                    },
+                    enabled = !cloudBusy,
+                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("cloud_join_button")
+                ) {
+                    if (cloudBusy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
                     Text(
-                        text = "Select your previously exported TSE-Billing-Backup.json file. Your Admin account, Technicians, Customers, Products, Settings, and Bills will immediately load onto the Login screen.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = if (cloudBusy) "Connecting Workspace..." else "Connect & Open Direct Login",
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
                     )
                 }
             }
 
-            OutlinedButton(
-                onClick = { launchSafeBackupPicker() },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp)
-                    .testTag("setup_import_backup_button")
-            ) {
-                Icon(Icons.Default.CloudUpload, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text("Sign In & Restore Backup (.json)", fontWeight = FontWeight.Bold)
-            }
+            else -> {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Sign In with Existing Backup",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = NavyPrimary
+                        )
+                        Text(
+                            text = "Select your previously exported TSE-Billing-Backup.json file. Your Admin account, Technicians, Customers, Products, Settings, and Bills will immediately load onto the Login screen.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
 
-            TextButton(
-                onClick = {
-                    clearFocusAndHideToolbar(focusManager, textToolbar)
-                    showPasteBackupDialog = true
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("setup_paste_backup_button")
-            ) {
-                Text("Or Paste Backup JSON Manually")
-            }
+                OutlinedButton(
+                    onClick = { launchSafeBackupPicker() },
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .testTag("setup_import_backup_button")
+                ) {
+                    Icon(Icons.Default.CloudUpload, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Sign In & Restore Backup (.json)", fontWeight = FontWeight.Bold, color = NavyPrimary)
+                }
 
-            if (authError.isNotEmpty()) {
-                Text(
-                    text = authError,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold
-                )
+                TextButton(
+                    onClick = {
+                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                        showPasteBackupDialog = true
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("setup_paste_backup_button")
+                ) {
+                    Text("Or Paste Backup JSON Manually", color = TealAccent, fontWeight = FontWeight.Bold)
+                }
+
+                if (authError.isNotEmpty()) {
+                    Text(
+                        text = authError,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
     }
@@ -584,8 +766,13 @@ private fun TechnicianAdminLoginForm(
     accounts: List<UserAccountEntity>,
     authError: String,
     loginSecurityState: LoginSecurityState,
+    cloudUser: CloudAuthUser?,
+    cloudBusy: Boolean,
+    hasAdminVerifyCode: Boolean,
     onClearError: () -> Unit,
-    onLogin: (String, String, Boolean) -> Unit,
+    onLogin: (String, String, Boolean, String) -> Unit,
+    onSignInGoogle: () -> Unit,
+    onJoinInviteCode: (String) -> Unit,
     onResetAdminPassword: (
         recoveryPassword: String,
         targetAdminUsername: String?,
@@ -607,9 +794,12 @@ private fun TechnicianAdminLoginForm(
     }
     var dropdownExpanded by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf("") }
+    var adminVerifyCode by remember { mutableStateOf("") }
     var showPass by remember { mutableStateOf(false) }
     var showForgotDialog by remember { mutableStateOf(false) }
     var recoverySuccessMsg by remember { mutableStateOf("") }
+    var showSwitchInvite by remember { mutableStateOf(false) }
+    var inviteCodeInput by remember { mutableStateOf("") }
 
     // Anti-Robot human challenge state
     var challengeSeed by remember { mutableIntStateOf(0) }
@@ -645,6 +835,7 @@ private fun TechnicianAdminLoginForm(
     val textToolbar = LocalTextToolbar.current
 
     val selectedAccount = distinctAccounts.firstOrNull { it.username == selectedUsername }
+    val needsAdmin2Way = selectedAccount?.role.equals("admin", ignoreCase = true) && hasAdminVerifyCode
 
     fun roleTitle(role: String): String = when {
         role.equals("admin", ignoreCase = true) -> "Admin"
@@ -662,19 +853,80 @@ private fun TechnicianAdminLoginForm(
 
     fun submitLogin() {
         clearFocusAndHideToolbar(focusManager, textToolbar)
-        onLogin(selectedUsername, password, antiRobotPassed)
+        onLogin(selectedUsername, password, antiRobotPassed, adminVerifyCode)
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(Icons.Default.Login, contentDescription = null, tint = TealAccent)
-            Text("Account Login", style = MaterialTheme.typography.titleLarge, color = NavyPrimary)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Login, contentDescription = null, tint = TealAccent)
+                Text("Account Login", style = MaterialTheme.typography.titleLarge, color = NavyPrimary)
+            }
+            TextButton(onClick = { showSwitchInvite = !showSwitchInvite }) {
+                Text(
+                    text = if (cloudUser != null) "Cloud Synced" else "Google Sync",
+                    color = if (cloudUser != null) GreenPaid else TealAccent,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
         Text(
             text = "Welcome to Total Solution Bill system. Select username, solve Anti-Robot check, and enter password.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+
+        if (showSwitchInvite) {
+            Surface(
+                color = Color(0xFFF0F9FF),
+                border = BorderStroke(1.dp, TealAccent),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (cloudUser == null) {
+                        Button(
+                            onClick = onSignInGoogle,
+                            enabled = !cloudBusy,
+                            colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                            modifier = Modifier.fillMaxWidth().testTag("cloud_google_signin_button")
+                        ) {
+                            Icon(Icons.Default.Cloud, contentDescription = null, tint = Color.White)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Sign in with Google", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Text(
+                            text = "Connected: ${cloudUser.email}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = GreenPaid,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = inviteCodeInput,
+                            onValueChange = { inviteCodeInput = it },
+                            label = { Text("Invite Code") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).testTag("cloud_invite_code_input")
+                        )
+                        Button(
+                            onClick = { onJoinInviteCode(inviteCodeInput) },
+                            enabled = !cloudBusy,
+                            colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
+                            modifier = Modifier.height(50.dp).testTag("cloud_join_button")
+                        ) {
+                            Text("Sync", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
 
         if (isLocked) {
             Surface(
@@ -738,6 +990,7 @@ private fun TechnicianAdminLoginForm(
                     dropdownExpanded = true
                 },
                 enabled = !isLocked,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp)
@@ -761,7 +1014,7 @@ private fun TechnicianAdminLoginForm(
                                 contentScale = ContentScale.Crop
                             )
                         } else {
-                            Icon(Icons.Default.Person, contentDescription = null)
+                            Icon(Icons.Default.Person, contentDescription = null, tint = NavyPrimary)
                         }
                         Text(
                             text = if (selectedAccount != null) {
@@ -769,10 +1022,11 @@ private fun TechnicianAdminLoginForm(
                             } else {
                                 "Select Username"
                             },
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            color = NavyPrimary
                         )
                     }
-                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Open account list")
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Open account list", tint = NavyPrimary)
                 }
             }
 
@@ -833,6 +1087,20 @@ private fun TechnicianAdminLoginForm(
             singleLine = true,
             modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("login_password_input")
         )
+
+        if (needsAdmin2Way) {
+            OutlinedTextField(
+                value = adminVerifyCode,
+                onValueChange = { adminVerifyCode = it; onClearError() },
+                label = { Text("Admin 2-Way Verification Code") },
+                enabled = !isLocked,
+                leadingIcon = { Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = TealAccent) },
+                visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("login_admin_verify_code")
+            )
+        }
 
         // Anti-Robot Human Security Check
         Surface(
@@ -963,7 +1231,7 @@ private fun TechnicianAdminLoginForm(
         Button(
             onClick = { submitLogin() },
             enabled = !isLocked,
-            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(50.dp)
@@ -971,7 +1239,8 @@ private fun TechnicianAdminLoginForm(
         ) {
             Text(
                 text = if (isLocked) "Locked (${formatCountdown(remainingLockMs)})" else "Login",
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = Color.White
             )
         }
 
@@ -986,9 +1255,9 @@ private fun TechnicianAdminLoginForm(
                 .fillMaxWidth()
                 .testTag("forgot_password_button")
         ) {
-            Icon(Icons.Default.LockReset, contentDescription = null, modifier = Modifier.size(18.dp))
+            Icon(Icons.Default.LockReset, contentDescription = null, modifier = Modifier.size(18.dp), tint = TealAccent)
             Spacer(Modifier.width(6.dp))
-            Text("Forgot Admin Password?", fontWeight = FontWeight.SemiBold)
+            Text("Forgot Admin Password?", fontWeight = FontWeight.SemiBold, color = NavyPrimary)
         }
     }
 
@@ -1000,6 +1269,7 @@ private fun TechnicianAdminLoginForm(
                 onResetAdminPassword(recoveryPass, targetUsername, newPass, confirmPass) { ok, msg ->
                     if (ok) {
                         password = ""
+                        adminVerifyCode = ""
                         antiRobotInput = ""
                         challengeSeed++
                         recoverySuccessMsg = msg

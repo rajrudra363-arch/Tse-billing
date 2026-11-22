@@ -42,7 +42,7 @@ interface CustomerDao {
     suspend fun findByName(name: String): CustomerEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(customer: CustomerEntity)
+    suspend fun upsert(customer: CustomerEntity): Long
 
     @Query("DELETE FROM customers WHERE id = :id")
     suspend fun deleteById(id: Long)

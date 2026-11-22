@@ -1,5 +1,6 @@
 package com.example.data
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
 import androidx.credentials.ClearCredentialStateRequest
@@ -8,7 +9,6 @@ import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.NoCredentialException
-import com.example.R
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -30,6 +30,22 @@ data class CloudAuthUser(
 
 object GoogleAuthHelper {
     private const val TAG = "GoogleAuthHelper"
+    private const val FALLBACK_WEB_CLIENT_ID =
+        "760882645284-ha4304oiq1ql4fobu04lmben27c32lgk.apps.googleusercontent.com"
+
+    @SuppressLint("DiscouragedApi")
+    private fun resolveWebClientId(context: Context): String {
+        val resId = context.resources.getIdentifier(
+            "default_web_client_id",
+            "string",
+            context.packageName
+        )
+        if (resId != 0) {
+            val resolved = runCatching { context.getString(resId) }.getOrDefault("").trim()
+            if (resolved.isNotEmpty()) return resolved
+        }
+        return FALLBACK_WEB_CLIENT_ID
+    }
 
     fun currentUser(context: Context): CloudAuthUser? {
         return runCatching {
@@ -61,7 +77,7 @@ object GoogleAuthHelper {
                     )
                 )
             }
-            val webClientId = context.getString(R.string.default_web_client_id)
+            val webClientId = resolveWebClientId(context)
             val option = GetGoogleIdOption.Builder()
                 .setServerClientId(webClientId)
                 .setFilterByAuthorizedAccounts(true)
@@ -90,7 +106,7 @@ object GoogleAuthHelper {
                 FirebaseApp.initializeApp(activityContext)
             }
             val auth = FirebaseAuth.getInstance()
-            val webClientId = activityContext.getString(R.string.default_web_client_id)
+            val webClientId = resolveWebClientId(activityContext)
             val signInOption = GetSignInWithGoogleOption.Builder(webClientId)
                 .build()
             val req = GetCredentialRequest.Builder()

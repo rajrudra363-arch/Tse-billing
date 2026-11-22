@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
 import com.example.data.AppLanguage
+import com.example.data.AuthPolicy
 import com.example.data.BillEntity
 import com.example.data.BillingRepository
 import com.example.data.BillingTimePolicy
@@ -273,6 +274,16 @@ class BillingViewModel(
 
     val loginSecurityState: StateFlow<LoginSecurityState> = repository.loginSecurityState
         .stateIn(viewModelScope, SharingStarted.Eagerly, LoginSecurityState())
+
+    val adminLoginSecurityState: StateFlow<LoginSecurityState> = repository.adminLoginSecurityState
+        .stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            LoginSecurityState(
+                maxAttempts = LoginSecurityState.ADMIN_MAX_ATTEMPTS,
+                lockDurationMs = LoginSecurityState.ADMIN_LOCK_DURATION_MS
+            )
+        )
 
     val visibleBills: StateFlow<List<BillEntity>> = combine(bills, session) { all, user ->
         when {
@@ -747,15 +758,11 @@ class BillingViewModel(
         confirmPassword: String,
         adminVerifyCode: String = ""
     ) {
-        val cleanUser = username.trim()
+        val cleanUser = AuthPolicy.CANONICAL_ADMIN_USERNAME
         val cleanCode = adminVerifyCode.trim()
-        if (cleanUser.length < 3) {
-            _authError.value = "Admin username must be at least 3 characters."
-            soundEngine.play(SoundCue.ERROR)
-            return
-        }
-        if (password.length < 6) {
-            _authError.value = "Admin password must be at least 6 characters."
+        val missingReq = AuthPolicy.evaluatePassword(password).firstMissingRequirement()
+        if (missingReq != null) {
+            _authError.value = missingReq
             soundEngine.play(SoundCue.ERROR)
             return
         }
@@ -776,7 +783,7 @@ class BillingViewModel(
             }
             _authError.value = ""
             soundEngine.play(SoundCue.SAVE)
-            emitToast("Admin account created. Please log in.")
+            emitToast("Admin ($cleanUser) account created. Please log in.")
         }
     }
 
@@ -785,25 +792,72 @@ class BillingViewModel(
         newVerifyCode: String,
         onSuccess: () -> Unit = {}
     ) {
+        updateAdminCredentials(
+            currentAdminPassword = currentAdminPassword,
+            newPassword = "",
+            confirmNewPassword = "",
+            newVerifyCode = newVerifyCode,
+            onSuccess = onSuccess
+        )
+    }
+
+    fun updateAdminCredentials(
+        currentAdminPassword: String,
+        newPassword: String,
+        confirmNewPassword: String,
+        newVerifyCode: String,
+        onSuccess: () -> Unit = {}
+    ) {
         val admin = _session.value ?: return
         if (!admin.isAdmin) return
-        val cleanCode = newVerifyCode.trim()
-        if (cleanCode.length < 4) {
+        if (currentAdminPassword.isBlank()) {
+            emitToast("Enter your current Admin password", isError = true)
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
+        if (newPassword.isEmpty() && newVerifyCode.trim().isEmpty()) {
+            emitToast("Enter a new password and/or new 2-Way Verification Code", isError = true)
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
+        if (newPassword.isNotEmpty()) {
+            val missing = AuthPolicy.evaluatePassword(newPassword).firstMissingRequirement()
+            if (missing != null) {
+                emitToast(missing, isError = true)
+                soundEngine.play(SoundCue.ERROR)
+                return
+            }
+            if (newPassword != confirmNewPassword) {
+                emitToast("New passwords do not match", isError = true)
+                soundEngine.play(SoundCue.ERROR)
+                return
+            }
+        }
+        if (newVerifyCode.trim().isNotEmpty() && newVerifyCode.trim().length < 4) {
             emitToast("Verification code must be at least 4 characters", isError = true)
             soundEngine.play(SoundCue.ERROR)
             return
         }
         viewModelScope.launch {
-            val verified = repository.authenticate(admin.username, currentAdminPassword)
-            if (verified == null) {
+            val res = repository.updateAdminCredentials(
+                currentPassword = currentAdminPassword,
+                newPassword = newPassword,
+                newVerifyCode = newVerifyCode
+            )
+            if (res.isSuccess) {
+                soundEngine.play(SoundCue.SAVE)
+                val msg = when {
+                    newPassword.isNotEmpty() && newVerifyCode.trim().isNotEmpty() ->
+                        "Admin password & 2-Way Verification Code updated!"
+                    newPassword.isNotEmpty() -> "Admin password updated!"
+                    else -> "Admin 2-Way Verification Code updated!"
+                }
+                emitToast(msg)
+                onSuccess()
+            } else {
                 soundEngine.play(SoundCue.ERROR)
-                emitToast("Incorrect current Admin password", isError = true)
-                return@launch
+                emitToast(res.exceptionOrNull()?.message ?: "Could not update Admin credentials", isError = true)
             }
-            repository.updateFinalCode(cleanCode)
-            soundEngine.play(SoundCue.SAVE)
-            emitToast("Admin 2-Way Verification Code updated!")
-            onSuccess()
         }
     }
 
@@ -814,20 +868,30 @@ class BillingViewModel(
         nowMillis: Long = System.currentTimeMillis(),
         adminVerifyCode: String = ""
     ) {
-        val cachedSecurity = loginSecurityState.value
-        if (cachedSecurity.isLocked(nowMillis)) {
-            val remText = formatLockRemaining(cachedSecurity.remainingLockMillis(nowMillis))
-            _authError.value = "Too many wrong password attempts (5/5). Login locked for $remText."
-            soundEngine.play(SoundCue.ERROR)
-            return
-        }
-        if (username.isBlank()) {
+        val cleanUsername = username.trim()
+        if (cleanUsername.isBlank()) {
             _authError.value = "Please select a username."
             soundEngine.play(SoundCue.ERROR)
             return
         }
+        val matchedAcc = accounts.value.firstOrNull { it.username.equals(cleanUsername, ignoreCase = true) }
+        val isAdminTarget = matchedAcc?.let { BillingRepository.normalizeRole(it.role) == "admin" }
+            ?: (cleanUsername.equals(AuthPolicy.CANONICAL_ADMIN_USERNAME, ignoreCase = true) ||
+                cleanUsername.equals("TotalSolutionEnterprises", ignoreCase = true))
+
+        val cachedSecurity = if (isAdminTarget) adminLoginSecurityState.value else loginSecurityState.value
+        if (cachedSecurity.isLocked(nowMillis)) {
+            val remText = formatLockRemaining(cachedSecurity.remainingLockMillis(nowMillis))
+            _authError.value = if (isAdminTarget) {
+                "Admin password locked on this phone for 15 min (3/3 wrong attempts). Try again in $remText (other phones still have 3 tries)."
+            } else {
+                "Too many wrong password attempts (5/5). Login locked for $remText."
+            }
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
         if (!antiRobotPassed) {
-            _authError.value = "Please complete the Anti-Robot verification check first."
+            _authError.value = "Please complete the Anti-Robot CAPTCHA verification first."
             soundEngine.play(SoundCue.ERROR)
             return
         }
@@ -837,21 +901,39 @@ class BillingViewModel(
             return
         }
         viewModelScope.launch {
-            val latestSecurity = repository.getLoginSecurityState()
+            val latestSecurity = if (isAdminTarget) {
+                repository.getAdminLoginSecurityState()
+            } else {
+                repository.getLoginSecurityState()
+            }
             if (latestSecurity.isLocked(nowMillis)) {
                 val remText = formatLockRemaining(latestSecurity.remainingLockMillis(nowMillis))
-                _authError.value = "Too many wrong password attempts (5/5). Login locked for $remText."
+                _authError.value = if (isAdminTarget) {
+                    "Admin password locked on this phone for 15 min (3/3 wrong attempts). Try again in $remText (other phones still have 3 tries)."
+                } else {
+                    "Too many wrong password attempts (5/5). Login locked for $remText."
+                }
                 soundEngine.play(SoundCue.ERROR)
                 return@launch
             }
-            val user = repository.authenticate(username, password)
+            val user = repository.authenticate(cleanUsername, password)
             if (user == null) {
-                val updated = repository.recordLoginFailure(nowMillis)
-                if (updated.isLocked(nowMillis)) {
-                    _authError.value = "Wrong password entered 5 times. Login locked for 2 hours (02:00:00)."
+                if (isAdminTarget) {
+                    val updated = repository.recordAdminLoginFailure(nowMillis)
+                    if (updated.isLocked(nowMillis)) {
+                        _authError.value = "Wrong Admin password entered 3 times. Locked for 15 minutes (00:15:00) on this phone only."
+                    } else {
+                        val rem = updated.remainingAttempts(nowMillis)
+                        _authError.value = "Incorrect Admin password (${updated.failedAttempts}/${LoginSecurityState.ADMIN_MAX_ATTEMPTS}). $rem try(s) left before 15-min phone lock."
+                    }
                 } else {
-                    val rem = updated.remainingAttempts(nowMillis)
-                    _authError.value = "Incorrect password (${updated.failedAttempts}/${LoginSecurityState.MAX_ATTEMPTS}). $rem attempt(s) remaining before 2-hour lock."
+                    val updated = repository.recordLoginFailure(nowMillis)
+                    if (updated.isLocked(nowMillis)) {
+                        _authError.value = "Wrong password entered 5 times. Login locked for 2 hours (02:00:00)."
+                    } else {
+                        val rem = updated.remainingAttempts(nowMillis)
+                        _authError.value = "Incorrect password (${updated.failedAttempts}/${LoginSecurityState.MAX_ATTEMPTS}). $rem attempt(s) remaining before 2-hour lock."
+                    }
                 }
                 soundEngine.play(SoundCue.ERROR)
                 return@launch
@@ -863,18 +945,22 @@ class BillingViewModel(
                     return@launch
                 }
                 if (!repository.verifyFinalCode(adminVerifyCode)) {
-                    val updated = repository.recordLoginFailure(nowMillis)
+                    val updated = repository.recordAdminLoginFailure(nowMillis)
                     val rem = updated.remainingAttempts(nowMillis)
                     _authError.value = if (updated.isLocked(nowMillis)) {
-                        "Wrong verification attempts (5/5). Login locked for 2 hours (02:00:00)."
+                        "Wrong Admin verification attempts (3/3). Locked for 15 minutes (00:15:00) on this phone only."
                     } else {
-                        "Incorrect Admin 2-Way Verification Code (${updated.failedAttempts}/${LoginSecurityState.MAX_ATTEMPTS}). $rem attempt(s) left."
+                        "Incorrect Admin 2-Way Verification Code (${updated.failedAttempts}/${LoginSecurityState.ADMIN_MAX_ATTEMPTS}). $rem try(s) left."
                     }
                     soundEngine.play(SoundCue.ERROR)
                     return@launch
                 }
             }
-            repository.resetLoginSecurityState()
+            if (isAdminTarget || user.isAdmin) {
+                repository.resetAdminLoginSecurityState()
+            } else {
+                repository.resetLoginSecurityState()
+            }
             _authError.value = ""
             _session.value = user
             _activeTab.value = if (user.isSuperAdmin) MainTab.ANALYTICS else MainTab.BILL
@@ -916,9 +1002,10 @@ class BillingViewModel(
             onResult(false, "Please enter Default Recovery Password.")
             return
         }
-        if (newPassword.length < 6) {
+        val missing = AuthPolicy.evaluatePassword(newPassword).firstMissingRequirement()
+        if (missing != null) {
             soundEngine.play(SoundCue.ERROR)
-            onResult(false, "New password must be at least 6 characters.")
+            onResult(false, missing)
             return
         }
         if (newPassword != confirmPassword) {
@@ -933,9 +1020,9 @@ class BillingViewModel(
                 newPassword = newPassword
             )
             if (res.isSuccess) {
-                val adminName = res.getOrNull() ?: "Admin"
+                val adminName = res.getOrNull() ?: AuthPolicy.CANONICAL_ADMIN_USERNAME
                 soundEngine.play(SoundCue.SAVE)
-                val msg = "Admin (@$adminName) password has been reset. Please log in."
+                val msg = "Admin (${AuthPolicy.formatHandle(adminName)}) password has been reset. Please log in."
                 emitToast(msg)
                 onResult(true, msg)
             } else {

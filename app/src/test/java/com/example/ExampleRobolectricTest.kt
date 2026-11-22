@@ -21,6 +21,7 @@ import androidx.compose.ui.test.performTextInput
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.AppDatabase
+import com.example.data.AuthPolicy
 import com.example.data.BillEntity
 import com.example.data.BillingRepository
 import com.example.data.BillingTimePolicy
@@ -129,25 +130,26 @@ class ExampleRobolectricTest {
         repo.seedDefaultsIfNeeded()
         assertEquals(false, repo.isAdminConfigured.first())
 
-        repo.setupAdmin("admin_main", "Pass1234")
+        repo.setupAdmin("admin_main", "Pass@1234")
         assertEquals(true, repo.isAdminConfigured.first())
 
-        // Calling setupAdmin again replaces any previous Admin so strictly ONE Admin exists
-        repo.setupAdmin("admin_only", "Pass5678")
+        // Calling setupAdmin again replaces any previous Admin so strictly ONE canonical Admin exists
+        repo.setupAdmin("admin_only", "Pass@5678")
         val admins = repo.accounts.first().filter { it.role.equals("admin", ignoreCase = true) }
         assertEquals(1, admins.size)
-        assertEquals("admin_only", admins.first().username)
+        assertEquals(AuthPolicy.CANONICAL_ADMIN_USERNAME, admins.first().username)
+        assertNotNull(repo.authenticate(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@5678"))
 
-        val techRes = repo.addTechnician("Rahul Verma", "9876543210", "rahul_tech", "TechPass123", photoBase64 = "tech_photo_b64_sample")
+        val techRes = repo.addTechnician("Rahul Verma", "9876543210", "rahul_tech", "TechPass@123", photoBase64 = "tech_photo_b64_sample")
         assertTrue(techRes.isSuccess)
-        val techSession = repo.authenticate("rahul_tech", "TechPass123")
+        val techSession = repo.authenticate("rahul_tech", "TechPass@123")
         assertNotNull(techSession)
         assertTrue(techSession!!.isTechnician)
         assertEquals("Technician", techSession.roleDisplayLabel)
 
-        val superRes = repo.addSuperAdmin("Auditor", "9988776655", "super1", "SuperPass123")
+        val superRes = repo.addSuperAdmin("Auditor", "9988776655", "super1", "SuperPass@123")
         assertTrue(superRes.isSuccess)
-        val superSession = repo.authenticate("super1", "SuperPass123")
+        val superSession = repo.authenticate("super1", "SuperPass@123")
         assertNotNull(superSession)
         assertTrue(superSession!!.isSuperAdmin)
         assertEquals("Super Admin", superSession.roleDisplayLabel)
@@ -180,8 +182,8 @@ class ExampleRobolectricTest {
             newPassword = ""
         )
         assertTrue(updRes.isSuccess)
-        assertNull(repo.authenticate("rahul_tech", "TechPass123"))
-        assertNotNull(repo.authenticate("rahul_pro", "TechPass123"))
+        assertNull(repo.authenticate("rahul_tech", "TechPass@123"))
+        assertNotNull(repo.authenticate("rahul_pro", "TechPass@123"))
         assertEquals("rahul_pro", repo.getBillById("b_tech_rename")!!.createdBy)
     }
 
@@ -270,9 +272,9 @@ class ExampleRobolectricTest {
 
     @Test
     fun helpDesk_accept15MinCooldown_solve_andDispatchCardBitmap() = runTest {
-        repo.setupAdmin("admin1", "Pass1234")
-        repo.addTechnician("Vikram Dessai", "9822098220", "vikram_tech", "Pass1234", photoBase64 = "tech_photo_b64_sample")
-        val techSession = repo.authenticate("vikram_tech", "Pass1234")!!
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234")
+        repo.addTechnician("Vikram Dessai", "9822098220", "vikram_tech", "Pass@1234", photoBase64 = "tech_photo_b64_sample")
+        val techSession = repo.authenticate("vikram_tech", "Pass@1234")!!
 
         val saved = repo.saveHelpRequest(
             customerName = "Deepak Naik",
@@ -357,8 +359,8 @@ class ExampleRobolectricTest {
 
     @Test
     fun technicianCashSettlement_reducesAdminDueBalance() = kotlinx.coroutines.runBlocking {
-        repo.setupAdmin("admin1", "Pass1234")
-        repo.addTechnician("Rahul Verma", "9876543210", "rahul_tech", "Pass1234", photoBase64 = "tech_photo_b64_sample")
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234")
+        repo.addTechnician("Rahul Verma", "9876543210", "rahul_tech", "Pass@1234", photoBase64 = "tech_photo_b64_sample")
         val bill = BillEntity(
             id = "b_cash_1",
             invoiceNo = "TSE-88",
@@ -405,12 +407,12 @@ class ExampleRobolectricTest {
 
     @Test
     fun mandatoryDeviceAuthSetting_blocksGenerationUntilEnabled() = kotlinx.coroutines.runBlocking {
-        repo.setupAdmin("admin1", "Pass1234")
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234")
         val context = ApplicationProvider.getApplicationContext<Context>()
         val soundEngine = SoundEngine(context)
         val vm = createTestVm(soundEngine)
 
-        vm.login("admin1", "Pass1234")
+        vm.login(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234")
         val deadline = System.currentTimeMillis() + 5000L
         while (vm.session.value == null && System.currentTimeMillis() < deadline) {
             org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
@@ -724,8 +726,8 @@ class ExampleRobolectricTest {
         }
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToNode(hasTestTag("new_tech_photo_status"))
-        composeTestRule.onNodeWithTag("new_tech_photo_status").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("new_tech_pick_photo_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("new_tech_photo_status").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("new_tech_pick_photo_button").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToNode(hasTestTag("technician_folders_card"))
         composeTestRule.onNodeWithTag("technician_folders_card").assertIsDisplayed()
         composeTestRule.onNodeWithTag("tech_folder_rahul_tech").performScrollTo().performClick()
@@ -825,7 +827,7 @@ class ExampleRobolectricTest {
 
     @Test
     fun starRating_isImmutable_andForgotPasswordUsesManoj2007() = runTest {
-        repo.setupAdmin("admin1", "oldPass123")
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "OldPass@123")
         val ratedBill = BillEntity(
             id = "b_locked_1",
             invoiceNo = "TSE-501",
@@ -860,22 +862,27 @@ class ExampleRobolectricTest {
         assertEquals("Excellent work", afterSettlement.staffReviewNote)
         assertFalse(repo.deleteBill("b_locked_1"))
 
-        val wrongRecovery = repo.resetAdminPasswordWithRecovery("Wrong", "admin1", "newPass456")
+        val wrongRecovery = repo.resetAdminPasswordWithRecovery("Wrong", AuthPolicy.CANONICAL_ADMIN_USERNAME, "NewPass@456")
         assertTrue(wrongRecovery.isFailure)
         val okRecovery = repo.resetAdminPasswordWithRecovery(
             BillingRepository.DEFAULT_ADMIN_RECOVERY_PASSWORD,
-            "admin1",
-            "newPass456"
+            AuthPolicy.CANONICAL_ADMIN_USERNAME,
+            "NewPass@456"
         )
         assertTrue(okRecovery.isSuccess)
-        assertNotNull(repo.authenticate("admin1", "newPass456"))
+        assertNotNull(repo.authenticate(AuthPolicy.CANONICAL_ADMIN_USERNAME, "NewPass@456"))
     }
 
     @Test
     fun authScreen_showsBackupSignInTab_singleAdminDropdown_andForgotPasswordDialog() {
         var isConfigured by mutableStateOf<Boolean?>(false)
         val accounts = listOf(
-            UserAccountEntity(username = "admin1", displayName = "Admin", role = "admin", passwordHash = "hash1"),
+            UserAccountEntity(
+                username = AuthPolicy.CANONICAL_ADMIN_USERNAME,
+                displayName = "Admin",
+                role = "admin",
+                passwordHash = "hash1"
+            ),
             UserAccountEntity(username = "admin_dup", displayName = "Admin", role = "admin", passwordHash = "hash2"),
             UserAccountEntity(username = "rahul_tech", displayName = "Rahul Verma", role = "technician", passwordHash = "hash3")
         )
@@ -894,7 +901,12 @@ class ExampleRobolectricTest {
             }
         }
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("setup_tab_restore").performClick()
+        // Setup locks Admin ID to @TotalSolutionEnterprises and disables button until Gmail-grade password entered
+        composeTestRule.onNodeWithTag("setup_admin_username").assertTextContains(AuthPolicy.CANONICAL_ADMIN_USERNAME, substring = true)
+        composeTestRule.onNodeWithTag("password_strength_checklist").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("create_admin_button").performScrollTo().assertIsNotEnabled()
+
+        composeTestRule.onNodeWithTag("setup_tab_restore").performScrollTo().performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("setup_import_backup_button").assertIsDisplayed()
         composeTestRule.onNodeWithTag("setup_import_backup_button").performClick()
@@ -912,16 +924,16 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("anti_robot_answer_input").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("login_username_dropdown").performScrollTo().performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("login_user_option_admin1").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("login_user_option_${AuthPolicy.CANONICAL_ADMIN_USERNAME}").assertIsDisplayed()
         composeTestRule.onNodeWithTag("login_user_option_admin_dup").assertDoesNotExist()
         composeTestRule.onNodeWithTag("login_user_option_rahul_tech").assertIsDisplayed()
     }
 
     @Test
     fun fullBackupExportAndImport_restoresBillsTechniciansSettlementsVoiceAndLogo() = runTest {
-        repo.setupAdmin("admin_tse", "AdminPass99")
-        repo.addTechnician("Rahul Verma", "9876543210", "rahul_tech", "TechPass99", photoBase64 = "tech_photo_b64_sample")
-        repo.addSuperAdmin("Viewer", "9988776655", "super_view", "SuperPass99")
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "AdminPass@99")
+        repo.addTechnician("Rahul Verma", "9876543210", "rahul_tech", "TechPass@99", photoBase64 = "tech_photo_b64_sample")
+        repo.addSuperAdmin("Viewer", "9988776655", "super_view", "SuperPass@99")
         repo.saveCompanySettings(CompanySettings(companyName = "TOTAL SOLUTION ENTERPRISES PRO"))
         repo.saveCompanyLogoBase64("logo_b64_sample")
         repo.saveVoiceAndNoteSettings(
@@ -950,7 +962,7 @@ class ExampleRobolectricTest {
                 staffRating = 5
             )
         )
-        repo.recordTechnicianSettlement("rahul_tech", 1200.0, "Cleared", "admin_tse")
+        repo.recordTechnicianSettlement("rahul_tech", 1200.0, "Cleared", AuthPolicy.CANONICAL_ADMIN_USERNAME)
 
         val jsonBackup = repo.exportBackupJson()
 
@@ -965,11 +977,11 @@ class ExampleRobolectricTest {
             val summary = importResult.getOrNull()!!
             assertEquals(1, summary.billsCount)
             assertEquals(1, summary.settlementsCount)
-            assertNotNull(freshRepo.authenticate("admin_tse", "AdminPass99"))
-            val restoredTech = freshRepo.authenticate("rahul_tech", "TechPass99")
+            assertNotNull(freshRepo.authenticate(AuthPolicy.CANONICAL_ADMIN_USERNAME, "AdminPass@99"))
+            val restoredTech = freshRepo.authenticate("rahul_tech", "TechPass@99")
             assertNotNull(restoredTech)
             assertEquals("tech_photo_b64_sample", restoredTech!!.photoBase64)
-            assertNotNull(freshRepo.authenticate("super_view", "SuperPass99"))
+            assertNotNull(freshRepo.authenticate("super_view", "SuperPass@99"))
             assertEquals("logo_b64_sample", freshRepo.companySettings.first().logoBase64)
             assertEquals("Important Notice Today", freshRepo.voiceAndNoteSettings.first().headerNote)
         } finally {
@@ -978,8 +990,9 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun loginSecurity_antiRobotCheck_5WrongAttempts2HourLock_then5MoreTriesAfter2Hours() = kotlinx.coroutines.runBlocking {
-        repo.setupAdmin("admin1", "Pass1234")
+    fun loginSecurity_admin3Tries15MinDeviceLock_andStaff5Tries2HourLock() = kotlinx.coroutines.runBlocking {
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234")
+        repo.addTechnician("Tech One", "9876500001", "tech1", "TechPass@123", photoBase64 = "abc")
         val context = ApplicationProvider.getApplicationContext<Context>()
         val soundEngine = SoundEngine(context)
         val vm = createTestVm(soundEngine)
@@ -996,74 +1009,73 @@ class ExampleRobolectricTest {
 
         val t0 = 1_700_000_000_000L
 
-        // Anti-Robot failed -> blocks login without counting as password failure
-        vm.login("admin1", "Pass1234", antiRobotPassed = false, nowMillis = t0)
-        awaitUntil { vm.authError.value.contains("Anti-Robot") }
+        // 1. CAPTCHA failed -> blocks login without counting as password failure
+        vm.login(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234", antiRobotPassed = false, nowMillis = t0)
+        awaitUntil { vm.authError.value.contains("CAPTCHA", ignoreCase = true) }
         assertNull(vm.session.value)
-        assertTrue(vm.authError.value.contains("Anti-Robot"))
-        assertEquals(0, repo.getLoginSecurityState().failedAttempts)
+        assertEquals(0, repo.getAdminLoginSecurityState().failedAttempts)
 
-        // 4 wrong password attempts -> still unlocked, 1 try left
+        // 2. Admin: 2 wrong password attempts -> still unlocked, 1 try left
+        repeat(2) { idx ->
+            vm.login(AuthPolicy.CANONICAL_ADMIN_USERNAME, "WrongAdmin@$idx", antiRobotPassed = true, nowMillis = t0 + idx * 1000L)
+            awaitUntil { repo.getAdminLoginSecurityState().failedAttempts == idx + 1 }
+        }
+        val admin2 = repo.getAdminLoginSecurityState()
+        assertEquals(2, admin2.failedAttempts)
+        assertEquals(1, admin2.remainingAttempts(t0 + 2000L))
+        assertFalse(admin2.isLocked(t0 + 2000L))
+
+        // 3. Admin 3rd wrong attempt -> locks Admin on THIS device for 15 minutes (900,000 ms)
+        val tAdminLock = t0 + 3000L
+        vm.login(AuthPolicy.CANONICAL_ADMIN_USERNAME, "WrongAdmin@3", antiRobotPassed = true, nowMillis = tAdminLock)
+        awaitUntil { repo.getAdminLoginSecurityState().failedAttempts == 3 }
+        val admin3 = repo.getAdminLoginSecurityState()
+        assertTrue(admin3.isLocked(tAdminLock + 60_000L))
+        assertEquals(tAdminLock + LoginSecurityState.ADMIN_LOCK_DURATION_MS, admin3.lockUntilMillis)
+
+        // Correct Admin password blocked during 15-min lock, while Technician login is NOT locked
+        vm.clearAuthError()
+        vm.login(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234", antiRobotPassed = true, nowMillis = tAdminLock + 5 * 60_000L)
+        awaitUntil { vm.authError.value.contains("15", ignoreCase = true) }
+        assertNull(vm.session.value)
+
+        // 4. Staff/Technician 5 wrong password attempts -> triggers 2-hour lock
         repeat(4) { idx ->
-            vm.login("admin1", "wrong_$idx", antiRobotPassed = true, nowMillis = t0 + idx * 1000L)
+            vm.login("tech1", "WrongTech@$idx", antiRobotPassed = true, nowMillis = t0 + idx * 1000L)
             awaitUntil { repo.getLoginSecurityState().failedAttempts == idx + 1 }
         }
-        val state4 = repo.getLoginSecurityState()
-        assertEquals(4, state4.failedAttempts)
-        assertFalse(state4.isLocked(t0 + 4000L))
-        assertEquals(1, state4.remainingAttempts(t0 + 4000L))
+        val staff4 = repo.getLoginSecurityState()
+        assertEquals(4, staff4.failedAttempts)
+        assertEquals(1, staff4.remainingAttempts(t0 + 4000L))
 
-        // 5th wrong password -> triggers 2-hour lock (7,200,000 ms)
-        val tLockStart = t0 + 5000L
-        vm.login("admin1", "wrong_5", antiRobotPassed = true, nowMillis = tLockStart)
+        val tStaffLock = t0 + 5000L
+        vm.login("tech1", "WrongTech@5", antiRobotPassed = true, nowMillis = tStaffLock)
         awaitUntil { repo.getLoginSecurityState().failedAttempts == 5 }
-        val state5 = repo.getLoginSecurityState()
-        assertEquals(5, state5.failedAttempts)
-        assertTrue(state5.isLocked(tLockStart + 60_000L))
-        assertEquals(tLockStart + LoginSecurityState.LOCK_DURATION_MS, state5.lockUntilMillis)
+        val staff5 = repo.getLoginSecurityState()
+        assertTrue(staff5.isLocked(tStaffLock + 60_000L))
+        assertEquals(tStaffLock + LoginSecurityState.LOCK_DURATION_MS, staff5.lockUntilMillis)
 
-        // Even the correct password is blocked while 2-hour lock is active
-        vm.clearAuthError()
-        vm.login("admin1", "Pass1234", antiRobotPassed = true, nowMillis = tLockStart + 30 * 60_000L)
-        awaitUntil { vm.authError.value.contains("locked", ignoreCase = true) }
-        assertNull(vm.session.value)
-        assertTrue(vm.authError.value.contains("locked", ignoreCase = true))
-
-        // After 2 hours expire, user gets 5 fresh tries again
-        val tAfterLock = tLockStart + LoginSecurityState.LOCK_DURATION_MS + 1000L
-        assertFalse(state5.isLocked(tAfterLock))
-        assertEquals(0, state5.effectiveFailedAttempts(tAfterLock))
-        assertEquals(5, state5.remainingAttempts(tAfterLock))
-
-        // 4 more wrong attempts after 2-hour expiry must NOT lock yet
-        repeat(4) { idx ->
-            vm.login("admin1", "wrong_cycle2_$idx", antiRobotPassed = true, nowMillis = tAfterLock + idx * 1000L)
-            awaitUntil { repo.getLoginSecurityState().failedAttempts == idx + 1 && repo.getLoginSecurityState().lockUntilMillis == 0L }
-        }
-        val cycle2After4 = repo.getLoginSecurityState()
-        assertEquals(4, cycle2After4.failedAttempts)
-        assertFalse(cycle2After4.isLocked(tAfterLock + 4000L))
-
-        // Correct password on 5th try of cycle 2 succeeds and resets failure counter to 0
-        vm.login("admin1", "Pass1234", antiRobotPassed = true, nowMillis = tAfterLock + 5000L)
-        awaitUntil { vm.session.value != null && repo.getLoginSecurityState().failedAttempts == 0 }
+        // 5. After 15 minutes expire, Admin gets 3 fresh tries and succeeds
+        val tAfterAdminLock = tAdminLock + LoginSecurityState.ADMIN_LOCK_DURATION_MS + 1000L
+        assertFalse(admin3.isLocked(tAfterAdminLock))
+        assertEquals(3, admin3.remainingAttempts(tAfterAdminLock))
+        vm.login(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234", antiRobotPassed = true, nowMillis = tAfterAdminLock)
+        awaitUntil { vm.session.value?.isAdmin == true && repo.getAdminLoginSecurityState().failedAttempts == 0 }
         assertNotNull(vm.session.value)
-        assertEquals(0, repo.getLoginSecurityState().failedAttempts)
-        assertEquals(0L, repo.getLoginSecurityState().lockUntilMillis)
         soundEngine.release()
     }
 
     @Test
     fun technicianCreation_requiresPhotoAndPersistsInSession() = kotlinx.coroutines.runBlocking {
-        repo.setupAdmin("admin1", "Pass1234")
-        val blankPhotoRes = repo.addTechnician("No Pic Tech", "9876543210", "nopic_tech", "Pass1234", photoBase64 = "")
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234")
+        val blankPhotoRes = repo.addTechnician("No Pic Tech", "9876543210", "nopic_tech", "Pass@1234", photoBase64 = "")
         assertTrue(blankPhotoRes.isFailure)
 
         val context = ApplicationProvider.getApplicationContext<Context>()
         val soundEngine = SoundEngine(context)
         val vm = createTestVm(soundEngine)
 
-        vm.login("admin1", "Pass1234", antiRobotPassed = true)
+        vm.login(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234", antiRobotPassed = true)
         val deadline = System.currentTimeMillis() + 5000L
         while (vm.session.value == null && System.currentTimeMillis() < deadline) {
             org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
@@ -1072,17 +1084,17 @@ class ExampleRobolectricTest {
         assertNotNull(vm.session.value)
 
         var addedWithoutPic = false
-        vm.addTechnician("No Pic Tech", "9876543210", "nopic_tech", "Pass1234", photoBitmap = null) {
+        vm.addTechnician("No Pic Tech", "9876543210", "nopic_tech", "Pass@1234", photoBitmap = null) {
             addedWithoutPic = true
         }
         org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
         Thread.sleep(40)
         assertFalse(addedWithoutPic)
-        assertNull(repo.authenticate("nopic_tech", "Pass1234"))
+        assertNull(repo.authenticate("nopic_tech", "Pass@1234"))
 
         val bmp = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
         var addedWithPic = false
-        vm.addTechnician("Amit Dessai", "9822011223", "amit_tech", "Pass1234", photoBitmap = bmp) {
+        vm.addTechnician("Amit Dessai", "9822011223", "amit_tech", "Pass@1234", photoBitmap = bmp) {
             addedWithPic = true
         }
         val deadline2 = System.currentTimeMillis() + 5000L
@@ -1091,16 +1103,21 @@ class ExampleRobolectricTest {
             Thread.sleep(25)
         }
         assertTrue(addedWithPic)
-        val techSession = repo.authenticate("amit_tech", "Pass1234")
+        val techSession = repo.authenticate("amit_tech", "Pass@1234")
         assertNotNull(techSession)
         assertTrue(techSession!!.photoBase64.isNotBlank())
         soundEngine.release()
     }
 
     @Test
-    fun authScreen_shows2HourLockoutBannerAndDisablesSubmit() {
+    fun authScreen_showsAdmin15MinLockoutBannerAndDisablesSubmit() {
         val accounts = listOf(
-            UserAccountEntity(username = "admin1", displayName = "Admin", role = "admin", passwordHash = "hash1")
+            UserAccountEntity(
+                username = AuthPolicy.CANONICAL_ADMIN_USERNAME,
+                displayName = "Admin",
+                role = "admin",
+                passwordHash = "hash1"
+            )
         )
         composeTestRule.setContent {
             TseBillingTheme {
@@ -1108,9 +1125,11 @@ class ExampleRobolectricTest {
                     isAdminConfigured = true,
                     accounts = accounts,
                     authError = "",
-                    loginSecurityState = LoginSecurityState(
-                        failedAttempts = 5,
-                        lockUntilMillis = System.currentTimeMillis() + 3_600_000L
+                    adminLoginSecurityState = LoginSecurityState(
+                        failedAttempts = 3,
+                        lockUntilMillis = System.currentTimeMillis() + 600_000L,
+                        maxAttempts = LoginSecurityState.ADMIN_MAX_ATTEMPTS,
+                        lockDurationMs = LoginSecurityState.ADMIN_LOCK_DURATION_MS
                     ),
                     onClearError = {},
                     onSetupAdmin = { _, _, _, _ -> },
@@ -1122,6 +1141,7 @@ class ExampleRobolectricTest {
         }
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("login_lockout_banner").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("login_lockout_banner").assertTextContains("15", substring = true)
         composeTestRule.onNodeWithTag("login_submit_button").assertIsNotEnabled()
     }
 
@@ -1156,7 +1176,7 @@ class ExampleRobolectricTest {
 
     @Test
     fun admin2WayVerificationCode_blocksWrongCode_andAllowsCorrectCode() = kotlinx.coroutines.runBlocking {
-        repo.setupAdmin("admin2fa", "Pass1234", finalCode = "8899")
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234", finalCode = "8899")
         val context = ApplicationProvider.getApplicationContext<Context>()
         val soundEngine = SoundEngine(context)
         val vm = createTestVm(soundEngine)
@@ -1171,12 +1191,12 @@ class ExampleRobolectricTest {
             org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
         }
 
-        vm.login("admin2fa", "Pass1234", antiRobotPassed = true, adminVerifyCode = "0000")
+        vm.login(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234", antiRobotPassed = true, adminVerifyCode = "0000")
         awaitUntil { vm.authError.value.contains("2-Way Verification Code", ignoreCase = true) }
         assertNull(vm.session.value)
 
         vm.clearAuthError()
-        vm.login("admin2fa", "Pass1234", antiRobotPassed = true, adminVerifyCode = "8899")
+        vm.login(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234", antiRobotPassed = true, adminVerifyCode = "8899")
         awaitUntil { vm.session.value != null }
         assertTrue(vm.session.value!!.isAdmin)
         soundEngine.release()
@@ -1184,7 +1204,7 @@ class ExampleRobolectricTest {
 
     @Test
     fun technicianShareBlocked_andDuePaymentClearsDuePreservingRating() = kotlinx.coroutines.runBlocking {
-        repo.setupAdmin("admin_main", "Pass1234")
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234")
         val techBmp = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
         val context = ApplicationProvider.getApplicationContext<Context>()
         val soundEngine = SoundEngine(context)
@@ -1222,15 +1242,15 @@ class ExampleRobolectricTest {
         repo.saveBill(b)
 
         // Login as Technician -> Share blocked
-        repo.addTechnician("Tech One", "9876500000", "tech1", "Pass1234", photoBase64 = "abc")
-        vm.login("tech1", "Pass1234", antiRobotPassed = true)
+        repo.addTechnician("Tech One", "9876500000", "tech1", "Pass@1234", photoBase64 = "abc")
+        vm.login("tech1", "Pass@1234", antiRobotPassed = true)
         awaitUntil { vm.session.value != null }
         vm.shareBillPdfDirect(b)
         org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
 
         // Login as Admin -> Mark Due Paid -> due becomes 0 while 5-star review remains intact
         vm.logout()
-        vm.login("admin_main", "Pass1234", antiRobotPassed = true)
+        vm.login(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234", antiRobotPassed = true)
         awaitUntil { vm.session.value?.isAdmin == true }
         vm.markDuePaidInFull(b)
         awaitUntil { (repo.getBillById("b_due_test")?.dueAmount ?: 1.0) == 0.0 }
@@ -1241,5 +1261,93 @@ class ExampleRobolectricTest {
         assertEquals("Great installation", cleared.staffReviewNote)
         assertTrue(techBmp.width > 0)
         soundEngine.release()
+    }
+
+    @Test
+    fun strongPasswordPolicy_enforcesGmailGrade_andUpdatesAdminCredentials() = runTest {
+        assertFalse(AuthPolicy.evaluatePassword("Pass1234").isStrong)     // missing special char
+        assertFalse(AuthPolicy.evaluatePassword("pass@1234").isStrong)    // missing uppercase
+        assertFalse(AuthPolicy.evaluatePassword("PASS@1234").isStrong)    // missing lowercase
+        assertFalse(AuthPolicy.evaluatePassword("Pass@word").isStrong)    // missing digit
+        assertFalse(AuthPolicy.evaluatePassword("Pa@1").isStrong)         // too short
+        assertTrue(AuthPolicy.evaluatePassword("Tse@2026!").isStrong)
+
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val soundEngine = SoundEngine(context)
+        val vm = createTestVm(soundEngine)
+
+        vm.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "weakpass", "weakpass", adminVerifyCode = "4321")
+        assertTrue(vm.authError.value.isNotBlank())
+        assertNull(repo.authenticate(AuthPolicy.CANONICAL_ADMIN_USERNAME, "weakpass"))
+
+        vm.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Tse@2026!", "Tse@2026!", adminVerifyCode = "4321")
+        val deadline = System.currentTimeMillis() + 5_000L
+        while (repo.authenticate(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Tse@2026!") == null &&
+            System.currentTimeMillis() < deadline
+        ) {
+            Thread.sleep(10)
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+        }
+        assertNotNull(repo.authenticate(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Tse@2026!"))
+        assertTrue(repo.verifyFinalCode("4321"))
+
+        assertTrue(repo.addTechnician("Tech", "9876543210", "tech_weak", "123456", photoBase64 = "abc").isFailure)
+        assertTrue(repo.addSuperAdmin("Super", "9876543211", "super_weak", "abcdef").isFailure)
+
+        val updRes = repo.updateAdminCredentials("Tse@2026!", newPassword = "Tse@New2027", newVerifyCode = "9900")
+        assertTrue(updRes.isSuccess)
+        assertNull(repo.authenticate(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Tse@2026!"))
+        assertNotNull(repo.authenticate(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Tse@New2027"))
+        assertTrue(repo.verifyFinalCode("9900"))
+        assertFalse(repo.verifyFinalCode("4321"))
+        soundEngine.release()
+    }
+
+    @Test
+    fun darkTheme_billScreenAndSavedBillsScreen_renderHighContrastControls() {
+        val sampleBill = BillEntity(
+            id = "b_dark_1",
+            invoiceNo = "TSE-003",
+            date = "2026-11-21",
+            customerName = "Manoj Kumar",
+            customerDetails = "Panaji\n9876543210",
+            itemsJson = InvoiceItemJson.toJson(listOf(InvoiceItem(description = "DVR", qty = 1.0, rate = 8000.0))),
+            subtotal = 8507.0,
+            discount = 507.0,
+            grandTotal = 8000.0,
+            paidAmount = 6000.0,
+            dueAmount = 2000.0,
+            paymentMode = PaymentMode.ONLINE.label,
+            signatureBase64 = "",
+            customQrText = "",
+            createdBy = "Bill Book 1",
+            staffRating = 5,
+            staffReviewNote = "better service"
+        )
+        composeTestRule.setContent {
+            TseBillingTheme(darkTheme = true) {
+                SavedBillsScreen(
+                    allBills = listOf(sampleBill),
+                    filteredBills = listOf(sampleBill),
+                    customerFolders = emptyList(),
+                    searchQuery = "",
+                    company = CompanySettings(),
+                    upi = UpiSettings(),
+                    isAdmin = true,
+                    onSearchChange = {},
+                    onOpenBill = {},
+                    onPrintBill = {},
+                    onSavePdf = {},
+                    onSharePdf = {},
+                    onSavePhoto = {},
+                    onSharePhoto = {},
+                    onDeleteBill = {},
+                    onOpenPaymentReview = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("review_bill_TSE-003").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("send_due_qr_TSE-003").performScrollTo().assertIsDisplayed()
     }
 }

@@ -22,11 +22,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.GreenPaid
-import com.example.ui.theme.NavyPrimary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -75,7 +75,7 @@ fun BackupPasteImportDialog(
             Text(
                 text = "Restore Backup (.json)",
                 fontWeight = FontWeight.Bold,
-                color = NavyPrimary
+                color = MaterialTheme.colorScheme.onSurface
             )
         },
         text = {
@@ -128,10 +128,10 @@ fun BackupPasteImportDialog(
                         onDismiss()
                     }
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                 modifier = Modifier.testTag("backup_paste_confirm_button")
             ) {
-                Text("Restore Backup", fontWeight = FontWeight.Bold)
+                Text("Restore Backup", fontWeight = FontWeight.Bold, color = Color.White)
             }
         },
         dismissButton = {

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -52,6 +54,7 @@ import androidx.core.content.FileProvider
 import com.example.R
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.NavyDeep
+import com.example.ui.theme.TealAccent
 import com.example.util.BitmapUtils
 import com.example.util.InvoicePdfPrinter
 import com.example.util.QrGenerator
@@ -285,16 +288,22 @@ fun CameraSignatureBox(
                     cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                 }
             },
+            colors = ButtonDefaults.buttonColors(
+                containerColor = TealAccent,
+                contentColor = Color.White
+            ),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp)
+                .heightIn(min = 50.dp)
                 .testTag("scan_signature_camera_button")
         ) {
-            Icon(Icons.Default.PhotoCamera, contentDescription = null)
+            Icon(Icons.Default.PhotoCamera, contentDescription = null, tint = Color.White)
             Spacer(Modifier.width(8.dp))
             Text(
-                text = if (decodedBitmap != null) "Re-scan Customer Signature (Camera)" else "Scan Customer Signature (Camera)",
-                fontWeight = FontWeight.Bold
+                text = if (decodedBitmap != null) "Re-scan Signature (Camera)" else "Scan Signature (Camera)",
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                modifier = Modifier.padding(vertical = 4.dp)
             )
         }
     }

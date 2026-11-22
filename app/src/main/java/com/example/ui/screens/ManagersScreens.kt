@@ -61,6 +61,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalTextToolbar
@@ -252,11 +253,15 @@ fun CustomersScreen(
                                         locationUrl = ""
                                     }
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                                 modifier = Modifier.weight(1f).height(48.dp).testTag("save_customer_button")
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = null)
-                                Text(if (editingId > 0L) " Update Customer" else " Save Customer", fontWeight = FontWeight.Bold)
+                                Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
+                                Text(
+                                    if (editingId > 0L) " Update Customer" else " Save Customer",
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
                             }
                             if (editingId > 0L) {
                                 OutlinedButton(
@@ -582,11 +587,11 @@ fun ProductsScreen(
                                     onAddProduct("", unit, rate, resolvedFolder)
                                 }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                             modifier = Modifier.fillMaxWidth().height(48.dp).testTag("add_product_button")
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = null)
-                            Text(" Add Product to Folder", fontWeight = FontWeight.Bold)
+                            Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
+                            Text(" Add Product to Folder", fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     }
                 }
@@ -622,7 +627,7 @@ fun ProductsScreen(
                 Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Icon(Icons.Default.Folder, contentDescription = null, tint = TealAccent)
-                        Text("Product Folders", style = MaterialTheme.typography.titleMedium, color = NavyPrimary)
+                        Text("Product Folders", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                     }
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -825,10 +830,10 @@ private fun EditProductDialog(
                     clearFocusAndHideToolbar(btnFocus, btnToolbar)
                     onSave(editName, editUnit, editRate, editFolder.trim().ifBlank { "General" })
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                 modifier = Modifier.testTag("save_edited_product_button")
             ) {
-                Text("Save Changes")
+                Text("Save Changes", color = Color.White, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {

@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -45,6 +46,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudUpload
@@ -95,13 +97,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -111,17 +119,18 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.data.AuthPolicy
 import com.example.data.CloudAuthUser
 import com.example.data.LoginSecurityState
 import com.example.data.UserAccountEntity
 import com.example.ui.theme.AmberWarn
+import com.example.ui.theme.BlueAction
 import com.example.ui.theme.CyanGlow
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.GoldSoft
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.GreenPaidBg
 import com.example.ui.theme.NavyDeep
-import com.example.ui.theme.NavyPrimary
 import com.example.ui.theme.RedDue
 import com.example.ui.theme.RedDueBg
 import com.example.ui.theme.RedDueDark
@@ -229,6 +238,10 @@ fun AuthScreen(
     authError: String,
     logoBase64: String = "",
     loginSecurityState: LoginSecurityState = LoginSecurityState(),
+    adminLoginSecurityState: LoginSecurityState = LoginSecurityState(
+        maxAttempts = LoginSecurityState.ADMIN_MAX_ATTEMPTS,
+        lockDurationMs = LoginSecurityState.ADMIN_LOCK_DURATION_MS
+    ),
     cloudUser: CloudAuthUser? = null,
     cloudBusy: Boolean = false,
     hasAdminVerifyCode: Boolean = false,
@@ -350,6 +363,7 @@ fun AuthScreen(
                                 accounts = accounts,
                                 authError = authError,
                                 loginSecurityState = loginSecurityState,
+                                adminLoginSecurityState = adminLoginSecurityState,
                                 cloudUser = cloudUser,
                                 cloudBusy = cloudBusy,
                                 hasAdminVerifyCode = hasAdminVerifyCode,
@@ -367,6 +381,94 @@ fun AuthScreen(
     }
 }
 
+@Composable
+fun PasswordStrengthChecklist(
+    password: String,
+    modifier: Modifier = Modifier
+) {
+    val result = remember(password) { AuthPolicy.evaluatePassword(password) }
+    val progress = (result.score / 5f).coerceIn(0f, 1f)
+    val strengthLabel = when {
+        password.isEmpty() -> "Enter strong Google-grade password"
+        result.isStrong -> "Strong Password Ready"
+        result.score >= 3 -> "Medium — complete all rules below"
+        else -> "Weak — next step blocked until strong"
+    }
+    val barColor = when {
+        result.isStrong -> GreenPaid
+        result.score >= 3 -> AmberWarn
+        else -> MaterialTheme.colorScheme.error
+    }
+
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+        border = BorderStroke(1.dp, if (result.isStrong) GreenPaid else MaterialTheme.colorScheme.outline),
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("password_strength_checklist")
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = strengthLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (password.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else barColor
+                )
+                Text(
+                    text = "${result.score}/5",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Black,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(5.dp)
+                    .clip(RoundedCornerShape(999.dp)),
+                color = barColor,
+                trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+            )
+            StrengthRuleRow("At least 8 characters", result.hasMinLength)
+            StrengthRuleRow("Uppercase letter (A–Z)", result.hasUppercase)
+            StrengthRuleRow("Lowercase letter (a–z)", result.hasLowercase)
+            StrengthRuleRow("Number (0–9)", result.hasDigit)
+            StrengthRuleRow("Special symbol (@, #, $, %, !) & no spaces", result.hasSpecialChar && result.hasNoWhitespace)
+        }
+    }
+}
+
+@Composable
+private fun StrengthRuleRow(label: String, met: Boolean) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(
+            imageVector = if (met) Icons.Default.CheckCircle else Icons.Default.Cancel,
+            contentDescription = null,
+            tint = if (met) GreenPaid else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            modifier = Modifier.size(14.dp)
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (met) GreenPaid else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = if (met) FontWeight.Bold else FontWeight.Normal
+        )
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun FirstTimeAdminSetupForm(
@@ -381,7 +483,7 @@ private fun FirstTimeAdminSetupForm(
 ) {
     // Mode 0 = Create Admin Account, Mode 1 = Technician / Super Admin Direct Login (Invite Code), Mode 2 = Sign In (Restore Backup)
     var setupMode by remember { mutableIntStateOf(0) }
-    var username by remember { mutableStateOf("") }
+    val fixedAdminUsername = AuthPolicy.CANONICAL_ADMIN_USERNAME
     var password by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var adminVerifyCode by remember { mutableStateOf("") }
@@ -392,6 +494,11 @@ private fun FirstTimeAdminSetupForm(
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
+
+    val passwordEvaluation = remember(password) { AuthPolicy.evaluatePassword(password) }
+    val canCreateAdmin = passwordEvaluation.isStrong &&
+        password == confirm &&
+        (adminVerifyCode.isBlank() || adminVerifyCode.trim().length >= 4)
 
     fun handleBackupUri(uri: android.net.Uri?) {
         if (uri == null) return
@@ -444,18 +551,22 @@ private fun FirstTimeAdminSetupForm(
     }
 
     val chipColors = FilterChipDefaults.filterChipColors(
-        selectedContainerColor = NavyPrimary,
+        selectedContainerColor = TealAccent,
         selectedLabelColor = Color.White,
-        selectedLeadingIconColor = GoldSoft,
-        containerColor = Color(0xFFF1F5F9),
-        labelColor = NavyPrimary,
-        iconColor = NavyPrimary
+        selectedLeadingIconColor = Color.White,
+        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        labelColor = MaterialTheme.colorScheme.onSurface,
+        iconColor = MaterialTheme.colorScheme.onSurface
     )
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = TealAccent)
-            Text("Welcome — Sign In or Setup", style = MaterialTheme.typography.titleLarge, color = NavyPrimary)
+            Text(
+                text = "Welcome — Sign In or Setup",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
         }
 
         FlowRow(
@@ -491,25 +602,25 @@ private fun FirstTimeAdminSetupForm(
         when (setupMode) {
             0 -> {
                 Text(
-                    text = "Create your single Admin account and optional 2-Way Verification Code. Technicians & Super Admins should use 'Direct Login (Invite)'.",
+                    text = "Only one Admin exists in this app ($fixedAdminUsername). Set a strong Gmail-style password and 2-Way Verification Code. Technicians & Super Admins use 'Direct Login (Invite)'.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it; onClearError() },
-                    label = { Text("Admin Username (min 3 chars)") },
-                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                    value = fixedAdminUsername,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Admin Username (Fixed)") },
+                    leadingIcon = { Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = TealAccent) },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_username")
+                    modifier = Modifier.fillMaxWidth().testTag("setup_admin_username")
                 )
 
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it; onClearError() },
-                    label = { Text("Admin Password (min 6 chars)") },
+                    label = { Text("Strong Admin Password (8+ chars, A-Z, a-z, 0-9, @#\$)") },
                     leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
                     trailingIcon = {
                         IconButton(onClick = { showPass = !showPass }) {
@@ -522,10 +633,13 @@ private fun FirstTimeAdminSetupForm(
                     modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_password")
                 )
 
+                PasswordStrengthChecklist(password = password)
+
                 OutlinedTextField(
                     value = confirm,
                     onValueChange = { confirm = it; onClearError() },
                     label = { Text("Confirm Admin Password") },
+                    isError = confirm.isNotEmpty() && confirm != password,
                     leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
                     visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
@@ -541,8 +655,10 @@ private fun FirstTimeAdminSetupForm(
                     visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = {
-                        clearFocusAndHideToolbar(focusManager, textToolbar)
-                        onSetupAdmin(username, password, confirm, adminVerifyCode)
+                        if (canCreateAdmin) {
+                            clearFocusAndHideToolbar(focusManager, textToolbar)
+                            onSetupAdmin(fixedAdminUsername, password, confirm, adminVerifyCode)
+                        }
                     }),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_verify_code")
@@ -560,21 +676,30 @@ private fun FirstTimeAdminSetupForm(
                 Button(
                     onClick = {
                         clearFocusAndHideToolbar(focusManager, textToolbar)
-                        onSetupAdmin(username, password, confirm, adminVerifyCode)
+                        onSetupAdmin(fixedAdminUsername, password, confirm, adminVerifyCode)
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+                    enabled = canCreateAdmin,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = GreenPaid,
+                        contentColor = Color.White,
+                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(50.dp)
                         .testTag("create_admin_button")
                 ) {
-                    Text("Create Admin Account", fontWeight = FontWeight.Bold, color = Color.White)
+                    Text(
+                        text = if (canCreateAdmin) "Next — Create Admin Account" else "Enter Strong Password to Continue",
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
 
             1 -> {
                 Surface(
-                    color = Color(0xFFF0F9FF),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
                     border = BorderStroke(1.dp, TealAccent),
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth()
@@ -587,12 +712,12 @@ private fun FirstTimeAdminSetupForm(
                             text = "Technician / Super Admin Direct Login",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
-                            color = NavyPrimary
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = "Sign in with Google, enter the Workspace Invite Code shared by Admin on WhatsApp, and open Login directly (no Admin setup needed).",
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFF1E293B)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -625,7 +750,7 @@ private fun FirstTimeAdminSetupForm(
                             onSignInGoogle()
                         },
                         enabled = !cloudBusy,
-                        colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                        colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp)
@@ -702,7 +827,7 @@ private fun FirstTimeAdminSetupForm(
                             text = "Sign In with Existing Backup",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
-                            color = NavyPrimary
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = "Select your previously exported TSE-Billing-Backup.json file. Your Admin account, Technicians, Customers, Products, Settings, and Bills will immediately load onto the Login screen.",
@@ -714,15 +839,20 @@ private fun FirstTimeAdminSetupForm(
 
                 OutlinedButton(
                     onClick = { launchSafeBackupPicker() },
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+                    border = BorderStroke(1.2.dp, MaterialTheme.colorScheme.primary),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(52.dp)
                         .testTag("setup_import_backup_button")
                 ) {
-                    Icon(Icons.Default.CloudUpload, contentDescription = null)
+                    Icon(Icons.Default.CloudUpload, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
-                    Text("Sign In & Restore Backup (.json)", fontWeight = FontWeight.Bold, color = NavyPrimary)
+                    Text(
+                        text = "Sign In & Restore Backup (.json)",
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 }
 
                 TextButton(
@@ -761,11 +891,155 @@ private fun FirstTimeAdminSetupForm(
     }
 }
 
+private const val CAPTCHA_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789"
+
+private fun generateCaptchaCode(seed: Int): String {
+    val rnd = Random(System.nanoTime() + seed.toLong() * 7919L)
+    return buildString(6) {
+        repeat(6) {
+            append(CAPTCHA_CHARSET[rnd.nextInt(CAPTCHA_CHARSET.length)])
+        }
+    }
+}
+
+@Composable
+private fun ProfessionalCaptchaBox(
+    captchaCode: String,
+    seed: Int,
+    modifier: Modifier = Modifier
+) {
+    val glyphs = remember(captchaCode, seed) {
+        val rnd = Random(captchaCode.hashCode().toLong() * 31L + seed)
+        val palette = intArrayOf(
+            0xFFF4D47E.toInt(), // GoldSoft
+            0xFF39C5D0.toInt(), // CyanGlow
+            0xFFFFFFFF.toInt(), // White
+            0xFFA7F3D0.toInt(), // Mint
+            0xFFFDE68A.toInt(), // Cream Yellow
+            0xFFBAE6FD.toInt()  // Sky Blue
+        )
+        captchaCode.mapIndexed { idx, ch ->
+            CaptchaGlyphSpec(
+                char = ch.toString(),
+                angleDeg = rnd.nextInt(-22, 23).toFloat(),
+                yJitter = rnd.nextInt(-7, 8).toFloat(),
+                skewX = (rnd.nextFloat() - 0.5f) * 0.42f,
+                colorInt = palette[(idx + rnd.nextInt(palette.size)) % palette.size]
+            )
+        }
+    }
+
+    val noiseSeed = remember(captchaCode, seed) { captchaCode.hashCode() + seed * 17 }
+
+    Box(
+        modifier = modifier
+            .height(62.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                Brush.linearGradient(
+                    listOf(Color(0xFF091B2C), Color(0xFF10344D), Color(0xFF0A1F33))
+                )
+            )
+            .border(1.2.dp, GoldAccent, RoundedCornerShape(10.dp))
+            .semantics { contentDescription = "CAPTCHA code $captchaCode" }
+            .testTag("anti_robot_challenge_text"),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val rnd = Random(noiseSeed)
+            val w = size.width
+            val h = size.height
+
+            // Subtle diagonal security mesh lines
+            for (i in 0..5) {
+                val xStart = w * (i / 6f)
+                drawLine(
+                    color = Color(0xFF1E5F74).copy(alpha = 0.45f),
+                    start = Offset(xStart, 0f),
+                    end = Offset((xStart + w * 0.25f).coerceAtMost(w), h),
+                    strokeWidth = 1.5f
+                )
+            }
+
+            // Two wavy Bezier strike paths across the text
+            val wave1 = Path().apply {
+                moveTo(0f, h * (0.3f + rnd.nextFloat() * 0.2f))
+                cubicTo(
+                    w * 0.33f, h * (0.08f + rnd.nextFloat() * 0.35f),
+                    w * 0.66f, h * (0.65f + rnd.nextFloat() * 0.25f),
+                    w, h * (0.25f + rnd.nextFloat() * 0.45f)
+                )
+            }
+            drawPath(
+                path = wave1,
+                color = GoldAccent.copy(alpha = 0.5f),
+                style = Stroke(width = 2.2f)
+            )
+
+            val wave2 = Path().apply {
+                moveTo(0f, h * (0.65f + rnd.nextFloat() * 0.2f))
+                cubicTo(
+                    w * 0.30f, h * (0.85f - rnd.nextFloat() * 0.3f),
+                    w * 0.70f, h * (0.15f + rnd.nextFloat() * 0.35f),
+                    w, h * (0.45f + rnd.nextFloat() * 0.35f)
+                )
+            }
+            drawPath(
+                path = wave2,
+                color = CyanGlow.copy(alpha = 0.42f),
+                style = Stroke(width = 1.8f)
+            )
+
+            // Random interference dots
+            repeat(32) {
+                drawCircle(
+                    color = if (it % 2 == 0) GoldSoft.copy(alpha = 0.28f) else CyanGlow.copy(alpha = 0.25f),
+                    radius = rnd.nextFloat() * 2.2f + 1.0f,
+                    center = Offset(rnd.nextFloat() * w, rnd.nextFloat() * h)
+                )
+            }
+
+            // Distorted character glyphs rendered directly onto native Canvas
+            drawIntoCanvas { canvas ->
+                val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    textAlign = android.graphics.Paint.Align.CENTER
+                    typeface = android.graphics.Typeface.create(
+                        android.graphics.Typeface.MONOSPACE,
+                        android.graphics.Typeface.BOLD
+                    )
+                    textSize = (h * 0.48f).coerceIn(24f, 44f)
+                }
+                val slotW = w / (glyphs.size + 0.6f)
+                glyphs.forEachIndexed { idx, g ->
+                    val cx = slotW * (idx + 0.8f)
+                    val cy = h * 0.65f + g.yJitter
+                    canvas.nativeCanvas.save()
+                    canvas.nativeCanvas.translate(cx, cy)
+                    canvas.nativeCanvas.rotate(g.angleDeg)
+                    textPaint.textSkewX = g.skewX
+                    textPaint.color = g.colorInt
+                    canvas.nativeCanvas.drawText(g.char, 0f, 0f, textPaint)
+                    canvas.nativeCanvas.restore()
+                }
+            }
+        }
+    }
+}
+
+private data class CaptchaGlyphSpec(
+    val char: String,
+    val angleDeg: Float,
+    val yJitter: Float,
+    val skewX: Float,
+    val colorInt: Int
+)
+
 @Composable
 private fun TechnicianAdminLoginForm(
     accounts: List<UserAccountEntity>,
     authError: String,
     loginSecurityState: LoginSecurityState,
+    adminLoginSecurityState: LoginSecurityState,
     cloudUser: CloudAuthUser?,
     cloudBusy: Boolean,
     hasAdminVerifyCode: Boolean,
@@ -789,8 +1063,11 @@ private fun TechnicianAdminLoginForm(
             .distinctBy { it.username.lowercase() }
     }
 
+    // Pre-select the canonical Admin (@TotalSolutionEnterprises) so any third person immediately sees @TotalSolutionEnterprises + Password prompt
     var selectedUsername by remember(distinctAccounts) {
-        mutableStateOf("")
+        val defaultAdmin = distinctAccounts.firstOrNull { it.role.equals("admin", ignoreCase = true) }
+            ?: distinctAccounts.firstOrNull()
+        mutableStateOf(defaultAdmin?.username ?: AuthPolicy.CANONICAL_ADMIN_USERNAME)
     }
     var dropdownExpanded by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf("") }
@@ -801,31 +1078,35 @@ private fun TechnicianAdminLoginForm(
     var showSwitchInvite by remember { mutableStateOf(false) }
     var inviteCodeInput by remember { mutableStateOf("") }
 
-    // Anti-Robot human challenge state
+    // Professional distorted Canvas CAPTCHA state
     var challengeSeed by remember { mutableIntStateOf(0) }
-    val numA = remember(challengeSeed) { Random(System.nanoTime() + challengeSeed * 31).nextInt(2, 10) }
-    val numB = remember(challengeSeed) { Random(System.nanoTime() + challengeSeed * 97 + 7).nextInt(1, 10) }
+    val captchaCode = remember(challengeSeed) { generateCaptchaCode(challengeSeed) }
     var antiRobotInput by remember { mutableStateOf("") }
-    val expectedSum = numA + numB
-    val antiRobotPassed = antiRobotInput.trim().toIntOrNull() == expectedSum
+    val antiRobotPassed = antiRobotInput.trim() == captchaCode
 
-    // Live countdown ticker during 2-hour security lock
+    val selectedAccount = distinctAccounts.firstOrNull { it.username == selectedUsername }
+    val isAdminSelected = selectedAccount?.role.equals("admin", ignoreCase = true) ||
+        selectedUsername.equals(AuthPolicy.CANONICAL_ADMIN_USERNAME, ignoreCase = true)
+    val activeSecurityState = if (isAdminSelected) adminLoginSecurityState else loginSecurityState
+    val needsAdmin2Way = isAdminSelected && hasAdminVerifyCode
+
+    // Live countdown ticker during security lock (15 min Admin on this phone OR 2 hr Staff)
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(loginSecurityState.lockUntilMillis) {
-        while (loginSecurityState.lockUntilMillis > System.currentTimeMillis()) {
+    LaunchedEffect(activeSecurityState.lockUntilMillis, isAdminSelected) {
+        while (activeSecurityState.lockUntilMillis > System.currentTimeMillis()) {
             nowMillis = System.currentTimeMillis()
             delay(1000L)
         }
         nowMillis = System.currentTimeMillis()
     }
-    val isLocked = loginSecurityState.isLocked(nowMillis)
-    val remainingLockMs = loginSecurityState.remainingLockMillis(nowMillis)
-    val effectiveAttempts = loginSecurityState.effectiveFailedAttempts(nowMillis)
-    val remainingAttempts = loginSecurityState.remainingAttempts(nowMillis)
+    val isLocked = activeSecurityState.isLocked(nowMillis)
+    val remainingLockMs = activeSecurityState.remainingLockMillis(nowMillis)
+    val effectiveAttempts = activeSecurityState.effectiveFailedAttempts(nowMillis)
+    val remainingAttempts = activeSecurityState.remainingAttempts(nowMillis)
 
-    // Rotate Anti-Robot challenge after each wrong attempt
-    LaunchedEffect(loginSecurityState.failedAttempts, loginSecurityState.lockUntilMillis) {
-        if (loginSecurityState.failedAttempts > 0) {
+    // Rotate CAPTCHA after each failed attempt
+    LaunchedEffect(activeSecurityState.failedAttempts, activeSecurityState.lockUntilMillis) {
+        if (activeSecurityState.failedAttempts > 0) {
             challengeSeed++
             antiRobotInput = ""
         }
@@ -833,9 +1114,6 @@ private fun TechnicianAdminLoginForm(
 
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
-
-    val selectedAccount = distinctAccounts.firstOrNull { it.username == selectedUsername }
-    val needsAdmin2Way = selectedAccount?.role.equals("admin", ignoreCase = true) && hasAdminVerifyCode
 
     fun roleTitle(role: String): String = when {
         role.equals("admin", ignoreCase = true) -> "Admin"
@@ -864,7 +1142,11 @@ private fun TechnicianAdminLoginForm(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Default.Login, contentDescription = null, tint = TealAccent)
-                Text("Account Login", style = MaterialTheme.typography.titleLarge, color = NavyPrimary)
+                Text(
+                    text = "Account Login",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
             }
             TextButton(onClick = { showSwitchInvite = !showSwitchInvite }) {
                 Text(
@@ -875,14 +1157,14 @@ private fun TechnicianAdminLoginForm(
             }
         }
         Text(
-            text = "Welcome to Total Solution Bill system. Select username, solve Anti-Robot check, and enter password.",
+            text = "Welcome to Total Solution Bill system. Verify the distorted CAPTCHA code and enter your password.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         if (showSwitchInvite) {
             Surface(
-                color = Color(0xFFF0F9FF),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
                 border = BorderStroke(1.dp, TealAccent),
                 shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.fillMaxWidth()
@@ -892,7 +1174,7 @@ private fun TechnicianAdminLoginForm(
                         Button(
                             onClick = onSignInGoogle,
                             enabled = !cloudBusy,
-                            colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                            colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
                             modifier = Modifier.fillMaxWidth().testTag("cloud_google_signin_button")
                         ) {
                             Icon(Icons.Default.Cloud, contentDescription = null, tint = Color.White)
@@ -935,6 +1217,7 @@ private fun TechnicianAdminLoginForm(
                 shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .semantics(mergeDescendants = true) {}
                     .testTag("login_lockout_banner")
             ) {
                 Row(
@@ -950,13 +1233,21 @@ private fun TechnicianAdminLoginForm(
                     )
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(
-                            text = "2-Hour Security Lockout Active (5/5 Wrong Passwords)",
+                            text = if (isAdminSelected) {
+                                "15-Minute Admin Lockout Active (3/3 Wrong Attempts)"
+                            } else {
+                                "2-Hour Security Lockout Active (5/5 Wrong Passwords)"
+                            },
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Black,
                             color = RedDueDark
                         )
                         Text(
-                            text = "Try again in ${formatCountdown(remainingLockMs)}. After 2 hours, you will receive 5 login attempts again.",
+                            text = if (isAdminSelected) {
+                                "Password entry blocked on THIS phone for ${formatCountdown(remainingLockMs)}. Other phones retain 3 fresh attempts."
+                            } else {
+                                "Try again in ${formatCountdown(remainingLockMs)}. After 2 hours, you will receive 5 login attempts again."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.SemiBold,
                             color = Color(0xFF450A0A)
@@ -974,7 +1265,11 @@ private fun TechnicianAdminLoginForm(
                     .testTag("login_attempts_warning")
             ) {
                 Text(
-                    text = "Security Alert: $effectiveAttempts/${LoginSecurityState.MAX_ATTEMPTS} failed attempts — $remainingAttempts try(s) left before 2-hour lock.",
+                    text = if (isAdminSelected) {
+                        "Admin Security Alert: $effectiveAttempts/${LoginSecurityState.ADMIN_MAX_ATTEMPTS} wrong tries — $remainingAttempts try(s) left before 15-min phone lock."
+                    } else {
+                        "Security Alert: $effectiveAttempts/${LoginSecurityState.MAX_ATTEMPTS} failed attempts — $remainingAttempts try(s) left before 2-hour lock."
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF92400E),
@@ -990,10 +1285,11 @@ private fun TechnicianAdminLoginForm(
                     dropdownExpanded = true
                 },
                 enabled = !isLocked,
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp)
+                    .heightIn(min = 52.dp)
                     .testTag("login_username_dropdown"),
                 shape = RoundedCornerShape(10.dp)
             ) {
@@ -1002,7 +1298,11 @@ private fun TechnicianAdminLoginForm(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         val selBmp = remember(selectedAccount?.photoBase64) {
                             selectedAccount?.photoBase64?.takeIf { it.isNotBlank() }?.let { InvoicePdfPrinter.decodeBase64Bitmap(it) }
                         }
@@ -1014,19 +1314,19 @@ private fun TechnicianAdminLoginForm(
                                 contentScale = ContentScale.Crop
                             )
                         } else {
-                            Icon(Icons.Default.Person, contentDescription = null, tint = NavyPrimary)
+                            Icon(Icons.Default.Person, contentDescription = null, tint = TealAccent)
                         }
                         Text(
                             text = if (selectedAccount != null) {
-                                "Username: ${selectedAccount.username} (${roleTitle(selectedAccount.role)})"
+                                "${AuthPolicy.formatHandle(selectedAccount.username)} (${roleTitle(selectedAccount.role)})"
                             } else {
-                                "Select Username"
+                                "$selectedUsername (Admin)"
                             },
                             fontWeight = FontWeight.Bold,
-                            color = NavyPrimary
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
-                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Open account list", tint = NavyPrimary)
+                    Icon(Icons.Default.ArrowDropDown, contentDescription = "Open account list", tint = MaterialTheme.colorScheme.onSurface)
                 }
             }
 
@@ -1054,7 +1354,7 @@ private fun TechnicianAdminLoginForm(
                         },
                         text = {
                             Column {
-                                Text("${acc.username} ($roleLabel)", fontWeight = FontWeight.Bold)
+                                Text("${AuthPolicy.formatHandle(acc.username)} ($roleLabel)", fontWeight = FontWeight.Bold)
                                 if (acc.displayName.isNotBlank() && acc.displayName != acc.username) {
                                     Text(acc.displayName, style = MaterialTheme.typography.bodySmall)
                                 }
@@ -1102,9 +1402,9 @@ private fun TechnicianAdminLoginForm(
             )
         }
 
-        // Anti-Robot Human Security Check
+        // Professional Distorted Canvas CAPTCHA Verification
         Surface(
-            color = if (antiRobotPassed) GreenPaidBg else Color(0xFFF1F5F9),
+            color = if (antiRobotPassed) GreenPaidBg else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
             border = BorderStroke(1.2.dp, if (antiRobotPassed) GreenPaid else TealAccent),
             shape = RoundedCornerShape(14.dp),
             modifier = Modifier
@@ -1124,14 +1424,14 @@ private fun TechnicianAdminLoginForm(
                         Icon(
                             imageVector = if (antiRobotPassed) Icons.Default.CheckCircle else Icons.Default.Shield,
                             contentDescription = null,
-                            tint = if (antiRobotPassed) GreenPaid else NavyPrimary,
+                            tint = if (antiRobotPassed) GreenPaid else TealAccent,
                             modifier = Modifier.size(18.dp)
                         )
                         Text(
-                            text = if (antiRobotPassed) "Anti-Robot Verified" else "Anti-Robot Verification",
+                            text = if (antiRobotPassed) "CAPTCHA Verified" else "Security CAPTCHA (Case-Sensitive)",
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
-                            color = if (antiRobotPassed) GreenPaid else NavyPrimary,
+                            color = if (antiRobotPassed) GreenPaid else MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.testTag("anti_robot_status_label")
                         )
                     }
@@ -1142,9 +1442,9 @@ private fun TechnicianAdminLoginForm(
                             onClearError()
                         },
                         enabled = !isLocked,
-                        modifier = Modifier.size(32.dp).testTag("anti_robot_refresh_button")
+                        modifier = Modifier.size(34.dp).testTag("anti_robot_refresh_button")
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "New Anti-Robot Challenge", tint = TealAccent)
+                        Icon(Icons.Default.Refresh, contentDescription = "New CAPTCHA Challenge", tint = TealAccent)
                     }
                 }
 
@@ -1153,50 +1453,23 @@ private fun TechnicianAdminLoginForm(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(52.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color(0xFF0B2238))
-                            .border(1.dp, GoldAccent, RoundedCornerShape(10.dp)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            drawLine(
-                                color = Color(0xFF1E5F74),
-                                start = Offset(0f, size.height * 0.25f),
-                                end = Offset(size.width, size.height * 0.78f),
-                                strokeWidth = 2f
-                            )
-                            drawLine(
-                                color = Color(0xFFE4B44E).copy(alpha = 0.35f),
-                                start = Offset(size.width * 0.1f, size.height * 0.8f),
-                                end = Offset(size.width * 0.9f, size.height * 0.2f),
-                                strokeWidth = 2f
-                            )
-                        }
-                        Text(
-                            text = "$numA + $numB = ?",
-                            color = GoldSoft,
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = 2.sp,
-                            modifier = Modifier.testTag("anti_robot_challenge_text")
-                        )
-                    }
+                    ProfessionalCaptchaBox(
+                        captchaCode = captchaCode,
+                        seed = challengeSeed,
+                        modifier = Modifier.weight(1.25f)
+                    )
 
                     OutlinedTextField(
                         value = antiRobotInput,
                         onValueChange = { raw ->
-                            antiRobotInput = raw.filter { it.isDigit() }.take(3)
+                            antiRobotInput = raw.filter { it.isLetterOrDigit() }.take(8)
                             onClearError()
                         },
-                        label = { Text("Answer") },
+                        label = { Text("Enter Code") },
                         enabled = !isLocked,
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Number,
+                            keyboardType = KeyboardType.Ascii,
                             imeAction = ImeAction.Done
                         ),
                         keyboardActions = KeyboardActions(onDone = { submitLogin() }),
@@ -1257,7 +1530,11 @@ private fun TechnicianAdminLoginForm(
         ) {
             Icon(Icons.Default.LockReset, contentDescription = null, modifier = Modifier.size(18.dp), tint = TealAccent)
             Spacer(Modifier.width(6.dp))
-            Text("Forgot Admin Password?", fontWeight = FontWeight.SemiBold, color = NavyPrimary)
+            Text(
+                text = "Forgot Admin Password?",
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
+            )
         }
     }
 
@@ -1296,13 +1573,16 @@ private fun ForgotAdminPasswordDialog(
 ) {
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
-    val targetUsername = adminAccount?.username.orEmpty()
+    val targetUsername = adminAccount?.username.orEmpty().ifBlank { AuthPolicy.CANONICAL_ADMIN_USERNAME }
     var recoveryPassword by remember { mutableStateOf("") }
     var newPassword by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
     var showRecoveryPass by remember { mutableStateOf(false) }
     var showNewPass by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf("") }
+
+    val newPasswordStrong = remember(newPassword) { AuthPolicy.evaluatePassword(newPassword).isStrong }
+    val canReset = recoveryPassword.isNotBlank() && newPasswordStrong && newPassword == confirmPassword
 
     DisposableEffect(Unit) {
         onDispose { clearFocusAndHideToolbar(focusManager, textToolbar) }
@@ -1334,14 +1614,12 @@ private fun ForgotAdminPasswordDialog(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    if (targetUsername.isNotBlank()) {
-                        Text(
-                            text = "Admin Account: @$targetUsername",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = NavyPrimary
-                        )
-                    }
+                    Text(
+                        text = "Admin Account: ${AuthPolicy.formatHandle(targetUsername)}",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                     OutlinedTextField(
                         value = recoveryPassword,
                         onValueChange = { recoveryPassword = it; errorMsg = "" },
@@ -1366,7 +1644,7 @@ private fun ForgotAdminPasswordDialog(
                     OutlinedTextField(
                         value = newPassword,
                         onValueChange = { newPassword = it; errorMsg = "" },
-                        label = { Text("New Admin Password (min 6 chars)") },
+                        label = { Text("Strong New Password") },
                         leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
                         trailingIcon = {
                             IconButton(onClick = { showNewPass = !showNewPass }) {
@@ -1384,10 +1662,12 @@ private fun ForgotAdminPasswordDialog(
                             .bringIntoViewOnFocus()
                             .testTag("forgot_new_password_input")
                     )
+                    PasswordStrengthChecklist(password = newPassword)
                     OutlinedTextField(
                         value = confirmPassword,
                         onValueChange = { confirmPassword = it; errorMsg = "" },
                         label = { Text("Confirm New Password") },
+                        isError = confirmPassword.isNotEmpty() && confirmPassword != newPassword,
                         leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
                         visualTransformation = if (showNewPass) VisualTransformation.None else PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
@@ -1415,17 +1695,18 @@ private fun ForgotAdminPasswordDialog(
                     clearFocusAndHideToolbar(focusManager, textToolbar)
                     onResetAdminPassword(
                         recoveryPassword,
-                        targetUsername.ifBlank { null },
+                        targetUsername,
                         newPassword,
                         confirmPassword
                     ) { ok, msg ->
                         if (!ok) errorMsg = msg
                     }
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                enabled = canReset,
+                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                 modifier = Modifier.testTag("reset_admin_password_button")
             ) {
-                Text("Reset Admin Password", fontWeight = FontWeight.Bold)
+                Text("Reset Admin Password", fontWeight = FontWeight.Bold, color = Color.White)
             }
         },
         dismissButton = {

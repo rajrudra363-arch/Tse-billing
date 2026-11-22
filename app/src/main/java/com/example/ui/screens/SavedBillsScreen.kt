@@ -85,11 +85,11 @@ import com.example.ui.BillDraft
 import com.example.ui.CustomerFolderSummary
 import com.example.ui.components.bringIntoViewOnFocus
 import com.example.ui.components.clearFocusAndHideToolbar
+import com.example.ui.theme.BlueAction
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.GreenPaidBg
 import com.example.ui.theme.NavyDeep
-import com.example.ui.theme.NavyPrimary
 import com.example.ui.theme.RedDue
 import com.example.ui.theme.RedDueBg
 import com.example.ui.theme.RedDueDark
@@ -186,7 +186,7 @@ fun SavedBillsScreen(
                     )
 
                     val chipColors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = NavyPrimary,
+                        selectedContainerColor = TealAccent,
                         selectedLabelColor = Color.White,
                         selectedLeadingIconColor = Color.White
                     )
@@ -222,7 +222,11 @@ fun SavedBillsScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        SummaryChip("Total Bills: ${taxBillsOnly.size}", NavyPrimary, Color(0xFFE1ECF4))
+                        SummaryChip(
+                            "Total Bills: ${taxBillsOnly.size}",
+                            MaterialTheme.colorScheme.onSecondaryContainer,
+                            MaterialTheme.colorScheme.secondaryContainer
+                        )
                         SummaryChip(
                             "Due Bills: ${dueBills.size} (₹${String.format(Locale.US, "%.2f", totalDue)})",
                             RedDueDark,
@@ -245,7 +249,7 @@ fun SavedBillsScreen(
                         Card(
                             shape = RoundedCornerShape(14.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = if (folderHasDue) RedDueBg.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surface
+                                containerColor = if (folderHasDue) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.68f) else MaterialTheme.colorScheme.surface
                             ),
                             border = BorderStroke(
                                 width = if (folderHasDue) 1.6.dp else 1.dp,
@@ -271,7 +275,7 @@ fun SavedBillsScreen(
                                         Icon(
                                             Icons.Default.Folder,
                                             contentDescription = null,
-                                            tint = if (folderHasDue) RedDueDark else TealAccent,
+                                            tint = if (folderHasDue) MaterialTheme.colorScheme.onErrorContainer else TealAccent,
                                             modifier = Modifier.size(30.dp)
                                         )
                                         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -279,21 +283,25 @@ fun SavedBillsScreen(
                                                 text = folder.customerName,
                                                 style = MaterialTheme.typography.titleMedium,
                                                 fontWeight = FontWeight.Bold,
-                                                color = NavyPrimary
+                                                color = if (folderHasDue) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface
                                             )
                                             if (folder.phone.isNotBlank()) {
-                                                Text("Mobile: ${folder.phone}", style = MaterialTheme.typography.bodySmall, color = TealAccent)
+                                                Text(
+                                                    "Mobile: ${folder.phone}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = if (folderHasDue) MaterialTheme.colorScheme.onErrorContainer else TealAccent
+                                                )
                                             }
                                             Text(
                                                 text = "Paid: ${folder.paidCount} · Due: ${folder.dueCount} · Quotations: ${folder.quotations.size}",
                                                 style = MaterialTheme.typography.labelMedium,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                color = if (folderHasDue) MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant
                                             )
                                             if (folder.visitingTechnicians.isNotEmpty()) {
                                                 Text(
                                                     text = "Technicians: ${folder.visitingTechnicians.joinToString(", ") { "@$it" }}",
                                                     style = MaterialTheme.typography.labelSmall,
-                                                    color = NavyPrimary,
+                                                    color = if (folderHasDue) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.primary,
                                                     fontWeight = FontWeight.SemiBold
                                                 )
                                             }
@@ -324,7 +332,7 @@ fun SavedBillsScreen(
                                         Icon(
                                             if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                                             contentDescription = "Expand folder",
-                                            tint = NavyPrimary
+                                            tint = if (folderHasDue) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface
                                         )
                                     }
                                 }
@@ -512,7 +520,7 @@ private fun SavedDocCard(
     val isQuotation = DocumentType.fromString(bill.documentType) == DocumentType.QUOTATION
     val hasDue = !isQuotation && bill.dueAmount > 0.009
     val cardBg by animateColorAsState(
-        targetValue = if (hasDue) RedDueBg.copy(alpha = 0.65f) else MaterialTheme.colorScheme.surface,
+        targetValue = if (hasDue) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f) else MaterialTheme.colorScheme.surface,
         label = "billCardBg"
     )
     Card(
@@ -533,7 +541,7 @@ private fun SavedDocCard(
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (isQuotation) {
-                            Surface(color = NavyPrimary, shape = RoundedCornerShape(6.dp)) {
+                            Surface(color = BlueAction, shape = RoundedCornerShape(6.dp)) {
                                 Text(
                                     text = "QUOTATION",
                                     color = Color.White,
@@ -558,12 +566,13 @@ private fun SavedDocCard(
                     Text(
                         text = "${bill.invoiceNo} — ${bill.customerName.ifBlank { "Walk-in Customer" }}",
                         style = MaterialTheme.typography.titleMedium,
-                        color = if (hasDue) RedDueDark else NavyPrimary
+                        fontWeight = FontWeight.Bold,
+                        color = if (hasDue) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface
                     )
                     Text(
                         text = "${bill.date} · ${bill.paymentMode}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (hasDue) MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     if (bill.createdBy.isNotBlank()) {
                         Surface(
@@ -642,13 +651,13 @@ private fun SavedDocCard(
                                     text = "${bill.staffRating}/5",
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Black,
-                                    color = NavyPrimary
+                                    color = NavyDeep
                                 )
                                 Spacer(Modifier.width(4.dp))
                                 Icon(
                                     Icons.Default.Lock,
                                     contentDescription = "Rating Locked",
-                                    tint = NavyPrimary,
+                                    tint = NavyDeep,
                                     modifier = Modifier.size(13.dp)
                                 )
                             }
@@ -665,7 +674,7 @@ private fun SavedDocCard(
                             Text(
                                 text = "Locked",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = NavyPrimary,
+                                color = NavyDeep,
                                 fontWeight = FontWeight.Bold
                             )
                         }
@@ -739,40 +748,40 @@ private fun SavedDocCard(
                         colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                         modifier = Modifier.testTag("wa_pdf_saved_${bill.invoiceNo}")
                     ) {
-                        Icon(Icons.Default.Chat, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Chat, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("WhatsApp PDF", fontWeight = FontWeight.Bold)
+                        Text("WhatsApp PDF", fontWeight = FontWeight.Bold, color = Color.White)
                     }
 
                     if (!isQuotation) {
                         Button(
                             onClick = onOpenPaymentReview,
-                            colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                            colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
                             modifier = Modifier.testTag("review_bill_${bill.invoiceNo}")
                         ) {
-                            Icon(Icons.Default.Payments, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Payments, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text(if (bill.staffRating > 0) "Pay / View ★" else "Pay / 5★")
+                            Text(if (bill.staffRating > 0) "Pay / View ★" else "Pay / 5★", fontWeight = FontWeight.Bold, color = Color.White)
                         }
 
                         if (hasDue) {
                             Button(
                                 onClick = onSendDueQr,
-                                colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                                colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
                                 modifier = Modifier.testTag("send_due_qr_${bill.invoiceNo}")
                             ) {
-                                Icon(Icons.Default.QrCode2, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.QrCode2, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Send Due QR", fontWeight = FontWeight.Bold)
+                                Text("Send Due QR", fontWeight = FontWeight.Bold, color = Color.White)
                             }
                             Button(
                                 onClick = onMarkDuePaid,
                                 colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                                 modifier = Modifier.testTag("mark_due_paid_${bill.invoiceNo}")
                             ) {
-                                Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
-                                Text("Due Paid (₹0)", fontWeight = FontWeight.Bold)
+                                Text("Due Paid (₹0)", fontWeight = FontWeight.Bold, color = Color.White)
                             }
                         }
                     }
@@ -782,9 +791,9 @@ private fun SavedDocCard(
                         colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
                         modifier = Modifier.testTag("open_saved_${bill.invoiceNo}")
                     ) {
-                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Edit, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Open / Edit")
+                        Text("Open / Edit", fontWeight = FontWeight.Bold, color = Color.White)
                     }
 
                     if (bill.staffRating == 0) {
@@ -793,9 +802,9 @@ private fun SavedDocCard(
                             colors = ButtonDefaults.buttonColors(containerColor = RedDue, contentColor = Color.White),
                             modifier = Modifier.testTag("delete_saved_${bill.invoiceNo}")
                         ) {
-                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Delete")
+                            Text("Delete", fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     }
                 } else {

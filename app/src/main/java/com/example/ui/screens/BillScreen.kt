@@ -128,10 +128,11 @@ import com.example.ui.components.QrCodeImage
 import com.example.ui.components.bringIntoViewOnFocus
 import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.theme.AmberWarn
+import com.example.ui.theme.BlueAction
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.GreenPaidBg
-import com.example.ui.theme.NavyPrimary
+import com.example.ui.theme.NavyDeep
 import com.example.ui.theme.RedDue
 import com.example.ui.theme.RedDueBg
 import com.example.ui.theme.RedDueDark
@@ -387,12 +388,12 @@ fun BillScreen(
                                 }
                                 onAddItem()
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                             modifier = Modifier.testTag("add_item_button")
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = null)
+                            Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
                             Spacer(Modifier.width(4.dp))
-                            Text("Add Item (${draft.items.size}/15)")
+                            Text("Add Item (${draft.items.size}/15)", color = Color.White, fontWeight = FontWeight.Bold)
                         }
 
                         Button(
@@ -401,12 +402,12 @@ fun BillScreen(
                                 mobileSearchText = ""
                                 onResetBill()
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = AmberWarn),
+                            colors = ButtonDefaults.buttonColors(containerColor = AmberWarn, contentColor = Color.White),
                             modifier = Modifier.testTag("new_bill_button")
                         ) {
-                            Icon(Icons.Default.Refresh, contentDescription = null)
+                            Icon(Icons.Default.Refresh, contentDescription = null, tint = Color.White)
                             Spacer(Modifier.width(4.dp))
-                            Text("New")
+                            Text("New", color = Color.White, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -504,14 +505,14 @@ fun BillScreen(
                                     Icon(
                                         Icons.Default.History,
                                         contentDescription = null,
-                                        tint = if (totalDue > 0.009) RedDueDark else NavyPrimary,
+                                        tint = if (totalDue > 0.009) RedDueDark else NavyDeep,
                                         modifier = Modifier.size(18.dp)
                                     )
                                     Text(
                                         text = "Customer History: $paidCount Paid · $dueCount Due · Total Due: ₹${String.format(Locale.US, "%.2f", totalDue)}",
                                         style = MaterialTheme.typography.labelLarge,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (totalDue > 0.009) RedDueDark else NavyPrimary
+                                        color = if (totalDue > 0.009) RedDueDark else NavyDeep
                                     )
                                 }
                                 if (visitingTechs.isNotEmpty()) {
@@ -719,7 +720,7 @@ fun BillScreen(
                                     )
                                 },
                                 colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = NavyPrimary,
+                                    selectedContainerColor = TealAccent,
                                     selectedLabelColor = Color.White,
                                     selectedLeadingIconColor = Color.White,
                                     containerColor = MaterialTheme.colorScheme.surfaceVariant,
@@ -803,11 +804,11 @@ fun BillScreen(
                                 .padding(12.dp),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text("Estimated Quotation Total", fontWeight = FontWeight.Bold, color = NavyPrimary)
+                            Text("Estimated Quotation Total", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                             Text(
                                 text = "₹${String.format(Locale.US, "%.2f", draft.grandTotal)}",
                                 fontWeight = FontWeight.Black,
-                                color = NavyPrimary
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
                     }
@@ -909,7 +910,7 @@ fun BillScreen(
                                 text = "₹${String.format(Locale.US, "%.2f", draft.subtotal)}",
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.Black,
-                                color = NavyPrimary
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
                         Button(
@@ -918,12 +919,15 @@ fun BillScreen(
                                 onOpenSummaryModal()
                             },
                             enabled = !isNightClosed,
-                            colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = TealAccent,
+                                contentColor = Color.White
+                            ),
                             modifier = Modifier.height(52.dp).testTag("get_summary_button")
                         ) {
-                            Icon(Icons.Default.Summarize, contentDescription = null)
+                            Icon(Icons.Default.Summarize, contentDescription = null, tint = Color.White)
                             Spacer(Modifier.width(8.dp))
-                            Text("Get Summary", fontWeight = FontWeight.Bold)
+                            Text("Get Summary", fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     }
                 }
@@ -1039,7 +1043,7 @@ private fun InvoiceItemEditorCard(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Icon(Icons.Default.Description, contentDescription = null, tint = TealAccent, modifier = Modifier.size(18.dp))
-                    Text("Item #${index + 1}", fontWeight = FontWeight.Bold, color = NavyPrimary)
+                    Text("Item #${index + 1}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -1411,7 +1415,7 @@ private fun BillSummaryDialog(
                                     text = "6. Payment Mode",
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.Bold,
-                                    color = NavyPrimary
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -1448,7 +1452,7 @@ private fun BillSummaryDialog(
                                         text = "Scan & Pay Paid Amount: ₹${String.format(Locale.US, "%.2f", draft.paidAmount)}",
                                         style = MaterialTheme.typography.labelLarge,
                                         fontWeight = FontWeight.Black,
-                                        color = NavyPrimary
+                                        color = NavyDeep
                                     )
                                     QrCodeImage(
                                         content = dynamicOnlineUri,
@@ -1491,7 +1495,7 @@ private fun BillSummaryDialog(
                             text = "Customer 5-Star Rating for @${currentUser.username}",
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
-                            color = NavyPrimary
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1607,30 +1611,31 @@ private fun ExportDocumentOptionsDialog(
                 )
                 Button(
                     onClick = onPrintA4,
-                    colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                    colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
                     modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_print_a4_button")
                 ) {
-                    Icon(Icons.Default.Print, contentDescription = null)
+                    Icon(Icons.Default.Print, contentDescription = null, tint = Color.White)
                     Spacer(Modifier.width(8.dp))
-                    Text("Print on A4 Paper", fontWeight = FontWeight.Bold)
+                    Text("Print on A4 Paper", fontWeight = FontWeight.Bold, color = Color.White)
                 }
                 Button(
                     onClick = onSavePdf,
                     colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                     modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_save_pdf_button")
                 ) {
-                    Icon(Icons.Default.PictureAsPdf, contentDescription = null)
+                    Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = Color.White)
                     Spacer(Modifier.width(8.dp))
-                    Text("Save A4 PDF", fontWeight = FontWeight.Bold)
+                    Text("Save A4 PDF", fontWeight = FontWeight.Bold, color = Color.White)
                 }
                 if (canAdminShare) {
                     OutlinedButton(
                         onClick = onSharePdf,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                         modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_share_pdf_button")
                     ) {
-                        Icon(Icons.Default.Share, contentDescription = null, tint = NavyPrimary)
+                        Icon(Icons.Default.Share, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(8.dp))
-                        Text("Share A4 PDF", fontWeight = FontWeight.Bold, color = NavyPrimary)
+                        Text("Share A4 PDF", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
                 Button(
@@ -1638,27 +1643,29 @@ private fun ExportDocumentOptionsDialog(
                     colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
                     modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_save_photo_button")
                 ) {
-                    Icon(Icons.Default.Image, contentDescription = null)
+                    Icon(Icons.Default.Image, contentDescription = null, tint = Color.White)
                     Spacer(Modifier.width(8.dp))
-                    Text("Save Photo (PNG)", fontWeight = FontWeight.Bold)
+                    Text("Save Photo (PNG)", fontWeight = FontWeight.Bold, color = Color.White)
                 }
                 if (canAdminShare) {
                     OutlinedButton(
                         onClick = onSharePhoto,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                         modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_share_photo_button")
                     ) {
-                        Icon(Icons.Default.Share, contentDescription = null, tint = NavyPrimary)
+                        Icon(Icons.Default.Share, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(8.dp))
-                        Text("Share Photo (PNG)", fontWeight = FontWeight.Bold, color = NavyPrimary)
+                        Text("Share Photo (PNG)", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                     }
                 }
                 OutlinedButton(
                     onClick = onPreviewA4,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                     modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_preview_a4_button")
                 ) {
-                    Icon(Icons.Default.Visibility, contentDescription = null, tint = NavyPrimary)
+                    Icon(Icons.Default.Visibility, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
-                    Text("View A4 Preview", fontWeight = FontWeight.Bold, color = NavyPrimary)
+                    Text("View A4 Preview", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                 }
                 if (!isQuotation && canAdminShare) {
                     HorizontalDivider()
@@ -1667,9 +1674,9 @@ private fun ExportDocumentOptionsDialog(
                         colors = ButtonDefaults.buttonColors(containerColor = AmberWarn, contentColor = Color.White),
                         modifier = Modifier.fillMaxWidth().height(48.dp).testTag("export_payment_review_button")
                     ) {
-                        Icon(Icons.Default.Payments, contentDescription = null)
+                        Icon(Icons.Default.Payments, contentDescription = null, tint = Color.White)
                         Spacer(Modifier.width(8.dp))
-                        Text("Adjust Payment / Review", fontWeight = FontWeight.Bold)
+                        Text("Adjust Payment / Review", fontWeight = FontWeight.Bold, color = Color.White)
                     }
                 }
             }

@@ -38,6 +38,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
@@ -145,11 +146,11 @@ fun PaymentAndReviewDialog(
                                     .padding(horizontal = 12.dp, vertical = 10.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text("GRAND TOTAL", fontWeight = FontWeight.Black, color = NavyPrimary)
+                                Text("GRAND TOTAL", fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface)
                                 Text(
                                     text = "₹${String.format(Locale.US, "%.2f", grandTotal)}",
                                     fontWeight = FontWeight.Black,
-                                    color = NavyPrimary,
+                                    color = MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.testTag("settlement_grand_total")
                                 )
                             }
@@ -212,7 +213,7 @@ fun PaymentAndReviewDialog(
                             Icon(
                                 Icons.Default.Lock,
                                 contentDescription = "Rating Locked",
-                                tint = NavyPrimary,
+                                tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(16.dp)
                             )
                         }
@@ -224,7 +225,7 @@ fun PaymentAndReviewDialog(
                             },
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
-                            color = NavyPrimary
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
 
@@ -305,10 +306,17 @@ fun PaymentAndReviewDialog(
                     clearFocusAndHideToolbar(btnFocus, btnToolbar)
                     onSave(bill.id, discountText, paidText, rating, reviewNote)
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = if (hasDue) RedDue else GreenPaid),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (hasDue) RedDue else GreenPaid,
+                    contentColor = Color.White
+                ),
                 modifier = Modifier.testTag("save_settlement_review_button")
             ) {
-                Text(if (ratingLocked) "Update Payment" else "Save Payment & Review", fontWeight = FontWeight.Bold)
+                Text(
+                    text = if (ratingLocked) "Update Payment" else "Save Payment & Review",
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
             }
         },
         dismissButton = {

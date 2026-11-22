@@ -234,6 +234,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
         val availableUpdate by viewModel.availableUpdate.collectAsStateWithLifecycle()
         val updateCheckBusy by viewModel.updateCheckBusy.collectAsStateWithLifecycle()
         val loginSecurityState by viewModel.loginSecurityState.collectAsStateWithLifecycle()
+        val adminLoginSecurityState by viewModel.adminLoginSecurityState.collectAsStateWithLifecycle()
         val cloudUser by viewModel.cloudUser.collectAsStateWithLifecycle()
         val cloudBusy by viewModel.cloudBusy.collectAsStateWithLifecycle()
         val cloudWorkspaceInfo by viewModel.cloudWorkspaceInfo.collectAsStateWithLifecycle()
@@ -506,6 +507,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     authError = authError,
                     logoBase64 = company.logoBase64,
                     loginSecurityState = loginSecurityState,
+                    adminLoginSecurityState = adminLoginSecurityState,
                     cloudUser = cloudUser,
                     cloudBusy = cloudBusy,
                     hasAdminVerifyCode = hasAdminVerifyCode,
@@ -821,7 +823,8 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         onSignInGoogle = { viewModel.signInWithGoogle(context) },
                                         onEnsureCloudWorkspace = viewModel::ensureAdminCloudWorkspace,
                                         onShareApkWhatsApp = { targetRole -> viewModel.shareApkViaWhatsApp(context, targetRole) },
-                                        onUpdateAdminVerifyCode = viewModel::updateAdminVerifyCode
+                                        onUpdateAdminVerifyCode = viewModel::updateAdminVerifyCode,
+                                        onUpdateAdminCredentials = viewModel::updateAdminCredentials
                                     )
 
                                     MainTab.SETTINGS -> SettingsScreen(
@@ -911,10 +914,10 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                     )
                                 }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                             modifier = Modifier.testTag("update_now_button")
                         ) {
-                            Text("Update Now", fontWeight = FontWeight.Bold)
+                            Text("Update Now", fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     },
                     dismissButton = {

@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.Color
 
 val NavyDeep = Color(0xFF0B2238)
 val NavyPrimary = Color(0xFF102B42)
+val BlueAction = Color(0xFF1D4ED8)
 val TealAccent = Color(0xFF087F8C)
 val CyanGlow = Color(0xFF39C5D0)
 val GoldAccent = Color(0xFFE4B44E)

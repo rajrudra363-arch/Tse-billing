@@ -108,6 +108,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.fragment.app.FragmentActivity
 import com.example.BuildConfig
+import com.example.data.AuthPolicy
 import com.example.data.CloudAuthUser
 import com.example.data.CloudWorkspaceInfo
 import com.example.data.CompanySettings
@@ -118,16 +119,18 @@ import com.example.data.VoiceAndNoteSettings
 import com.example.data.VoicePreset
 import com.example.ui.TechnicianPerformanceSummary
 import com.example.ui.components.BackupPasteImportDialog
+import com.example.ui.components.PasswordStrengthChecklist
 import com.example.ui.components.ProvideSafeTextToolbar
 import com.example.ui.components.QrCodeImage
 import com.example.ui.components.TseShieldLogo
 import com.example.ui.components.bringIntoViewOnFocus
 import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.components.readBackupTextFromUri
+import com.example.ui.theme.BlueAction
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.GreenPaidBg
-import com.example.ui.theme.NavyPrimary
+import com.example.ui.theme.NavyDeep
 import com.example.ui.theme.RedDue
 import com.example.ui.theme.RedDueBg
 import com.example.ui.theme.RedDueDark
@@ -171,7 +174,8 @@ fun AdminPanelScreen(
     onSignInGoogle: () -> Unit = {},
     onEnsureCloudWorkspace: () -> Unit = {},
     onShareApkWhatsApp: (targetRole: String) -> Unit = {},
-    onUpdateAdminVerifyCode: (currentAdminPass: String, newCode: String, onSuccess: () -> Unit) -> Unit = { _, _, _ -> }
+    onUpdateAdminVerifyCode: (currentAdminPass: String, newCode: String, onSuccess: () -> Unit) -> Unit = { _, _, _ -> },
+    onUpdateAdminCredentials: (currentAdminPass: String, newPass: String, confirmNewPass: String, newCode: String, onSuccess: () -> Unit) -> Unit = { _, _, _, _, _ -> }
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -186,6 +190,8 @@ fun AdminPanelScreen(
     var pendingTechCamPath by rememberSaveable { mutableStateOf<String?>(null) }
 
     var curAdminPassFor2Way by remember { mutableStateOf("") }
+    var newAdminPassword by remember { mutableStateOf("") }
+    var confirmAdminPassword by remember { mutableStateOf("") }
     var newAdmin2WayCode by remember { mutableStateOf("") }
 
     val techPhotoPicker = rememberLauncherForActivityResult(
@@ -306,7 +312,7 @@ fun AdminPanelScreen(
                         Text("Cloud Sync & Share APK (WhatsApp)", style = MaterialTheme.typography.titleLarge)
                     }
                     Text(
-                        text = "Share the APK + Workspace Invite Code to Technicians or Super Admins on WhatsApp. They open straight to Login and all their bills sync to Admin.",
+                        text = "Share APK directly to WhatsApp for Technicians (limited access: billing & help only, no local data/share/backup) or Super Admins (view-only analytics + phone backup). They open straight to Login.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -315,7 +321,7 @@ fun AdminPanelScreen(
                         Button(
                             onClick = onSignInGoogle,
                             enabled = !cloudBusy,
-                            colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                            colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
                             modifier = Modifier.fillMaxWidth().height(48.dp).testTag("admin_google_signin_btn")
                         ) {
                             if (cloudBusy) {
@@ -353,13 +359,13 @@ fun AdminPanelScreen(
                                     text = "Technician Invite Code: ${cloudWorkspaceInfo.techShareCode}",
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.Bold,
-                                    color = NavyPrimary
+                                    color = NavyDeep
                                 )
                                 Text(
                                     text = "Super Admin Invite Code: ${cloudWorkspaceInfo.superShareCode}",
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.Bold,
-                                    color = NavyPrimary
+                                    color = NavyDeep
                                 )
                             }
                         }
@@ -400,7 +406,7 @@ fun AdminPanelScreen(
                         Button(
                             onClick = { onShareApkWhatsApp(ApkShareHelper.ROLE_SUPER_ADMIN) },
                             enabled = availableUpdate == null,
-                            colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                            colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
                             modifier = Modifier.testTag("share_apk_super_admin_btn")
                         ) {
                             Icon(Icons.Default.Share, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
@@ -455,14 +461,15 @@ fun AdminPanelScreen(
                     OutlinedTextField(
                         value = techPassword,
                         onValueChange = { techPassword = it },
-                        label = { Text("Technician Password (min 6 chars)") },
+                        label = { Text("Technician Strong Password") },
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_tech_password")
                     )
+                    PasswordStrengthChecklist(password = techPassword)
                     // Mandatory Technician Profile Photo Picker
                     Surface(
-                        color = if (techPhotoBitmap != null) GreenPaidBg else Color(0xFFF8FAFC),
+                        color = if (techPhotoBitmap != null) GreenPaidBg else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
                         border = BorderStroke(1.dp, if (techPhotoBitmap != null) GreenPaid else MaterialTheme.colorScheme.outline),
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
@@ -489,7 +496,7 @@ fun AdminPanelScreen(
                                         contentScale = ContentScale.Crop
                                     )
                                 } else {
-                                    Icon(Icons.Default.Person, contentDescription = "Photo required", tint = NavyPrimary, modifier = Modifier.size(30.dp))
+                                    Icon(Icons.Default.Person, contentDescription = "Photo required", tint = NavyDeep, modifier = Modifier.size(30.dp))
                                 }
                             }
                             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -497,9 +504,10 @@ fun AdminPanelScreen(
                                     text = if (techPhotoBitmap != null) "Technician Photo Ready" else "Technician Photo (Required)",
                                     style = MaterialTheme.typography.labelLarge,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (techPhotoBitmap != null) GreenPaid else RedDueDark,
+                                    color = if (techPhotoBitmap != null) GreenPaid else RedDue,
                                     modifier = Modifier.testTag("new_tech_photo_status")
                                 )
+                                val picTint = if (techPhotoBitmap != null) NavyDeep else MaterialTheme.colorScheme.onSurface
                                 FlowRow(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -513,12 +521,12 @@ fun AdminPanelScreen(
                                                 Toast.makeText(context, "Unable to open photo picker.", Toast.LENGTH_SHORT).show()
                                             }
                                         },
-                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                                        border = BorderStroke(1.dp, if (techPhotoBitmap != null) NavyDeep else MaterialTheme.colorScheme.outline),
                                         modifier = Modifier.testTag("new_tech_pick_photo_button")
                                     ) {
-                                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp), tint = NavyPrimary)
+                                        Icon(Icons.Default.PhotoLibrary, contentDescription = null, modifier = Modifier.size(16.dp), tint = picTint)
                                         Spacer(Modifier.width(4.dp))
-                                        Text("Upload Pic", color = NavyPrimary, fontWeight = FontWeight.Bold)
+                                        Text("Upload Pic", color = picTint, fontWeight = FontWeight.Bold)
                                     }
                                     OutlinedButton(
                                         onClick = {
@@ -530,12 +538,12 @@ fun AdminPanelScreen(
                                             if (granted) launchSafeTechCamera()
                                             else techCameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                                         },
-                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                                        border = BorderStroke(1.dp, if (techPhotoBitmap != null) NavyDeep else MaterialTheme.colorScheme.outline),
                                         modifier = Modifier.testTag("new_tech_camera_photo_button")
                                     ) {
-                                        Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp), tint = NavyPrimary)
+                                        Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(16.dp), tint = picTint)
                                         Spacer(Modifier.width(4.dp))
-                                        Text("Take Pic", color = NavyPrimary, fontWeight = FontWeight.Bold)
+                                        Text("Take Pic", color = picTint, fontWeight = FontWeight.Bold)
                                     }
                                 }
                             }
@@ -604,7 +612,7 @@ fun AdminPanelScreen(
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(tech.displayName.ifBlank { tech.username }, fontWeight = FontWeight.Bold)
                                         Text(
-                                            text = "@${tech.username} · ${tech.phone.ifBlank { "No phone" }} · Bills: ${stats?.billCount ?: 0}",
+                                            text = "${AuthPolicy.formatHandle(tech.username)} · ${tech.phone.ifBlank { "No phone" }} · Bills: ${stats?.billCount ?: 0}",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -664,6 +672,8 @@ fun AdminPanelScreen(
                             val hasCashDue = summary.adminDueBalance > 0.009
                             val currentSettleInput = settleInputs[summary.username] ?: ""
 
+                            val folderTitleColor = if (hasCashDue) NavyDeep else MaterialTheme.colorScheme.onSurface
+                            val folderSubColor = if (hasCashDue) Color(0xFF334155) else MaterialTheme.colorScheme.onSurfaceVariant
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
                                 color = if (hasCashDue) Color(0xFFFFFBEB) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
@@ -687,20 +697,20 @@ fun AdminPanelScreen(
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = "${summary.displayName} (@${summary.username}) · ${if (summary.role == "admin") "Admin" else "Technician"}",
+                                                text = "${summary.displayName} (${AuthPolicy.formatHandle(summary.username)}) · ${if (summary.role == "admin") "Admin" else "Technician"}",
                                                 fontWeight = FontWeight.Bold,
-                                                color = NavyPrimary
+                                                color = folderTitleColor
                                             )
                                             Text(
                                                 text = "Bills: ${summary.billCount} · Quotations: ${summary.quotationCount} · Help Solved: ${summary.helpSolvedCount}/${summary.helpAcceptedCount}",
                                                 style = MaterialTheme.typography.bodySmall,
-                                                color = Color(0xFF334155)
+                                                color = folderSubColor
                                             )
                                         }
                                         Icon(
                                             if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                                             contentDescription = "Toggle Technician Folder",
-                                            tint = NavyPrimary
+                                            tint = folderTitleColor
                                         )
                                     }
 
@@ -736,7 +746,7 @@ fun AdminPanelScreen(
                                             Text(
                                                 text = "${String.format(Locale.US, "%.1f", summary.averageRating)} / 5 (${summary.ratedCount} reviews)",
                                                 style = MaterialTheme.typography.labelMedium,
-                                                color = NavyPrimary,
+                                                color = folderTitleColor,
                                                 fontWeight = FontWeight.Bold
                                             )
                                         }
@@ -748,13 +758,13 @@ fun AdminPanelScreen(
                                             Text(
                                                 text = "Settled to Admin: ₹${String.format(Locale.US, "%.2f", summary.settledToAdminTotal)} · Remaining Cash Balance: ₹${String.format(Locale.US, "%.2f", summary.adminDueBalance)}",
                                                 style = MaterialTheme.typography.labelMedium,
-                                                color = NavyPrimary
+                                                color = folderTitleColor
                                             )
                                             if (summary.latestReviewNote.isNotBlank()) {
                                                 Text(
                                                     text = "Latest Customer Review: “${summary.latestReviewNote}”",
                                                     style = MaterialTheme.typography.bodySmall,
-                                                    color = Color(0xFF334155)
+                                                    color = folderSubColor
                                                 )
                                             }
                                             Row(
@@ -784,19 +794,19 @@ fun AdminPanelScreen(
                                                             settleInputs = settleInputs - summary.username
                                                         }
                                                     },
-                                                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                                                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                                                     modifier = Modifier.height(50.dp).testTag("settle_cash_${summary.username}")
                                                 ) {
-                                                    Icon(Icons.Default.Payments, contentDescription = null, modifier = Modifier.size(18.dp))
+                                                    Icon(Icons.Default.Payments, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                                                     Spacer(Modifier.width(4.dp))
-                                                    Text("Clear Cash")
+                                                    Text("Clear Cash", color = Color.White, fontWeight = FontWeight.Bold)
                                                 }
                                             }
                                             summary.bills.take(5).forEach { b ->
                                                 Text(
                                                     text = "• ${b.invoiceNo} (${b.customerName.ifBlank { "Walk-in" }}) — ₹${String.format(Locale.US, "%.0f", b.grandTotal)} [${b.paymentMode}]",
                                                     style = MaterialTheme.typography.bodySmall,
-                                                    color = Color(0xFF1E293B)
+                                                    color = folderSubColor
                                                 )
                                             }
                                         }
@@ -817,11 +827,11 @@ fun AdminPanelScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = NavyPrimary)
+                        Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = TealAccent)
                         Text("Super Admin Accounts (Read-Only Analytics)", style = MaterialTheme.typography.titleLarge)
                     }
                     Text(
-                        text = "Super Admin can view live analytics, charts, bills, customers, products, and help desk, but cannot modify anything or generate bills.",
+                        text = "Super Admin can view live analytics, charts, bills, customers, products, and help desk, and export phone backups, but cannot modify or create bills.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -851,12 +861,13 @@ fun AdminPanelScreen(
                         OutlinedTextField(
                             value = superPassword,
                             onValueChange = { superPassword = it },
-                            label = { Text("Password") },
+                            label = { Text("Strong Password") },
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true,
                             modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("new_super_password")
                         )
                     }
+                    PasswordStrengthChecklist(password = superPassword)
                     Button(
                         onClick = {
                             clearFocusAndHideToolbar(focusManager, textToolbar)
@@ -867,10 +878,10 @@ fun AdminPanelScreen(
                                 superPassword = ""
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
+                        colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
                         modifier = Modifier.fillMaxWidth().height(48.dp).testTag("add_super_admin_button")
                     ) {
-                        Text("Create Super Admin Account", fontWeight = FontWeight.Bold)
+                        Text("Create Super Admin Account", fontWeight = FontWeight.Bold, color = Color.White)
                     }
 
                     if (superAdminAccounts.isNotEmpty()) {
@@ -883,7 +894,7 @@ fun AdminPanelScreen(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(sa.displayName.ifBlank { sa.username }, fontWeight = FontWeight.Bold)
-                                    Text("@${sa.username} · Super Admin (View-Only)", style = MaterialTheme.typography.bodySmall)
+                                    Text("${AuthPolicy.formatHandle(sa.username)} · Super Admin (View-Only)", style = MaterialTheme.typography.bodySmall)
                                 }
                                 IconButton(
                                     onClick = { onRemoveSuperAdmin(sa.username) },
@@ -1002,12 +1013,12 @@ fun AdminPanelScreen(
                                     )
                                 )
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
+                            colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
                             modifier = Modifier.weight(1.3f).height(48.dp).testTag("cms_save_voice_button")
                         ) {
-                            Icon(Icons.Default.Save, contentDescription = null)
+                            Icon(Icons.Default.Save, contentDescription = null, tint = Color.White)
                             Spacer(Modifier.width(4.dp))
-                            Text("Save Voice & Note", fontWeight = FontWeight.Bold)
+                            Text("Save Voice & Note", fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     }
                 }
@@ -1050,12 +1061,12 @@ fun AdminPanelScreen(
                                 clearFocusAndHideToolbar(focusManager, textToolbar)
                                 onSaveUpi(upiId, payeeName)
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                             modifier = Modifier.testTag("save_upi_button")
                         ) {
-                            Icon(Icons.Default.Save, contentDescription = null)
+                            Icon(Icons.Default.Save, contentDescription = null, tint = Color.White)
                             Spacer(Modifier.width(4.dp))
-                            Text("Save UPI ID")
+                            Text("Save UPI ID", color = Color.White, fontWeight = FontWeight.Bold)
                         }
                         OutlinedButton(
                             onClick = {
@@ -1097,7 +1108,7 @@ fun AdminPanelScreen(
             }
         }
 
-        // 6. Admin 2-Way Verification Code
+        // 6. Admin Security Credentials & 2-Way Verification Code
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -1107,10 +1118,10 @@ fun AdminPanelScreen(
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = TealAccent)
-                        Text("Admin 2-Way Verification Code", style = MaterialTheme.typography.titleLarge)
+                        Text("Admin Password & 2-Way Code", style = MaterialTheme.typography.titleLarge)
                     }
                     Text(
-                        text = "Require a second Verification Code whenever Admin logs in (after Username & Password).",
+                        text = "Official Admin ID is fixed as ${AuthPolicy.CANONICAL_ADMIN_USERNAME}. Update your strong login password and/or 2-Way Verification Code anytime.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1123,6 +1134,27 @@ fun AdminPanelScreen(
                         modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("current_admin_pass_input")
                     )
                     OutlinedTextField(
+                        value = newAdminPassword,
+                        onValueChange = { newAdminPassword = it },
+                        label = { Text("New Admin Password (Optional, Gmail-grade strong)") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_admin_password_change_input")
+                    )
+                    AnimatedVisibility(visible = newAdminPassword.isNotEmpty()) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            PasswordStrengthChecklist(password = newAdminPassword)
+                            OutlinedTextField(
+                                value = confirmAdminPassword,
+                                onValueChange = { confirmAdminPassword = it },
+                                label = { Text("Confirm New Admin Password") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("confirm_admin_password_change_input")
+                            )
+                        }
+                    }
+                    OutlinedTextField(
                         value = newAdmin2WayCode,
                         onValueChange = { newAdmin2WayCode = it },
                         label = { Text("New 2-Way Verification Code (min 4 chars)") },
@@ -1134,17 +1166,35 @@ fun AdminPanelScreen(
                     Button(
                         onClick = {
                             clearFocusAndHideToolbar(focusManager, textToolbar)
-                            onUpdateAdminVerifyCode(curAdminPassFor2Way, newAdmin2WayCode) {
-                                curAdminPassFor2Way = ""
-                                newAdmin2WayCode = ""
+                            if (newAdminPassword.isNotEmpty() || confirmAdminPassword.isNotEmpty()) {
+                                onUpdateAdminCredentials(
+                                    curAdminPassFor2Way,
+                                    newAdminPassword,
+                                    confirmAdminPassword,
+                                    newAdmin2WayCode
+                                ) {
+                                    curAdminPassFor2Way = ""
+                                    newAdminPassword = ""
+                                    confirmAdminPassword = ""
+                                    newAdmin2WayCode = ""
+                                }
+                            } else {
+                                onUpdateAdminVerifyCode(curAdminPassFor2Way, newAdmin2WayCode) {
+                                    curAdminPassFor2Way = ""
+                                    newAdmin2WayCode = ""
+                                }
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                        colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
                         modifier = Modifier.fillMaxWidth().height(48.dp).testTag("save_admin_verify_code_button")
                     ) {
                         Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Color.White)
                         Spacer(Modifier.width(6.dp))
-                        Text("Save 2-Way Verification Code", fontWeight = FontWeight.Bold, color = Color.White)
+                        Text(
+                            text = if (newAdminPassword.isNotEmpty()) "Save Password & 2-Way Code" else "Save Admin Verification Code",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
                     }
                 }
             }
@@ -1245,7 +1295,7 @@ private fun EditTechnicianDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Default.Edit, contentDescription = null, tint = TealAccent) },
-        title = { Text("Edit Technician (@${account.username})") },
+        title = { Text("Edit Technician (${AuthPolicy.formatHandle(account.username)})") },
         text = {
             ProvideSafeTextToolbar {
                 DisposableEffect(focusManager, textToolbar) {
@@ -1274,7 +1324,7 @@ private fun EditTechnicianDialog(
                                     contentScale = ContentScale.Crop
                                 )
                             } else {
-                                Icon(Icons.Default.Person, contentDescription = null, tint = NavyPrimary)
+                                Icon(Icons.Default.Person, contentDescription = null, tint = NavyDeep)
                             }
                         }
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1284,10 +1334,10 @@ private fun EditTechnicianDialog(
                                         editPhotoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                                     }
                                 },
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                                 modifier = Modifier.testTag("edit_tech_pick_photo_button")
                             ) {
-                                Text("Change Pic", color = NavyPrimary, fontWeight = FontWeight.Bold)
+                                Text("Change Pic", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
                             }
                             OutlinedButton(
                                 onClick = {
@@ -1298,9 +1348,9 @@ private fun EditTechnicianDialog(
                                     if (granted) launchSafeEditCamera()
                                     else editCameraPermLauncher.launch(Manifest.permission.CAMERA)
                                 },
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary)
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                             ) {
-                                Text("Camera", color = NavyPrimary, fontWeight = FontWeight.Bold)
+                                Text("Camera", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -1329,11 +1379,14 @@ private fun EditTechnicianDialog(
                     OutlinedTextField(
                         value = newPassword,
                         onValueChange = { newPassword = it },
-                        label = { Text("New Password (leave blank to keep current)") },
+                        label = { Text("New Strong Password (optional)") },
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("edit_tech_password")
                     )
+                    AnimatedVisibility(visible = newPassword.isNotEmpty()) {
+                        PasswordStrengthChecklist(password = newPassword)
+                    }
                 }
             }
         },
@@ -1616,15 +1669,16 @@ fun SettingsScreen(
                                         onError = { err -> testLockResult = err }
                                     )
                                 },
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                                border = BorderStroke(1.dp, NavyDeep),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyDeep),
                                 modifier = Modifier.testTag("test_device_auth_button")
                             ) {
-                                Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(18.dp), tint = NavyPrimary)
+                                Icon(Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(18.dp), tint = NavyDeep)
                                 Spacer(Modifier.width(6.dp))
-                                Text("Test Device Lock Prompt", color = NavyPrimary, fontWeight = FontWeight.Bold)
+                                Text("Test Device Lock Prompt", color = NavyDeep, fontWeight = FontWeight.Bold)
                             }
                             if (testLockResult.isNotBlank()) {
-                                Text(testLockResult, style = MaterialTheme.typography.bodySmall, color = NavyPrimary)
+                                Text(testLockResult, style = MaterialTheme.typography.bodySmall, color = NavyDeep)
                             }
                         }
                     }
@@ -1754,10 +1808,10 @@ fun SettingsScreen(
                                 if (settings.logoBase64.isNotBlank()) {
                                     OutlinedButton(
                                         onClick = { onPickCompanyLogoBitmap(null) },
-                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                                         modifier = Modifier.testTag("reset_company_logo_button")
                                     ) {
-                                        Text("Reset Default", color = NavyPrimary)
+                                        Text("Reset Default", color = MaterialTheme.colorScheme.onSurface)
                                     }
                                 }
                             }
@@ -1872,12 +1926,12 @@ fun SettingsScreen(
                                             photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                                         }
                                     },
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                                     modifier = Modifier.testTag("pick_qr_image_button")
                                 ) {
-                                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = NavyPrimary)
+                                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                                     Spacer(Modifier.width(6.dp))
-                                    Text("Upload Fallback QR", color = NavyPrimary, fontWeight = FontWeight.Bold)
+                                    Text("Upload Fallback QR", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
                                 }
                             }
                             Button(
@@ -1892,22 +1946,22 @@ fun SettingsScreen(
                             if (canEditSettings) {
                                 OutlinedButton(
                                     onClick = { launchSafeSettingsBackupImport() },
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                                     modifier = Modifier.testTag("import_backup_button")
                                 ) {
-                                    Icon(Icons.Default.CloudUpload, contentDescription = null, tint = NavyPrimary)
+                                    Icon(Icons.Default.CloudUpload, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                                     Spacer(Modifier.width(6.dp))
-                                    Text("Import Backup", color = NavyPrimary, fontWeight = FontWeight.Bold)
+                                    Text("Import Backup", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
                                 }
                                 OutlinedButton(
                                     onClick = {
                                         clearFocusAndHideToolbar(focusManager, textToolbar)
                                         showPasteBackupDialog = true
                                     },
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = NavyPrimary),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                                     modifier = Modifier.testTag("paste_import_backup_button")
                                 ) {
-                                    Text("Paste JSON", color = NavyPrimary, fontWeight = FontWeight.Bold)
+                                    Text("Paste JSON", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold)
                                 }
                             }
                             Button(
@@ -1916,7 +1970,7 @@ fun SettingsScreen(
                                     onCheckForUpdates()
                                 },
                                 enabled = !updateCheckBusy,
-                                colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary, contentColor = Color.White),
+                                colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
                                 modifier = Modifier.testTag("online_update_button")
                             ) {
                                 Icon(Icons.Default.SystemUpdate, contentDescription = null, tint = Color.White)

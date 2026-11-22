@@ -47,6 +47,7 @@ import com.example.data.PaymentMode
 import com.example.data.ProductEntity
 import com.example.ui.TechnicianPerformanceSummary
 import com.example.ui.theme.AmberWarn
+import com.example.ui.theme.CyanGlow
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.GreenPaidBg
@@ -187,7 +188,7 @@ fun SuperAdminDashboardScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Recent Invoice Revenue Chart", style = MaterialTheme.typography.titleMedium, color = NavyPrimary)
+                    Text("Recent Invoice Revenue Chart", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                     if (recentTrend.isEmpty()) {
                         Text(
                             text = "No invoice transactions recorded yet.",
@@ -247,7 +248,7 @@ fun SuperAdminDashboardScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Online vs Cash Collection Split", style = MaterialTheme.typography.titleMedium, color = NavyPrimary)
+                    Text("Online vs Cash Collection Split", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                     val totalCollected = (onlineRevenue + cashRevenue).coerceAtLeast(0.01)
                     val onlineSweep = ((onlineRevenue / totalCollected) * 360.0).toFloat()
                     val cashSweep = (360f - onlineSweep).coerceAtLeast(0f)
@@ -306,7 +307,7 @@ fun SuperAdminDashboardScreen(
                                 Text(
                                     text = if (avgRating > 0.0) "Avg Service Rating: ${String.format(Locale.US, "%.1f", avgRating)}/5" else "No service ratings yet",
                                     style = MaterialTheme.typography.labelMedium,
-                                    color = NavyPrimary
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
                             }
                         }
@@ -322,7 +323,7 @@ fun SuperAdminDashboardScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("Technician Output & Admin Cash Balance", style = MaterialTheme.typography.titleMedium, color = NavyPrimary)
+                    Text("Technician Output & Admin Cash Balance", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                     if (technicianPerformance.isEmpty()) {
                         Text("No technician activity recorded yet.", style = MaterialTheme.typography.bodySmall)
                     } else {
@@ -336,7 +337,7 @@ fun SuperAdminDashboardScreen(
                                     Text(
                                         text = "${t.displayName} (@${t.username})",
                                         fontWeight = FontWeight.Bold,
-                                        color = NavyPrimary
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
                                         text = "₹${String.format(Locale.US, "%.0f", t.totalBilledAmount)} · ${t.billCount} bills",
@@ -349,9 +350,9 @@ fun SuperAdminDashboardScreen(
                                         .fillMaxWidth()
                                         .height(10.dp)
                                 ) {
-                                    drawRect(color = Color(0xFFE2E8F0), size = size)
+                                    drawRect(color = Color(0xFF334155).copy(alpha = 0.25f), size = size)
                                     val w = (t.totalBilledAmount / maxTechTotal).toFloat().coerceIn(0f, 1f) * size.width
-                                    drawRect(color = NavyPrimary, size = Size(w, size.height))
+                                    drawRect(color = CyanGlow, size = Size(w, size.height))
                                 }
                                 Text(
                                     text = "Online ₹${String.format(Locale.US, "%.0f", t.onlineTotal)} · Cash ₹${String.format(Locale.US, "%.0f", t.cashTotal)} · Admin Due ₹${String.format(Locale.US, "%.0f", t.adminDueBalance)} · Help ${t.helpSolvedCount}/${t.helpAcceptedCount}",
@@ -373,7 +374,7 @@ fun SuperAdminDashboardScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Market Product Folder Breakdown", style = MaterialTheme.typography.titleMedium, color = NavyPrimary)
+                    Text("Market Product Folder Breakdown", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                     folderCounts.forEach { (folder, count) ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),

@@ -205,7 +205,19 @@ class BillingRepository(
     val loginSecurityState: Flow<LoginSecurityState> = configMap.map { m ->
         LoginSecurityState(
             failedAttempts = m[KEY_LOGIN_FAILED_ATTEMPTS]?.toIntOrNull() ?: 0,
-            lockUntilMillis = m[KEY_LOGIN_LOCK_UNTIL_MS]?.toLongOrNull() ?: 0L
+            lockUntilMillis = m[KEY_LOGIN_LOCK_UNTIL_MS]?.toLongOrNull() ?: 0L,
+            maxAttempts = LoginSecurityState.MAX_ATTEMPTS,
+            lockDurationMs = LoginSecurityState.LOCK_DURATION_MS
+        )
+    }
+
+    // Device-local Admin security state (3 wrong attempts -> 15 min lock on THIS phone only)
+    val adminLoginSecurityState: Flow<LoginSecurityState> = configMap.map { m ->
+        LoginSecurityState(
+            failedAttempts = m[KEY_ADMIN_FAILED_ATTEMPTS]?.toIntOrNull() ?: 0,
+            lockUntilMillis = m[KEY_ADMIN_LOCK_UNTIL_MS]?.toLongOrNull() ?: 0L,
+            maxAttempts = LoginSecurityState.ADMIN_MAX_ATTEMPTS,
+            lockDurationMs = LoginSecurityState.ADMIN_LOCK_DURATION_MS
         )
     }
 
@@ -253,7 +265,7 @@ class BillingRepository(
     }
 
     suspend fun setupAdmin(username: String, password: String, finalCode: String = "") {
-        val cleanUser = username.trim()
+        val cleanUser = AuthPolicy.CANONICAL_ADMIN_USERNAME
         val adminEntity = UserAccountEntity(
             username = cleanUser,
             displayName = "Admin",
@@ -264,7 +276,7 @@ class BillingRepository(
         _volatileCloudActive.value = false
         _volatileDeviceRole.value = "admin"
         db.withTransaction {
-            // Strictly enforce single Admin account
+            // Strictly enforce single Admin account (@TotalSolutionEnterprises)
             userDao.deleteAllAdmins()
             userDao.upsert(adminEntity)
             if (finalCode.isNotBlank()) {
@@ -279,12 +291,17 @@ class BillingRepository(
 
     suspend fun authenticate(username: String, password: String): UserSession? {
         val clean = username.trim()
-        val account = if (_volatileCloudActive.value) {
-            _volatileAccounts.value.firstOrNull { it.username.equals(clean, ignoreCase = true) }
-                ?: userDao.findByUsername(clean)
-        } else {
-            userDao.findByUsername(clean)
-        } ?: return null
+        val list = if (_volatileCloudActive.value) _volatileAccounts.value else userDao.getAll()
+        val account = list.firstOrNull { it.username.equals(clean, ignoreCase = true) }
+            ?: if (clean.equals(AuthPolicy.CANONICAL_ADMIN_USERNAME, ignoreCase = true) ||
+                clean.equals("TotalSolutionEnterprises", ignoreCase = true)
+            ) {
+                list.firstOrNull { normalizeRole(it.role) == "admin" }
+            } else {
+                null
+            }
+            ?: userDao.findByUsername(clean)
+            ?: return null
         val hash = AuthHasher.sha256(password)
         return if (account.passwordHash == hash) {
             UserSession(
@@ -302,7 +319,12 @@ class BillingRepository(
     suspend fun getLoginSecurityState(): LoginSecurityState {
         val attempts = configDao.getValue(KEY_LOGIN_FAILED_ATTEMPTS)?.toIntOrNull() ?: 0
         val lockUntil = configDao.getValue(KEY_LOGIN_LOCK_UNTIL_MS)?.toLongOrNull() ?: 0L
-        return LoginSecurityState(failedAttempts = attempts, lockUntilMillis = lockUntil)
+        return LoginSecurityState(
+            failedAttempts = attempts,
+            lockUntilMillis = lockUntil,
+            maxAttempts = LoginSecurityState.MAX_ATTEMPTS,
+            lockDurationMs = LoginSecurityState.LOCK_DURATION_MS
+        )
     }
 
     suspend fun recordLoginFailure(nowMillis: Long = System.currentTimeMillis()): LoginSecurityState {
@@ -323,7 +345,12 @@ class BillingRepository(
                 AppConfigEntity(KEY_LOGIN_LOCK_UNTIL_MS, nextLockUntil.toString())
             )
         )
-        return LoginSecurityState(failedAttempts = nextAttempts, lockUntilMillis = nextLockUntil)
+        return LoginSecurityState(
+            failedAttempts = nextAttempts,
+            lockUntilMillis = nextLockUntil,
+            maxAttempts = LoginSecurityState.MAX_ATTEMPTS,
+            lockDurationMs = LoginSecurityState.LOCK_DURATION_MS
+        )
     }
 
     suspend fun resetLoginSecurityState() {
@@ -331,6 +358,52 @@ class BillingRepository(
             listOf(
                 AppConfigEntity(KEY_LOGIN_FAILED_ATTEMPTS, "0"),
                 AppConfigEntity(KEY_LOGIN_LOCK_UNTIL_MS, "0")
+            )
+        )
+    }
+
+    suspend fun getAdminLoginSecurityState(): LoginSecurityState {
+        val attempts = configDao.getValue(KEY_ADMIN_FAILED_ATTEMPTS)?.toIntOrNull() ?: 0
+        val lockUntil = configDao.getValue(KEY_ADMIN_LOCK_UNTIL_MS)?.toLongOrNull() ?: 0L
+        return LoginSecurityState(
+            failedAttempts = attempts,
+            lockUntilMillis = lockUntil,
+            maxAttempts = LoginSecurityState.ADMIN_MAX_ATTEMPTS,
+            lockDurationMs = LoginSecurityState.ADMIN_LOCK_DURATION_MS
+        )
+    }
+
+    suspend fun recordAdminLoginFailure(nowMillis: Long = System.currentTimeMillis()): LoginSecurityState {
+        val current = getAdminLoginSecurityState()
+        if (current.isLocked(nowMillis)) {
+            return current
+        }
+        val baseAttempts = current.effectiveFailedAttempts(nowMillis)
+        val nextAttempts = (baseAttempts + 1).coerceAtMost(LoginSecurityState.ADMIN_MAX_ATTEMPTS)
+        val nextLockUntil = if (nextAttempts >= LoginSecurityState.ADMIN_MAX_ATTEMPTS) {
+            nowMillis + LoginSecurityState.ADMIN_LOCK_DURATION_MS
+        } else {
+            0L
+        }
+        configDao.setAll(
+            listOf(
+                AppConfigEntity(KEY_ADMIN_FAILED_ATTEMPTS, nextAttempts.toString()),
+                AppConfigEntity(KEY_ADMIN_LOCK_UNTIL_MS, nextLockUntil.toString())
+            )
+        )
+        return LoginSecurityState(
+            failedAttempts = nextAttempts,
+            lockUntilMillis = nextLockUntil,
+            maxAttempts = LoginSecurityState.ADMIN_MAX_ATTEMPTS,
+            lockDurationMs = LoginSecurityState.ADMIN_LOCK_DURATION_MS
+        )
+    }
+
+    suspend fun resetAdminLoginSecurityState() {
+        configDao.setAll(
+            listOf(
+                AppConfigEntity(KEY_ADMIN_FAILED_ATTEMPTS, "0"),
+                AppConfigEntity(KEY_ADMIN_LOCK_UNTIL_MS, "0")
             )
         )
     }
@@ -390,8 +463,8 @@ class BillingRepository(
         if (cleanUser.length < 3) {
             return Result.failure(IllegalArgumentException("Technician username must be at least 3 characters"))
         }
-        if (password.length < 6) {
-            return Result.failure(IllegalArgumentException("Technician password must be at least 6 characters"))
+        AuthPolicy.evaluatePassword(password).firstMissingRequirement()?.let { msg ->
+            return Result.failure(IllegalArgumentException(msg))
         }
         if (cleanPhoto.isBlank()) {
             return Result.failure(IllegalArgumentException("Please upload or capture Technician photo"))
@@ -436,8 +509,10 @@ class BillingRepository(
         if (cleanNew.length < 3) {
             return Result.failure(IllegalArgumentException("Username must be at least 3 characters"))
         }
-        if (newPassword.isNotEmpty() && newPassword.length < 6) {
-            return Result.failure(IllegalArgumentException("New password must be at least 6 characters"))
+        if (newPassword.isNotEmpty()) {
+            AuthPolicy.evaluatePassword(newPassword).firstMissingRequirement()?.let { msg ->
+                return Result.failure(IllegalArgumentException(msg))
+            }
         }
 
         val existing = userDao.findByUsername(cleanOld)
@@ -516,8 +591,8 @@ class BillingRepository(
         if (cleanUser.length < 3) {
             return Result.failure(IllegalArgumentException("Super Admin username must be at least 3 characters"))
         }
-        if (password.length < 6) {
-            return Result.failure(IllegalArgumentException("Super Admin password must be at least 6 characters"))
+        AuthPolicy.evaluatePassword(password).firstMissingRequirement()?.let { msg ->
+            return Result.failure(IllegalArgumentException(msg))
         }
         if (existing.any { it.username.equals(cleanUser, ignoreCase = true) }) {
             return Result.failure(IllegalStateException("Username already exists"))
@@ -555,8 +630,8 @@ class BillingRepository(
             return Result.failure(IllegalArgumentException("Incorrect default recovery password."))
         }
         val cleanNewPass = newPassword
-        if (cleanNewPass.length < 6) {
-            return Result.failure(IllegalArgumentException("New Admin password must be at least 6 characters."))
+        AuthPolicy.evaluatePassword(cleanNewPass).firstMissingRequirement()?.let { msg ->
+            return Result.failure(IllegalArgumentException(msg))
         }
         if (!newFinalCode.isNullOrBlank() && newFinalCode.length < 4) {
             return Result.failure(IllegalArgumentException("Code must be at least 4 characters."))
@@ -571,14 +646,63 @@ class BillingRepository(
             ?: allUsers.firstOrNull { it.role.equals("admin", ignoreCase = true) }
             ?: return Result.failure(IllegalStateException("Admin account not found."))
 
-        userDao.upsert(
-            adminAccount.copy(passwordHash = AuthHasher.sha256(cleanNewPass))
-        )
+        val updatedAdmin = adminAccount.copy(passwordHash = AuthHasher.sha256(cleanNewPass))
+        userDao.upsert(updatedAdmin)
+        resetAdminLoginSecurityState()
         resetLoginSecurityState()
         if (!newFinalCode.isNullOrBlank()) {
             configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, AuthHasher.sha256(newFinalCode)))
         }
-        return Result.success(adminAccount.username)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushAccount(wsId, updatedAdmin)
+        }
+        return Result.success(updatedAdmin.username)
+    }
+
+    suspend fun updateAdminCredentials(
+        currentPassword: String,
+        newPassword: String,
+        newVerifyCode: String
+    ): Result<Unit> {
+        val allUsers = userDao.getAll()
+        val adminAccount = allUsers.firstOrNull { normalizeRole(it.role) == "admin" }
+            ?: return Result.failure(IllegalStateException("Admin account not found."))
+        if (adminAccount.passwordHash != AuthHasher.sha256(currentPassword)) {
+            return Result.failure(IllegalArgumentException("Incorrect current Admin password."))
+        }
+        val cleanNewCode = newVerifyCode.trim()
+        if (newPassword.isEmpty() && cleanNewCode.isEmpty()) {
+            return Result.failure(IllegalArgumentException("Enter a new password and/or new 2-Way Verification Code."))
+        }
+        if (newPassword.isNotEmpty()) {
+            AuthPolicy.evaluatePassword(newPassword).firstMissingRequirement()?.let { msg ->
+                return Result.failure(IllegalArgumentException(msg))
+            }
+        }
+        if (cleanNewCode.isNotEmpty() && cleanNewCode.length < 4) {
+            return Result.failure(IllegalArgumentException("2-Way Verification Code must be at least 4 characters."))
+        }
+        val updatedAdmin = if (newPassword.isNotEmpty()) {
+            adminAccount.copy(passwordHash = AuthHasher.sha256(newPassword))
+        } else {
+            adminAccount
+        }
+        db.withTransaction {
+            if (newPassword.isNotEmpty()) {
+                userDao.upsert(updatedAdmin)
+            }
+            if (cleanNewCode.isNotEmpty()) {
+                configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, AuthHasher.sha256(cleanNewCode)))
+            }
+        }
+        if (newPassword.isNotEmpty()) {
+            val wsId = getActiveWorkspaceId()
+            if (wsId.isNotBlank()) {
+                cloudSync?.pushAccount(wsId, updatedAdmin)
+            }
+        }
+        return Result.success(Unit)
     }
 
     suspend fun saveBill(bill: BillEntity, customerLocationUrl: String = "") {
@@ -1850,6 +1974,8 @@ class BillingRepository(
         const val KEY_DEVICE_AUTH_USER_PREFIX = "device_auth_user_"
         const val KEY_LOGIN_FAILED_ATTEMPTS = "login_failed_attempts"
         const val KEY_LOGIN_LOCK_UNTIL_MS = "login_lock_until_ms"
+        const val KEY_ADMIN_FAILED_ATTEMPTS = "admin_login_failed_attempts"
+        const val KEY_ADMIN_LOCK_UNTIL_MS = "admin_login_lock_until_ms"
         const val KEY_PERMISSIONS_PROMPTED = "permissions_prompted_v1"
 
         const val DEFAULT_ADMIN_RECOVERY_PASSWORD = "Manoj2007"

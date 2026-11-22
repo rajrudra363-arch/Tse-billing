@@ -85,10 +85,10 @@ import com.example.data.UserSession
 import com.example.ui.components.bringIntoViewOnFocus
 import com.example.ui.components.clearFocusAndHideToolbar
 import com.example.ui.theme.AmberWarn
+import com.example.ui.theme.BlueAction
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.GreenPaid
 import com.example.ui.theme.GreenPaidBg
-import com.example.ui.theme.NavyPrimary
 import com.example.ui.theme.RedDue
 import com.example.ui.theme.RedDueBg
 import com.example.ui.theme.RedDueDark
@@ -428,12 +428,16 @@ fun CustomerHelpScreen(
                                         clearForm()
                                     }
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                                 modifier = Modifier.height(48.dp).testTag("save_help_button")
                             ) {
-                                Icon(Icons.Default.Add, contentDescription = null)
+                                Icon(Icons.Default.Add, contentDescription = null, tint = Color.White)
                                 Spacer(Modifier.width(4.dp))
-                                Text(if (editingId > 0L) "Update Help" else "Save for Technicians", fontWeight = FontWeight.Bold)
+                                Text(
+                                    if (editingId > 0L) "Update Help" else "Save for Technicians",
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
                             }
 
                             Button(
@@ -463,12 +467,12 @@ fun CustomerHelpScreen(
                                     LocationHelper.shareText(context, msg, preferWhatsApp = true)
                                     clearForm()
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
+                                colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
                                 modifier = Modifier.height(48.dp).testTag("save_and_share_help_button")
                             ) {
-                                Icon(Icons.Default.Share, contentDescription = null)
+                                Icon(Icons.Default.Share, contentDescription = null, tint = Color.White)
                                 Spacer(Modifier.width(4.dp))
-                                Text("Save & Share", fontWeight = FontWeight.Bold)
+                                Text("Save & Share", fontWeight = FontWeight.Bold, color = Color.White)
                             }
 
                             if (editingId > 0L) {
@@ -821,24 +825,24 @@ fun CustomerHelpScreen(
                             if (!user.isSuperAdmin && normalizedStatus == "OPEN") {
                                 Button(
                                     onClick = { onAcceptRequest(req.id) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
+                                    colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
                                     modifier = Modifier.testTag("accept_help_${req.id}")
                                 ) {
-                                    Icon(Icons.Default.TaskAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Icon(Icons.Default.TaskAlt, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text("Accept Request")
+                                    Text("Accept Request", fontWeight = FontWeight.Bold, color = Color.White)
                                 }
                             }
 
                             if (canMarkOutcome) {
                                 Button(
                                     onClick = { onMarkSolved(req.id) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid),
+                                    colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                                     modifier = Modifier.testTag("solve_help_${req.id}")
                                 ) {
-                                    Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text("Solved")
+                                    Text("Solved", fontWeight = FontWeight.Bold, color = Color.White)
                                 }
                                 OutlinedButton(
                                     onClick = { onMarkNotSolved(req.id) },
@@ -846,7 +850,7 @@ fun CustomerHelpScreen(
                                 ) {
                                     Icon(Icons.Default.Cancel, contentDescription = null, tint = RedDue, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text("Not Solved", color = RedDue)
+                                    Text("Not Solved", color = RedDue, fontWeight = FontWeight.Bold)
                                 }
                             }
 
@@ -854,12 +858,12 @@ fun CustomerHelpScreen(
                                 if (req.billId.isBlank()) {
                                     Button(
                                         onClick = { onGetBillFromHelp(req) },
-                                        colors = ButtonDefaults.buttonColors(containerColor = TealAccent),
+                                        colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
                                         modifier = Modifier.testTag("get_bill_help_${req.id}")
                                     ) {
-                                        Icon(Icons.Default.Receipt, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Icon(Icons.Default.Receipt, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                                         Spacer(Modifier.width(4.dp))
-                                        Text("Get Bill")
+                                        Text("Get Bill", fontWeight = FontWeight.Bold, color = Color.White)
                                     }
                                 } else {
                                     Surface(color = GreenPaidBg, shape = RoundedCornerShape(999.dp)) {
@@ -898,9 +902,9 @@ fun CustomerHelpScreen(
                                     colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                                     modifier = Modifier.testTag("dispatch_card_help_${req.id}")
                                 ) {
-                                    Icon(Icons.Default.Badge, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Icon(Icons.Default.Badge, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text("Dispatch Card (WhatsApp)")
+                                    Text("Dispatch Card (WhatsApp)", color = Color.White, fontWeight = FontWeight.Bold)
                                 }
                             }
 

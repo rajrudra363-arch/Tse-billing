@@ -156,13 +156,66 @@ data class UserSession(
         }
 }
 
+object AuthPolicy {
+    const val CANONICAL_ADMIN_USERNAME = "@TotalSolutionEnterprises"
+
+    data class PasswordStrengthResult(
+        val hasMinLength: Boolean,
+        val hasUppercase: Boolean,
+        val hasLowercase: Boolean,
+        val hasDigit: Boolean,
+        val hasSpecialChar: Boolean,
+        val hasNoWhitespace: Boolean
+    ) {
+        val isStrong: Boolean
+            get() = hasMinLength && hasUppercase && hasLowercase && hasDigit && hasSpecialChar && hasNoWhitespace
+
+        val score: Int
+            get() = listOf(
+                hasMinLength,
+                hasUppercase,
+                hasLowercase,
+                hasDigit,
+                hasSpecialChar && hasNoWhitespace
+            ).count { it }
+
+        fun firstMissingRequirement(): String? = when {
+            !hasNoWhitespace -> "Password cannot contain spaces."
+            !hasMinLength -> "Password must be at least 8 characters."
+            !hasUppercase -> "Include at least 1 uppercase letter (A-Z)."
+            !hasLowercase -> "Include at least 1 lowercase letter (a-z)."
+            !hasDigit -> "Include at least 1 number (0-9)."
+            !hasSpecialChar -> "Include at least 1 special symbol (@, #, $, %, !, etc.)."
+            else -> null
+        }
+    }
+
+    fun evaluatePassword(password: String): PasswordStrengthResult = PasswordStrengthResult(
+        hasMinLength = password.length >= 8,
+        hasUppercase = password.any { it.isUpperCase() },
+        hasLowercase = password.any { it.isLowerCase() },
+        hasDigit = password.any { it.isDigit() },
+        hasSpecialChar = password.any { !it.isLetterOrDigit() && !it.isWhitespace() },
+        hasNoWhitespace = password.none { it.isWhitespace() }
+    )
+
+    fun formatHandle(username: String): String {
+        val clean = username.trim()
+        return if (clean.isBlank()) "" else if (clean.startsWith("@")) clean else "@$clean"
+    }
+}
+
 data class LoginSecurityState(
     val failedAttempts: Int = 0,
-    val lockUntilMillis: Long = 0L
+    val lockUntilMillis: Long = 0L,
+    val maxAttempts: Int = MAX_ATTEMPTS,
+    val lockDurationMs: Long = LOCK_DURATION_MS
 ) {
     companion object {
         const val MAX_ATTEMPTS = 5
         const val LOCK_DURATION_MS = 2L * 60L * 60L * 1000L // 2 hours
+        const val ADMIN_MAX_ATTEMPTS = 3
+        const val ADMIN_LOCK_DURATION_MS = 15L * 60L * 1000L // 15 minutes (device-local)
     }
 
     fun isLocked(nowMillis: Long = System.currentTimeMillis()): Boolean =
@@ -176,7 +229,7 @@ data class LoginSecurityState(
 
     fun remainingAttempts(nowMillis: Long = System.currentTimeMillis()): Int =
         if (isLocked(nowMillis)) 0
-        else (MAX_ATTEMPTS - effectiveFailedAttempts(nowMillis)).coerceIn(0, MAX_ATTEMPTS)
+        else (maxAttempts - effectiveFailedAttempts(nowMillis)).coerceIn(0, maxAttempts)
 }
 
 object BillingTimePolicy {

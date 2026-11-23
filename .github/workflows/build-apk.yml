@@ -67,15 +67,18 @@ jobs:
           elif [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
             printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > app/google-services.json
             echo "Wrote app/google-services.json from GOOGLE_SERVICES_JSON_BASE64 secret."
+          elif [ ! -f app/google-services.json ] && [ -f google-services.json.base64 ]; then
+            base64 -d google-services.json.base64 > app/google-services.json
+            echo "Restored app/google-services.json from google-services.json.base64."
           fi
 
           if [ ! -f app/google-services.json ]; then
-            echo "::error::app/google-services.json is missing on GitHub! Push app/google-services.json to GitHub OR add it in GitHub Repo -> Settings -> Secrets and variables -> Actions -> New repository secret named GOOGLE_SERVICES_JSON."
+            echo "::error::app/google-services.json is missing on GitHub! Push google-services.json.base64 or add GOOGLE_SERVICES_JSON secret."
             exit 1
           fi
 
           if ! grep -q '"client_type": 3' app/google-services.json && ! grep -q '"client_type":3' app/google-services.json; then
-            echo "::error::app/google-services.json in GitHub is missing the Web OAuth client (client_type: 3) required for default_web_client_id! Copy the latest app/google-services.json from AI Studio to GitHub or GOOGLE_SERVICES_JSON secret."
+            echo "::error::app/google-services.json in GitHub is missing the Web OAuth client (client_type: 3) required for default_web_client_id!"
             exit 1
           fi
           echo "Verified app/google-services.json contains package & Web OAuth client."

@@ -56,13 +56,37 @@ jobs:
             fi
           fi
 
+      - name: Prepare and verify Google Services config
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+            echo "Wrote app/google-services.json from GOOGLE_SERVICES_JSON secret."
+          elif [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > app/google-services.json
+            echo "Wrote app/google-services.json from GOOGLE_SERVICES_JSON_BASE64 secret."
+          fi
+
+          if [ ! -f app/google-services.json ]; then
+            echo "::error::app/google-services.json is missing on GitHub! Push app/google-services.json to GitHub OR add it in GitHub Repo -> Settings -> Secrets and variables -> Actions -> New repository secret named GOOGLE_SERVICES_JSON."
+            exit 1
+          fi
+
+          if ! grep -q '"client_type": 3' app/google-services.json && ! grep -q '"client_type":3' app/google-services.json; then
+            echo "::error::app/google-services.json in GitHub is missing the Web OAuth client (client_type: 3) required for default_web_client_id! Copy the latest app/google-services.json from AI Studio to GitHub or GOOGLE_SERVICES_JSON secret."
+            exit 1
+          fi
+          echo "Verified app/google-services.json contains package & Web OAuth client."
+
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 9.3.1
 
       - name: Build Debug APK
-        run: gradle :app:processDebugGoogleServices --rerun-tasks && gradle assembleDebug
+        run: gradle :app:processDebugGoogleServices --rerun-tasks assembleDebug --no-build-cache
 
       - name: Upload TSE Billing APK
         uses: actions/upload-artifact@v4

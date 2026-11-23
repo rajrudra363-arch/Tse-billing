@@ -62,7 +62,7 @@ jobs:
           gradle-version: 9.3.1
 
       - name: Build Debug APK
-        run: gradle assembleDebug
+        run: gradle :app:processDebugGoogleServices --rerun-tasks && gradle assembleDebug
 
       - name: Upload TSE Billing APK
         uses: actions/upload-artifact@v4

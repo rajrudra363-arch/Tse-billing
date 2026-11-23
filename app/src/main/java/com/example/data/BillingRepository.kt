@@ -20,7 +20,8 @@ data class BackupImportSummary(
     val productsCount: Int,
     val accountsCount: Int,
     val helpCount: Int,
-    val settlementsCount: Int = 0
+    val settlementsCount: Int = 0,
+    val expensesCount: Int = 0
 )
 
 object AuthHasher {
@@ -41,6 +42,9 @@ class BillingRepository(
     private val configDao = db.appConfigDao()
     private val helpDao = db.customerHelpDao()
     private val settlementDao = db.technicianSettlementDao()
+    private val expenseDao = db.expenseDao()
+    private val trashDao = db.trashItemDao()
+    private val auditDao = db.auditLogDao()
 
     private val _volatileCloudActive = MutableStateFlow(false)
     val isVolatileCloudMode: StateFlow<Boolean> = _volatileCloudActive.asStateFlow()
@@ -53,6 +57,9 @@ class BillingRepository(
     private val _volatileAccounts = MutableStateFlow<List<UserAccountEntity>>(emptyList())
     private val _volatileHelpRequests = MutableStateFlow<List<CustomerHelpEntity>>(emptyList())
     private val _volatileSettlements = MutableStateFlow<List<TechnicianSettlementEntity>>(emptyList())
+    private val _volatileExpenses = MutableStateFlow<List<ExpenseEntity>>(emptyList())
+    private val _volatileTrashItems = MutableStateFlow<List<TrashItemEntity>>(emptyList())
+    private val _volatileAuditLogs = MutableStateFlow<List<AuditLogEntity>>(emptyList())
     private val _volatileCompany = MutableStateFlow<CompanySettings?>(null)
     private val _volatileUpi = MutableStateFlow<UpiSettings?>(null)
     private val _volatileVoice = MutableStateFlow<VoiceAndNoteSettings?>(null)
@@ -110,8 +117,43 @@ class BillingRepository(
         if (volatile) cloud else local
     }
 
+    val expenses: Flow<List<ExpenseEntity>> = combine(
+        expenseDao.observeAll(),
+        _volatileCloudActive,
+        _volatileExpenses
+    ) { local, volatile, cloud ->
+        if (volatile) cloud else local
+    }
+
+    val trashItems: Flow<List<TrashItemEntity>> = combine(
+        trashDao.observeActive(),
+        _volatileCloudActive,
+        _volatileTrashItems
+    ) { local, volatile, cloud ->
+        if (volatile) cloud.filter { it.status == "TRASHED" } else local
+    }
+
+    val auditLogs: Flow<List<AuditLogEntity>> = combine(
+        auditDao.observeRecent(),
+        _volatileCloudActive,
+        _volatileAuditLogs
+    ) { local, volatile, cloud ->
+        if (volatile) cloud else local
+    }
+
     val configMap: Flow<Map<String, String>> = configDao.observeAll().map { list ->
         list.associate { it.key to it.value }
+    }
+
+    val isStaffOnlyApk: Flow<Boolean> = configMap.map { m ->
+        val role = m[KEY_CLOUD_DEVICE_ROLE].orEmpty()
+        m[KEY_STAFF_APK_MODE] == "1" ||
+            role.equals("technician", ignoreCase = true) ||
+            role.equals("super_admin", ignoreCase = true)
+    }
+
+    val prefillInviteCode: Flow<String> = configMap.map { m ->
+        m[KEY_PREFILL_INVITE_CODE].orEmpty()
     }
 
     val cloudWorkspaceInfo: Flow<CloudWorkspaceInfo> = configMap.map { m ->
@@ -442,6 +484,20 @@ class BillingRepository(
         configDao.setValue(AppConfigEntity(KEY_PERMISSIONS_PROMPTED, "1"))
     }
 
+    suspend fun setStaffOnlyInviteMode(role: String = "", inviteCode: String = "") {
+        val entries = mutableListOf(AppConfigEntity(KEY_STAFF_APK_MODE, "1"))
+        if (inviteCode.isNotBlank()) {
+            entries += AppConfigEntity(KEY_PREFILL_INVITE_CODE, inviteCode.trim().uppercase(Locale.US))
+        }
+        if (role.isNotBlank()) {
+            val norm = normalizeRole(role)
+            if (norm == "technician" || norm == "super_admin") {
+                entries += AppConfigEntity(KEY_CLOUD_DEVICE_ROLE, norm)
+            }
+        }
+        configDao.setAll(entries)
+    }
+
     suspend fun addTechnician(
         displayName: String,
         phone: String,
@@ -715,6 +771,7 @@ class BillingRepository(
             } else {
                 bill
             }
+            adjustVolatileStockForBillChange(existing, safeBill, wsId)
             if (wsId.isNotBlank()) {
                 cloudSync?.pushBill(wsId, safeBill)
             }
@@ -767,9 +824,11 @@ class BillingRepository(
         } else {
             bill
         }
+        val modifiedProducts = adjustLocalStockForBillChange(existing, safeBill)
         billDao.upsert(safeBill)
         if (wsId.isNotBlank()) {
             cloudSync?.pushBill(wsId, safeBill)
+            modifiedProducts.forEach { cloudSync?.pushProduct(wsId, it) }
         }
         val custName = bill.customerName.trim()
         if (custName.isNotEmpty()) {
@@ -805,15 +864,133 @@ class BillingRepository(
         }
     }
 
-    suspend fun deleteBill(id: String): Boolean {
-        val existing = billDao.findById(id)
-        if (existing != null && existing.staffRating in 1..5) {
+    private fun billedQtyByProductName(bill: BillEntity?): Map<String, Double> {
+        if (bill == null || DocumentType.fromString(bill.documentType) != DocumentType.BILL) return emptyMap()
+        val totals = linkedMapOf<String, Double>()
+        InvoiceItemJson.fromJson(bill.itemsJson).forEach { item ->
+            val key = item.description.trim().lowercase(Locale.ROOT)
+            if (key.isNotEmpty() && item.qty > 0.0) {
+                totals[key] = (totals[key] ?: 0.0) + item.qty
+            }
+        }
+        return totals
+    }
+
+    private suspend fun isStockTrackedFor(product: ProductEntity): Boolean {
+        if (product.stockQty > 0.0 || product.minStockAlert > 0.0) return true
+        val key = "$KEY_STOCK_TRACKED_PREFIX${product.name.trim().lowercase(Locale.ROOT)}"
+        return configDao.getValue(key) == "1"
+    }
+
+    private suspend fun markStockTrackedIfNeeded(product: ProductEntity) {
+        if (product.stockQty > 0.0 || product.minStockAlert > 0.0) {
+            val key = "$KEY_STOCK_TRACKED_PREFIX${product.name.trim().lowercase(Locale.ROOT)}"
+            configDao.setValue(AppConfigEntity(key, "1"))
+        }
+    }
+
+    private suspend fun adjustLocalStockForBillChange(oldBill: BillEntity?, newBill: BillEntity?): List<ProductEntity> {
+        val oldMap = billedQtyByProductName(oldBill)
+        val newMap = billedQtyByProductName(newBill)
+        val keys = oldMap.keys + newMap.keys
+        if (keys.isEmpty()) return emptyList()
+
+        val allProducts = productDao.getAll()
+        val byLowerName = allProducts.associateBy { it.name.trim().lowercase(Locale.ROOT) }
+        val updatedList = mutableListOf<ProductEntity>()
+        for (k in keys) {
+            val delta = (oldMap[k] ?: 0.0) - (newMap[k] ?: 0.0)
+            if (kotlin.math.abs(delta) < 1e-6) continue
+            val product = byLowerName[k] ?: continue
+            val tracked = isStockTrackedFor(product)
+            if (!tracked) continue
+            markStockTrackedIfNeeded(product)
+            val updatedQty = (product.stockQty + delta).coerceAtLeast(0.0)
+            if (kotlin.math.abs(updatedQty - product.stockQty) >= 1e-6) {
+                val updatedProduct = product.copy(stockQty = updatedQty)
+                productDao.upsert(updatedProduct)
+                updatedList += updatedProduct
+            }
+        }
+        return updatedList
+    }
+
+    private suspend fun adjustVolatileStockForBillChange(oldBill: BillEntity?, newBill: BillEntity?, wsId: String) {
+        val oldMap = billedQtyByProductName(oldBill)
+        val newMap = billedQtyByProductName(newBill)
+        val keys = oldMap.keys + newMap.keys
+        if (keys.isEmpty()) return
+
+        val currentProducts = _volatileProducts.value.toMutableList()
+        var changed = false
+        for (k in keys) {
+            val delta = (oldMap[k] ?: 0.0) - (newMap[k] ?: 0.0)
+            if (kotlin.math.abs(delta) < 1e-6) continue
+            val idx = currentProducts.indexOfFirst { it.name.trim().lowercase(Locale.ROOT) == k }
+            if (idx < 0) continue
+            val product = currentProducts[idx]
+            if (product.stockQty <= 0.0 && product.minStockAlert <= 0.0) continue
+            val updatedQty = (product.stockQty + delta).coerceAtLeast(0.0)
+            if (kotlin.math.abs(updatedQty - product.stockQty) >= 1e-6) {
+                val updatedProduct = product.copy(stockQty = updatedQty)
+                currentProducts[idx] = updatedProduct
+                changed = true
+                if (wsId.isNotBlank()) {
+                    cloudSync?.pushProduct(wsId, updatedProduct)
+                }
+            }
+        }
+        if (changed) {
+            _volatileProducts.value = currentProducts
+        }
+    }
+
+    suspend fun deleteBill(
+        id: String,
+        actorUsername: String = "Admin",
+        actorRole: String = "admin",
+        nowMillis: Long = System.currentTimeMillis()
+    ): Boolean {
+        val existing = billDao.findById(id) ?: return true
+        if (existing.staffRating in 1..5) {
             return false
         }
-        billDao.deleteById(id)
+        val trashItem = TrashItemEntity(
+            id = "tr_bill_${existing.id}_$nowMillis",
+            entityType = ENTITY_BILL,
+            entityId = existing.id,
+            title = "${existing.invoiceNo} — ${existing.customerName.ifBlank { "Customer" }}",
+            summary = "${DocumentType.fromString(existing.documentType).label} · Total ₹${String.format(Locale.US, "%.2f", existing.grandTotal)}",
+            payloadJson = billToJson(existing).toString(),
+            deletedBy = actorUsername.trim().ifBlank { "Admin" },
+            deletedByRole = normalizeRole(actorRole),
+            status = "TRASHED",
+            deletedAt = nowMillis,
+            expireAt = nowMillis + TRASH_RETENTION_MS
+        )
+        val audit = buildAuditLog(
+            action = "DELETE",
+            entityType = ENTITY_BILL,
+            entityId = existing.id,
+            title = trashItem.title,
+            actorUsername = trashItem.deletedBy,
+            actorRole = trashItem.deletedByRole,
+            details = "Moved to Trash (auto-deletes in 24h)",
+            createdAt = nowMillis
+        )
+        var restoredProducts: List<ProductEntity> = emptyList()
+        db.withTransaction {
+            restoredProducts = adjustLocalStockForBillChange(oldBill = existing, newBill = null)
+            billDao.deleteById(id)
+            trashDao.upsert(trashItem)
+            auditDao.insert(audit)
+        }
         val wsId = getActiveWorkspaceId()
         if (wsId.isNotBlank()) {
             cloudSync?.deleteBill(wsId, id)
+            cloudSync?.pushTrashItem(wsId, trashItem)
+            cloudSync?.pushAuditLog(wsId, audit)
+            restoredProducts.forEach { cloudSync?.pushProduct(wsId, it) }
         }
         return true
     }
@@ -949,12 +1126,46 @@ class BillingRepository(
         return (phoneLine ?: "") to addressLines.joinToString(", ")
     }
 
-    suspend fun deleteCustomer(id: Long) {
-        val existing = customerDao.getAll().firstOrNull { it.id == id }
-        customerDao.deleteById(id)
+    suspend fun deleteCustomer(
+        id: Long,
+        actorUsername: String = "Admin",
+        actorRole: String = "admin",
+        nowMillis: Long = System.currentTimeMillis()
+    ) {
+        val existing = customerDao.findById(id) ?: customerDao.getAll().firstOrNull { it.id == id } ?: return
+        val trashItem = TrashItemEntity(
+            id = "tr_cust_${existing.id}_$nowMillis",
+            entityType = ENTITY_CUSTOMER,
+            entityId = existing.id.toString(),
+            title = existing.name,
+            summary = existing.phone.ifBlank { existing.address.ifBlank { "Saved Customer" } },
+            payloadJson = customerToJson(existing).toString(),
+            deletedBy = actorUsername.trim().ifBlank { "Admin" },
+            deletedByRole = normalizeRole(actorRole),
+            status = "TRASHED",
+            deletedAt = nowMillis,
+            expireAt = nowMillis + TRASH_RETENTION_MS
+        )
+        val audit = buildAuditLog(
+            action = "DELETE",
+            entityType = ENTITY_CUSTOMER,
+            entityId = existing.id.toString(),
+            title = existing.name,
+            actorUsername = trashItem.deletedBy,
+            actorRole = trashItem.deletedByRole,
+            details = "Customer moved to Trash (24h retention)",
+            createdAt = nowMillis
+        )
+        db.withTransaction {
+            customerDao.deleteById(id)
+            trashDao.upsert(trashItem)
+            auditDao.insert(audit)
+        }
         val wsId = getActiveWorkspaceId()
-        if (wsId.isNotBlank() && existing != null) {
+        if (wsId.isNotBlank()) {
             cloudSync?.deleteCustomer(wsId, existing)
+            cloudSync?.pushTrashItem(wsId, trashItem)
+            cloudSync?.pushAuditLog(wsId, audit)
         }
     }
 
@@ -1169,50 +1380,378 @@ class BillingRepository(
         }
     }
 
-    suspend fun deleteHelpRequest(id: Long) {
-        helpDao.deleteById(id)
+    suspend fun deleteHelpRequest(
+        id: Long,
+        actorUsername: String = "Admin",
+        actorRole: String = "admin",
+        nowMillis: Long = System.currentTimeMillis()
+    ) {
+        val existing = helpDao.findById(id)
+        if (existing == null) {
+            helpDao.deleteById(id)
+            return
+        }
+        val trashItem = TrashItemEntity(
+            id = "tr_help_${existing.id}_$nowMillis",
+            entityType = ENTITY_HELP,
+            entityId = existing.id.toString(),
+            title = "Help #${existing.id} — ${existing.customerName.ifBlank { existing.phone }}",
+            summary = existing.helpDescription.take(80),
+            payloadJson = helpToJson(existing).toString(),
+            deletedBy = actorUsername.trim().ifBlank { "Admin" },
+            deletedByRole = normalizeRole(actorRole),
+            status = "TRASHED",
+            deletedAt = nowMillis,
+            expireAt = nowMillis + TRASH_RETENTION_MS
+        )
+        val audit = buildAuditLog(
+            action = "DELETE",
+            entityType = ENTITY_HELP,
+            entityId = existing.id.toString(),
+            title = trashItem.title,
+            actorUsername = trashItem.deletedBy,
+            actorRole = trashItem.deletedByRole,
+            details = "Help request moved to Trash (24h retention)",
+            createdAt = nowMillis
+        )
+        db.withTransaction {
+            helpDao.deleteById(id)
+            trashDao.upsert(trashItem)
+            auditDao.insert(audit)
+        }
         val wsId = getActiveWorkspaceId()
         if (wsId.isNotBlank()) {
             cloudSync?.deleteHelpRequest(wsId, id)
+            cloudSync?.pushTrashItem(wsId, trashItem)
+            cloudSync?.pushAuditLog(wsId, audit)
         }
     }
 
-    suspend fun addProduct(name: String, unit: String, rate: Double, folder: String = "General") {
+    suspend fun addProduct(
+        name: String,
+        unit: String,
+        rate: Double,
+        folder: String = "General",
+        stockQty: Double = 0.0,
+        minStockAlert: Double = 0.0
+    ) {
         val entity = ProductEntity(
             name = name.trim(),
             unit = unit.trim().ifEmpty { "Nos" },
             defaultRate = rate.coerceAtLeast(0.0),
-            folder = folder.trim().ifEmpty { "General" }
+            folder = folder.trim().ifEmpty { "General" },
+            stockQty = stockQty.coerceAtLeast(0.0),
+            minStockAlert = minStockAlert.coerceAtLeast(0.0)
         )
         val rowId = productDao.upsert(entity)
+        markStockTrackedIfNeeded(entity)
         val wsId = getActiveWorkspaceId()
         if (wsId.isNotBlank()) {
             cloudSync?.pushProduct(wsId, entity.copy(id = rowId))
         }
     }
 
-    suspend fun updateProduct(id: Long, name: String, unit: String, rate: Double, folder: String = "General") {
+    suspend fun updateProduct(
+        id: Long,
+        name: String,
+        unit: String,
+        rate: Double,
+        folder: String = "General",
+        stockQty: Double? = null,
+        minStockAlert: Double? = null
+    ) {
+        val old = productDao.findById(id)
         val entity = ProductEntity(
             id = id,
             name = name.trim(),
             unit = unit.trim().ifEmpty { "Nos" },
             defaultRate = rate.coerceAtLeast(0.0),
-            folder = folder.trim().ifEmpty { "General" }
+            folder = folder.trim().ifEmpty { "General" },
+            stockQty = (stockQty ?: old?.stockQty ?: 0.0).coerceAtLeast(0.0),
+            minStockAlert = (minStockAlert ?: old?.minStockAlert ?: 0.0).coerceAtLeast(0.0)
         )
         productDao.upsert(entity)
+        markStockTrackedIfNeeded(entity)
         val wsId = getActiveWorkspaceId()
         if (wsId.isNotBlank()) {
             cloudSync?.pushProduct(wsId, entity)
         }
     }
 
-    suspend fun deleteProduct(id: Long) {
-        productDao.deleteById(id)
+    suspend fun deleteProduct(
+        id: Long,
+        actorUsername: String = "Admin",
+        actorRole: String = "admin",
+        nowMillis: Long = System.currentTimeMillis()
+    ) {
+        val existing = productDao.findById(id)
+        if (existing == null) {
+            productDao.deleteById(id)
+            return
+        }
+        val trashItem = TrashItemEntity(
+            id = "tr_prod_${existing.id}_$nowMillis",
+            entityType = ENTITY_PRODUCT,
+            entityId = existing.id.toString(),
+            title = existing.name,
+            summary = "${existing.folder} · ₹${String.format(Locale.US, "%.0f", existing.defaultRate)}/${existing.unit}",
+            payloadJson = productToJson(existing).toString(),
+            deletedBy = actorUsername.trim().ifBlank { "Admin" },
+            deletedByRole = normalizeRole(actorRole),
+            status = "TRASHED",
+            deletedAt = nowMillis,
+            expireAt = nowMillis + TRASH_RETENTION_MS
+        )
+        val audit = buildAuditLog(
+            action = "DELETE",
+            entityType = ENTITY_PRODUCT,
+            entityId = existing.id.toString(),
+            title = existing.name,
+            actorUsername = trashItem.deletedBy,
+            actorRole = trashItem.deletedByRole,
+            details = "Product moved to Trash (24h retention)",
+            createdAt = nowMillis
+        )
+        db.withTransaction {
+            productDao.deleteById(id)
+            trashDao.upsert(trashItem)
+            auditDao.insert(audit)
+        }
         val wsId = getActiveWorkspaceId()
         if (wsId.isNotBlank()) {
             cloudSync?.deleteProduct(wsId, id)
+            cloudSync?.pushTrashItem(wsId, trashItem)
+            cloudSync?.pushAuditLog(wsId, audit)
         }
     }
+
+    suspend fun saveExpense(
+        expense: ExpenseEntity,
+        actorUsername: String = "Admin",
+        actorRole: String = "admin"
+    ): Result<ExpenseEntity> {
+        val cleanTitle = expense.title.trim()
+        if (cleanTitle.length < 2) {
+            return Result.failure(IllegalArgumentException("Enter an expense title"))
+        }
+        if (expense.amount <= 0.0) {
+            return Result.failure(IllegalArgumentException("Enter expense amount greater than 0"))
+        }
+        val now = System.currentTimeMillis()
+        val finalExpense = expense.copy(
+            id = expense.id.ifBlank { "exp_$now" },
+            title = cleanTitle,
+            category = expense.category.trim().ifBlank { "General" },
+            amount = expense.amount.coerceAtLeast(0.0),
+            recordedBy = expense.recordedBy.ifBlank { actorUsername },
+            updatedAt = now
+        )
+        val audit = buildAuditLog(
+            action = if (expense.id.isBlank()) "EXPENSE_ADD" else "EXPENSE_EDIT",
+            entityType = ENTITY_EXPENSE,
+            entityId = finalExpense.id,
+            title = finalExpense.title,
+            actorUsername = actorUsername,
+            actorRole = normalizeRole(actorRole),
+            details = "₹${String.format(Locale.US, "%.2f", finalExpense.amount)} (${finalExpense.category})",
+            createdAt = now
+        )
+        db.withTransaction {
+            expenseDao.upsert(finalExpense)
+            auditDao.insert(audit)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushExpense(wsId, finalExpense)
+            cloudSync?.pushAuditLog(wsId, audit)
+        }
+        return Result.success(finalExpense)
+    }
+
+    suspend fun deleteExpense(
+        id: String,
+        actorUsername: String = "Admin",
+        actorRole: String = "admin",
+        nowMillis: Long = System.currentTimeMillis()
+    ) {
+        val existing = expenseDao.findById(id) ?: return
+        val trashItem = TrashItemEntity(
+            id = "tr_exp_${existing.id}_$nowMillis",
+            entityType = ENTITY_EXPENSE,
+            entityId = existing.id,
+            title = existing.title,
+            summary = "${existing.category} · ₹${String.format(Locale.US, "%.2f", existing.amount)}",
+            payloadJson = expenseToJson(existing).toString(),
+            deletedBy = actorUsername.trim().ifBlank { "Admin" },
+            deletedByRole = normalizeRole(actorRole),
+            status = "TRASHED",
+            deletedAt = nowMillis,
+            expireAt = nowMillis + TRASH_RETENTION_MS
+        )
+        val audit = buildAuditLog(
+            action = "DELETE",
+            entityType = ENTITY_EXPENSE,
+            entityId = existing.id,
+            title = existing.title,
+            actorUsername = trashItem.deletedBy,
+            actorRole = trashItem.deletedByRole,
+            details = "Expense moved to Trash (24h retention)",
+            createdAt = nowMillis
+        )
+        db.withTransaction {
+            expenseDao.deleteById(id)
+            trashDao.upsert(trashItem)
+            auditDao.insert(audit)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.deleteExpense(wsId, id)
+            cloudSync?.pushTrashItem(wsId, trashItem)
+            cloudSync?.pushAuditLog(wsId, audit)
+        }
+    }
+
+    suspend fun restoreTrashItem(
+        trashId: String,
+        actorUsername: String = "Admin",
+        actorRole: String = "admin",
+        nowMillis: Long = System.currentTimeMillis()
+    ): Result<String> {
+        val item = trashDao.findById(trashId)
+            ?: return Result.failure(IllegalStateException("Trash item not found."))
+        if (item.status != "TRASHED") {
+            return Result.failure(IllegalStateException("Item is already restored."))
+        }
+        if (nowMillis >= item.expireAt) {
+            purgeExpiredTrash(nowMillis)
+            return Result.failure(IllegalStateException("24-hour restore window expired; item has been permanently deleted."))
+        }
+
+        val updatedTrash = item.copy(
+            status = "RESTORED",
+            restoredAt = nowMillis,
+            restoredBy = actorUsername.trim().ifBlank { "Admin" }
+        )
+        val audit = buildAuditLog(
+            action = "RESTORE",
+            entityType = item.entityType,
+            entityId = item.entityId,
+            title = item.title,
+            actorUsername = updatedTrash.restoredBy,
+            actorRole = normalizeRole(actorRole),
+            details = "Restored from Trash before 24h expiry",
+            createdAt = nowMillis
+        )
+        val obj = JSONObject(item.payloadJson)
+        val wsId = getActiveWorkspaceId()
+        var modifiedProducts: List<ProductEntity> = emptyList()
+        var restoredBill: BillEntity? = null
+        var restoredCustomer: CustomerEntity? = null
+        var restoredProduct: ProductEntity? = null
+        var restoredExpense: ExpenseEntity? = null
+        var restoredHelp: CustomerHelpEntity? = null
+
+        db.withTransaction {
+            when (item.entityType) {
+                ENTITY_BILL -> {
+                    val b = billFromJson(obj)
+                    modifiedProducts = adjustLocalStockForBillChange(oldBill = null, newBill = b)
+                    billDao.upsert(b)
+                    restoredBill = b
+                }
+                ENTITY_CUSTOMER -> {
+                    val c = customerFromJson(obj)
+                    val newId = customerDao.upsert(c)
+                    restoredCustomer = if (c.id > 0L) c else c.copy(id = newId)
+                }
+                ENTITY_PRODUCT -> {
+                    val p = productFromJson(obj)
+                    val newId = productDao.upsert(p)
+                    markStockTrackedIfNeeded(p)
+                    restoredProduct = if (p.id > 0L) p else p.copy(id = newId)
+                }
+                ENTITY_EXPENSE -> {
+                    val e = expenseFromJson(obj)
+                    expenseDao.upsert(e)
+                    restoredExpense = e
+                }
+                ENTITY_HELP -> {
+                    val h = helpFromJson(obj)
+                    val newId = helpDao.upsert(h)
+                    restoredHelp = if (h.id > 0L) h else h.copy(id = newId)
+                }
+                ENTITY_SETTLEMENT -> {
+                    val s = settlementFromJson(obj)
+                    settlementDao.insert(s)
+                }
+            }
+            trashDao.upsert(updatedTrash)
+            auditDao.insert(audit)
+        }
+
+        if (wsId.isNotBlank()) {
+            restoredBill?.let { cloudSync?.pushBill(wsId, it) }
+            modifiedProducts.forEach { cloudSync?.pushProduct(wsId, it) }
+            restoredCustomer?.let { cloudSync?.pushCustomer(wsId, it) }
+            restoredProduct?.let { cloudSync?.pushProduct(wsId, it) }
+            restoredExpense?.let { cloudSync?.pushExpense(wsId, it) }
+            restoredHelp?.let { cloudSync?.pushHelpRequest(wsId, it, isTechnicianStatusUpdate = false) }
+            cloudSync?.pushTrashItem(wsId, updatedTrash)
+            cloudSync?.pushAuditLog(wsId, audit)
+        }
+        return Result.success("Restored: ${item.title}")
+    }
+
+    suspend fun purgeExpiredTrash(nowMillis: Long = System.currentTimeMillis()): Int {
+        if (_volatileCloudActive.value) return 0
+        val expired = trashDao.getAll().filter { it.status == "TRASHED" && nowMillis >= it.expireAt }
+        if (expired.isEmpty()) return 0
+        val wsId = getActiveWorkspaceId()
+        val auditEntries = mutableListOf<AuditLogEntity>()
+        db.withTransaction {
+            expired.forEach { item ->
+                trashDao.deleteById(item.id)
+                val log = buildAuditLog(
+                    action = "AUTO_PURGE_24H",
+                    entityType = item.entityType,
+                    entityId = item.entityId,
+                    title = item.title,
+                    actorUsername = "System",
+                    actorRole = "system",
+                    details = "Permanently deleted after 24h retention window",
+                    createdAt = nowMillis
+                )
+                auditDao.insert(log)
+                auditEntries += log
+            }
+        }
+        if (wsId.isNotBlank()) {
+            expired.forEach { cloudSync?.deleteTrashItem(wsId, it.id) }
+            auditEntries.forEach { cloudSync?.pushAuditLog(wsId, it) }
+        }
+        return expired.size
+    }
+
+    private fun buildAuditLog(
+        action: String,
+        entityType: String,
+        entityId: String,
+        title: String,
+        actorUsername: String,
+        actorRole: String,
+        details: String,
+        createdAt: Long
+    ): AuditLogEntity = AuditLogEntity(
+        id = "log_${createdAt}_${entityId.take(12)}_${kotlin.math.abs((action + title).hashCode()) % 10000}",
+        action = action,
+        entityType = entityType,
+        entityId = entityId,
+        title = title,
+        actorUsername = actorUsername,
+        actorRole = actorRole,
+        details = details,
+        createdAt = createdAt
+    )
 
     suspend fun saveCompanySettings(settings: CompanySettings, syncCloud: Boolean = true) {
         val entries = mutableListOf(
@@ -1352,63 +1891,16 @@ class BillingRepository(
         }
         val helpList = if (useVolatile) _volatileHelpRequests.value else helpDao.getAll()
         val settlementList = if (useVolatile) _volatileSettlements.value else settlementDao.getAll()
+        val expenseList = if (useVolatile) _volatileExpenses.value else expenseDao.getAll()
+        val trashList = if (useVolatile) _volatileTrashItems.value else trashDao.getAll()
+        val auditList = if (useVolatile) _volatileAuditLogs.value else auditDao.getAll()
 
         val root = JSONObject()
-        root.put("schemaVersion", 6)
+        root.put("schemaVersion", 7)
         root.put("exportedAt", System.currentTimeMillis())
-        root.put("bills", JSONArray().apply {
-            bills.forEach { b ->
-                put(JSONObject().apply {
-                    put("id", b.id)
-                    put("no", b.invoiceNo)
-                    put("date", b.date)
-                    put("customer", b.customerName)
-                    put("details", b.customerDetails)
-                    put("items", JSONArray(b.itemsJson))
-                    put("subtotal", b.subtotal)
-                    put("discount", b.discount)
-                    put("grandTotal", b.grandTotal)
-                    put("paid", b.paidAmount)
-                    put("due", b.dueAmount)
-                    put("paymentMode", b.paymentMode)
-                    put("signature", b.signatureBase64)
-                    put("customQrText", b.customQrText)
-                    put("createdBy", b.createdBy)
-                    put("updatedAt", b.updatedAt)
-                    put("extraChargeType", b.extraChargeType)
-                    put("extraChargeAmount", b.extraChargeAmount)
-                    put("secondaryChargeType", b.secondaryChargeType)
-                    put("secondaryChargeAmount", b.secondaryChargeAmount)
-                    put("staffRating", b.staffRating)
-                    put("staffReviewNote", b.staffReviewNote)
-                    put("documentType", b.documentType)
-                    put("isHelpBill", b.isHelpBill)
-                    put("helpRequestId", b.helpRequestId)
-                    put("quotationNote", b.quotationNote)
-                })
-            }
-        })
-        root.put("customers", JSONArray().apply {
-            customers.forEach { c ->
-                put(JSONObject().apply {
-                    put("name", c.name)
-                    put("details", c.details)
-                    put("phone", c.phone)
-                    put("address", c.address)
-                    put("locationUrl", c.locationUrl)
-                })
-            }
-        })
-        root.put("products", JSONArray().apply {
-            products.forEach { p ->
-                put(JSONObject().apply {
-                    put("name", p.name)
-                    put("unit", p.unit)
-                    put("rate", p.defaultRate)
-                    put("folder", p.folder)
-                })
-            }
-        })
+        root.put("bills", JSONArray().apply { bills.forEach { put(billToJson(it)) } })
+        root.put("customers", JSONArray().apply { customers.forEach { put(customerToJson(it)) } })
+        root.put("products", JSONArray().apply { products.forEach { put(productToJson(it)) } })
         root.put("settings", JSONObject().apply {
             put("company", cfgMap[KEY_COMPANY_NAME] ?: DEFAULT_COMPANY_NAME)
             put("mobile", cfgMap[KEY_COMPANY_MOBILE] ?: DEFAULT_COMPANY_MOBILE)
@@ -1439,38 +1931,11 @@ class BillingRepository(
                 })
             }
         })
-        root.put("helpRequests", JSONArray().apply {
-            helpList.forEach { h ->
-                put(JSONObject().apply {
-                    put("id", h.id)
-                    put("customerName", h.customerName)
-                    put("phone", h.phone)
-                    put("address", h.address)
-                    put("locationUrl", h.locationUrl)
-                    put("helpDescription", h.helpDescription)
-                    put("status", h.status)
-                    put("createdAt", h.createdAt)
-                    put("updatedAt", h.updatedAt)
-                    put("acceptedBy", h.acceptedBy)
-                    put("acceptedByName", h.acceptedByName)
-                    put("acceptedByPhone", h.acceptedByPhone)
-                    put("acceptedAt", h.acceptedAt)
-                    put("solvedAt", h.solvedAt)
-                    put("billId", h.billId)
-                })
-            }
-        })
-        root.put("settlements", JSONArray().apply {
-            settlementList.forEach { s ->
-                put(JSONObject().apply {
-                    put("technicianUsername", s.technicianUsername)
-                    put("amount", s.amount)
-                    put("note", s.note)
-                    put("recordedBy", s.recordedBy)
-                    put("createdAt", s.createdAt)
-                })
-            }
-        })
+        root.put("helpRequests", JSONArray().apply { helpList.forEach { put(helpToJson(it)) } })
+        root.put("settlements", JSONArray().apply { settlementList.forEach { put(settlementToJson(it)) } })
+        root.put("expenses", JSONArray().apply { expenseList.forEach { put(expenseToJson(it)) } })
+        root.put("trashItems", JSONArray().apply { trashList.forEach { put(trashToJson(it)) } })
+        root.put("auditLogs", JSONArray().apply { auditList.forEach { put(auditToJson(it)) } })
         return root.toString(2)
     }
 
@@ -1482,7 +1947,8 @@ class BillingRepository(
                 root.has("customers") ||
                 root.has("accounts") ||
                 root.has("settings") ||
-                root.has("helpRequests")
+                root.has("helpRequests") ||
+                root.has("expenses")
             if (!hasRecognizedSection) {
                 return@withContext Result.failure(IllegalArgumentException("Not a valid TSE Billing backup file"))
             }
@@ -1495,6 +1961,7 @@ class BillingRepository(
             var accountsCount = 0
             var helpCount = 0
             var settlementsCount = 0
+            var expensesCount = 0
 
             db.withTransaction {
                 billDao.deleteAll()
@@ -1565,14 +2032,11 @@ class BillingRepository(
                     val obj = productsArr.getJSONObject(i)
                     val name = obj.optString("name", "").trim()
                     if (name.isNotEmpty()) {
-                        importedProducts.add(
-                            ProductEntity(
-                                name = name,
-                                unit = obj.optString("unit", "Nos"),
-                                defaultRate = obj.optDouble("rate", 0.0),
-                                folder = obj.optString("folder", "").ifBlank { inferFolderForName(name) }
-                            )
+                        val p = productFromJson(obj).copy(
+                            id = 0L,
+                            folder = obj.optString("folder", "").ifBlank { inferFolderForName(name) }
                         )
+                        importedProducts.add(p)
                     }
                 }
                 if (importedProducts.isNotEmpty()) {
@@ -1680,16 +2144,31 @@ class BillingRepository(
                     settlementDao.deleteAll()
                     for (i in 0 until setArr.length()) {
                         val s = setArr.getJSONObject(i)
-                        settlementDao.insert(
-                            TechnicianSettlementEntity(
-                                technicianUsername = s.optString("technicianUsername", ""),
-                                amount = s.optDouble("amount", 0.0),
-                                note = s.optString("note", ""),
-                                recordedBy = s.optString("recordedBy", "Admin"),
-                                createdAt = s.optLong("createdAt", System.currentTimeMillis())
-                            )
-                        )
+                        settlementDao.insert(settlementFromJson(s).copy(id = 0L))
                         settlementsCount++
+                    }
+                }
+
+                root.optJSONArray("expenses")?.let { expArr ->
+                    expenseDao.deleteAll()
+                    for (i in 0 until expArr.length()) {
+                        val e = expArr.getJSONObject(i)
+                        expenseDao.upsert(expenseFromJson(e))
+                        expensesCount++
+                    }
+                }
+
+                root.optJSONArray("trashItems")?.let { trArr ->
+                    trashDao.deleteAll()
+                    for (i in 0 until trArr.length()) {
+                        trashDao.upsert(trashFromJson(trArr.getJSONObject(i)))
+                    }
+                }
+
+                root.optJSONArray("auditLogs")?.let { logArr ->
+                    auditDao.deleteAll()
+                    for (i in 0 until logArr.length()) {
+                        auditDao.insert(auditFromJson(logArr.getJSONObject(i)))
                     }
                 }
             }
@@ -1701,7 +2180,8 @@ class BillingRepository(
                     productsCount = productsCount,
                     accountsCount = accountsCount,
                     helpCount = helpCount,
-                    settlementsCount = settlementsCount
+                    settlementsCount = settlementsCount,
+                    expensesCount = expensesCount
                 )
             )
         } catch (t: Throwable) {
@@ -1745,6 +2225,9 @@ class BillingRepository(
         _volatileCustomers.value = emptyList()
         _volatileHelpRequests.value = emptyList()
         _volatileSettlements.value = emptyList()
+        _volatileExpenses.value = emptyList()
+        _volatileTrashItems.value = emptyList()
+        _volatileAuditLogs.value = emptyList()
         if (_volatileCloudActive.value && _volatileDeviceRole.value.equals("technician", ignoreCase = true)) {
             wipeNonAdminLocalCompanyData()
         }
@@ -1758,6 +2241,9 @@ class BillingRepository(
             settlementDao.deleteAll()
             userDao.deleteAll()
             productDao.deleteAll()
+            expenseDao.deleteAll()
+            trashDao.deleteAll()
+            auditDao.deleteAll()
         }
     }
 
@@ -1777,6 +2263,9 @@ class BillingRepository(
             mergeCloudBillsIntoAdmin(snapshot.bills)
             mergeCloudHelpsIntoAdmin(snapshot.helpRequests)
             mergeCloudSettlementsIntoAdmin(snapshot.settlements)
+            mergeCloudExpensesIntoAdmin(snapshot.expenses)
+            mergeCloudTrashIntoAdmin(snapshot.trashItems)
+            mergeCloudAuditLogsIntoAdmin(snapshot.auditLogs)
         } else {
             enableVolatileCloudMode(role, snapshot.workspace.workspaceId)
             _volatileCompany.value = snapshot.companySettings
@@ -1788,6 +2277,9 @@ class BillingRepository(
             _volatileBills.value = if (role == "super_admin") snapshot.bills else emptyList()
             _volatileHelpRequests.value = snapshot.helpRequests
             _volatileSettlements.value = if (role == "super_admin") snapshot.settlements else emptyList()
+            _volatileExpenses.value = if (role == "super_admin") snapshot.expenses else emptyList()
+            _volatileTrashItems.value = emptyList()
+            _volatileAuditLogs.value = if (role == "super_admin") snapshot.auditLogs else emptyList()
         }
     }
 
@@ -1905,6 +2397,43 @@ class BillingRepository(
         }
     }
 
+    suspend fun mergeCloudExpensesIntoAdmin(cloudExpenses: List<ExpenseEntity>) {
+        if (_volatileCloudActive.value) {
+            if (_volatileDeviceRole.value.equals("super_admin", ignoreCase = true)) {
+                _volatileExpenses.value = cloudExpenses
+            }
+            return
+        }
+        cloudExpenses.forEach { ce ->
+            val old = expenseDao.findById(ce.id)
+            if (old == null || ce.updatedAt >= old.updatedAt) {
+                expenseDao.upsert(ce)
+            }
+        }
+    }
+
+    suspend fun mergeCloudTrashIntoAdmin(cloudTrash: List<TrashItemEntity>) {
+        if (_volatileCloudActive.value) return
+        cloudTrash.forEach { ct ->
+            val old = trashDao.findById(ct.id)
+            if (old == null || ct.restoredAt >= old.restoredAt) {
+                trashDao.upsert(ct)
+            }
+        }
+    }
+
+    suspend fun mergeCloudAuditLogsIntoAdmin(cloudLogs: List<AuditLogEntity>) {
+        if (_volatileCloudActive.value) {
+            if (_volatileDeviceRole.value.equals("super_admin", ignoreCase = true)) {
+                _volatileAuditLogs.value = cloudLogs
+            }
+            return
+        }
+        cloudLogs.forEach { log ->
+            auditDao.insert(log)
+        }
+    }
+
     suspend fun pushLocalDatasetToWorkspace(workspaceId: String) {
         val sync = cloudSync ?: return
         val cfgMap = configDao.getAll().associate { it.key to it.value }
@@ -1940,14 +2469,267 @@ class BillingRepository(
             customers = customerDao.getAll(),
             bills = billDao.getAll(),
             helpRequests = helpDao.getAll(),
-            settlements = settlementDao.getAll()
+            settlements = settlementDao.getAll(),
+            expenses = expenseDao.getAll(),
+            trashItems = trashDao.getAll(),
+            auditLogs = auditDao.getAll()
         )
     }
 
+    private fun billToJson(b: BillEntity): JSONObject = JSONObject().apply {
+        put("id", b.id)
+        put("no", b.invoiceNo)
+        put("date", b.date)
+        put("customer", b.customerName)
+        put("details", b.customerDetails)
+        put("items", JSONArray(b.itemsJson))
+        put("subtotal", b.subtotal)
+        put("discount", b.discount)
+        put("grandTotal", b.grandTotal)
+        put("paid", b.paidAmount)
+        put("due", b.dueAmount)
+        put("paymentMode", b.paymentMode)
+        put("signature", b.signatureBase64)
+        put("customQrText", b.customQrText)
+        put("createdBy", b.createdBy)
+        put("updatedAt", b.updatedAt)
+        put("extraChargeType", b.extraChargeType)
+        put("extraChargeAmount", b.extraChargeAmount)
+        put("secondaryChargeType", b.secondaryChargeType)
+        put("secondaryChargeAmount", b.secondaryChargeAmount)
+        put("staffRating", b.staffRating)
+        put("staffReviewNote", b.staffReviewNote)
+        put("documentType", b.documentType)
+        put("isHelpBill", b.isHelpBill)
+        put("helpRequestId", b.helpRequestId)
+        put("quotationNote", b.quotationNote)
+    }
+
+    private fun billFromJson(obj: JSONObject): BillEntity {
+        val itemsStr = obj.optJSONArray("items")?.toString() ?: "[]"
+        val sub = obj.optDouble("subtotal", 0.0)
+        val disc = obj.optDouble("discount", 0.0)
+        val grand = if (obj.has("grandTotal")) obj.optDouble("grandTotal", 0.0) else maxOf(0.0, sub - disc)
+        val paid = if (obj.has("paid")) obj.optDouble("paid", 0.0) else obj.optDouble("advance", 0.0)
+        val due = if (obj.has("due")) obj.optDouble("due", 0.0) else maxOf(0.0, grand - paid)
+        return BillEntity(
+            id = obj.optString("id", "b${System.currentTimeMillis()}"),
+            invoiceNo = obj.optString("no", "TSE-001"),
+            date = obj.optString("date", ""),
+            customerName = obj.optString("customer", ""),
+            customerDetails = obj.optString("details", ""),
+            itemsJson = itemsStr,
+            subtotal = sub,
+            discount = disc,
+            grandTotal = grand,
+            paidAmount = paid,
+            dueAmount = due,
+            paymentMode = obj.optString("paymentMode", PaymentMode.ONLINE.label),
+            signatureBase64 = obj.optString("signature", ""),
+            customQrText = obj.optString("customQrText", ""),
+            createdBy = obj.optString("createdBy", "Admin"),
+            updatedAt = obj.optLong("updatedAt", System.currentTimeMillis()),
+            extraChargeType = obj.optString("extraChargeType", "NONE"),
+            extraChargeAmount = obj.optDouble("extraChargeAmount", 0.0),
+            secondaryChargeType = obj.optString("secondaryChargeType", "NONE"),
+            secondaryChargeAmount = obj.optDouble("secondaryChargeAmount", 0.0),
+            staffRating = obj.optInt("staffRating", 0).coerceIn(0, 5),
+            staffReviewNote = obj.optString("staffReviewNote", ""),
+            documentType = obj.optString("documentType", DocumentType.BILL.name),
+            isHelpBill = obj.optBoolean("isHelpBill", false),
+            helpRequestId = obj.optLong("helpRequestId", 0L),
+            quotationNote = obj.optString("quotationNote", "")
+        )
+    }
+
+    private fun customerToJson(c: CustomerEntity): JSONObject = JSONObject().apply {
+        put("id", c.id)
+        put("name", c.name)
+        put("details", c.details)
+        put("phone", c.phone)
+        put("address", c.address)
+        put("locationUrl", c.locationUrl)
+    }
+
+    private fun customerFromJson(obj: JSONObject): CustomerEntity = CustomerEntity(
+        id = obj.optLong("id", 0L),
+        name = obj.optString("name", ""),
+        details = obj.optString("details", ""),
+        phone = obj.optString("phone", ""),
+        address = obj.optString("address", ""),
+        locationUrl = obj.optString("locationUrl", "")
+    )
+
+    private fun productToJson(p: ProductEntity): JSONObject = JSONObject().apply {
+        put("id", p.id)
+        put("name", p.name)
+        put("unit", p.unit)
+        put("rate", p.defaultRate)
+        put("folder", p.folder)
+        put("stockQty", p.stockQty)
+        put("minStockAlert", p.minStockAlert)
+    }
+
+    private fun productFromJson(obj: JSONObject): ProductEntity {
+        val name = obj.optString("name", "").trim()
+        return ProductEntity(
+            id = obj.optLong("id", 0L),
+            name = name,
+            unit = obj.optString("unit", "Nos"),
+            defaultRate = obj.optDouble("rate", 0.0),
+            folder = obj.optString("folder", "").ifBlank { inferFolderForName(name) },
+            stockQty = obj.optDouble("stockQty", 0.0).coerceAtLeast(0.0),
+            minStockAlert = obj.optDouble("minStockAlert", 0.0).coerceAtLeast(0.0)
+        )
+    }
+
+    private fun helpToJson(h: CustomerHelpEntity): JSONObject = JSONObject().apply {
+        put("id", h.id)
+        put("customerName", h.customerName)
+        put("phone", h.phone)
+        put("address", h.address)
+        put("locationUrl", h.locationUrl)
+        put("helpDescription", h.helpDescription)
+        put("status", h.status)
+        put("createdAt", h.createdAt)
+        put("updatedAt", h.updatedAt)
+        put("acceptedBy", h.acceptedBy)
+        put("acceptedByName", h.acceptedByName)
+        put("acceptedByPhone", h.acceptedByPhone)
+        put("acceptedAt", h.acceptedAt)
+        put("solvedAt", h.solvedAt)
+        put("billId", h.billId)
+    }
+
+    private fun helpFromJson(h: JSONObject): CustomerHelpEntity = CustomerHelpEntity(
+        id = h.optLong("id", 0L),
+        customerName = h.optString("customerName", ""),
+        phone = h.optString("phone", ""),
+        address = h.optString("address", ""),
+        locationUrl = h.optString("locationUrl", ""),
+        helpDescription = h.optString("helpDescription", ""),
+        status = h.optString("status", "OPEN"),
+        createdAt = h.optLong("createdAt", System.currentTimeMillis()),
+        updatedAt = h.optLong("updatedAt", System.currentTimeMillis()),
+        acceptedBy = h.optString("acceptedBy", ""),
+        acceptedByName = h.optString("acceptedByName", ""),
+        acceptedByPhone = h.optString("acceptedByPhone", ""),
+        acceptedAt = h.optLong("acceptedAt", 0L),
+        solvedAt = h.optLong("solvedAt", 0L),
+        billId = h.optString("billId", "")
+    )
+
+    private fun settlementToJson(s: TechnicianSettlementEntity): JSONObject = JSONObject().apply {
+        put("technicianUsername", s.technicianUsername)
+        put("amount", s.amount)
+        put("note", s.note)
+        put("recordedBy", s.recordedBy)
+        put("createdAt", s.createdAt)
+    }
+
+    private fun settlementFromJson(s: JSONObject): TechnicianSettlementEntity = TechnicianSettlementEntity(
+        technicianUsername = s.optString("technicianUsername", ""),
+        amount = s.optDouble("amount", 0.0),
+        note = s.optString("note", ""),
+        recordedBy = s.optString("recordedBy", "Admin"),
+        createdAt = s.optLong("createdAt", System.currentTimeMillis())
+    )
+
+    private fun expenseToJson(e: ExpenseEntity): JSONObject = JSONObject().apply {
+        put("id", e.id)
+        put("title", e.title)
+        put("category", e.category)
+        put("amount", e.amount)
+        put("date", e.date)
+        put("note", e.note)
+        put("recordedBy", e.recordedBy)
+        put("createdAt", e.createdAt)
+        put("updatedAt", e.updatedAt)
+    }
+
+    private fun expenseFromJson(e: JSONObject): ExpenseEntity = ExpenseEntity(
+        id = e.optString("id", "exp_${System.currentTimeMillis()}"),
+        title = e.optString("title", ""),
+        category = e.optString("category", "General"),
+        amount = e.optDouble("amount", 0.0),
+        date = e.optString("date", ""),
+        note = e.optString("note", ""),
+        recordedBy = e.optString("recordedBy", "Admin"),
+        createdAt = e.optLong("createdAt", System.currentTimeMillis()),
+        updatedAt = e.optLong("updatedAt", System.currentTimeMillis())
+    )
+
+    private fun trashToJson(t: TrashItemEntity): JSONObject = JSONObject().apply {
+        put("id", t.id)
+        put("entityType", t.entityType)
+        put("entityId", t.entityId)
+        put("title", t.title)
+        put("summary", t.summary)
+        put("payloadJson", t.payloadJson)
+        put("deletedBy", t.deletedBy)
+        put("deletedByRole", t.deletedByRole)
+        put("status", t.status)
+        put("deletedAt", t.deletedAt)
+        put("expireAt", t.expireAt)
+        put("restoredAt", t.restoredAt)
+        put("restoredBy", t.restoredBy)
+    }
+
+    private fun trashFromJson(t: JSONObject): TrashItemEntity = TrashItemEntity(
+        id = t.optString("id", "tr_${System.currentTimeMillis()}"),
+        entityType = t.optString("entityType", ENTITY_BILL),
+        entityId = t.optString("entityId", ""),
+        title = t.optString("title", ""),
+        summary = t.optString("summary", ""),
+        payloadJson = t.optString("payloadJson", "{}"),
+        deletedBy = t.optString("deletedBy", "Admin"),
+        deletedByRole = t.optString("deletedByRole", "admin"),
+        status = t.optString("status", "TRASHED"),
+        deletedAt = t.optLong("deletedAt", System.currentTimeMillis()),
+        expireAt = t.optLong("expireAt", System.currentTimeMillis() + TRASH_RETENTION_MS),
+        restoredAt = t.optLong("restoredAt", 0L),
+        restoredBy = t.optString("restoredBy", "")
+    )
+
+    private fun auditToJson(a: AuditLogEntity): JSONObject = JSONObject().apply {
+        put("id", a.id)
+        put("action", a.action)
+        put("entityType", a.entityType)
+        put("entityId", a.entityId)
+        put("title", a.title)
+        put("actorUsername", a.actorUsername)
+        put("actorRole", a.actorRole)
+        put("details", a.details)
+        put("createdAt", a.createdAt)
+    }
+
+    private fun auditFromJson(a: JSONObject): AuditLogEntity = AuditLogEntity(
+        id = a.optString("id", "log_${System.currentTimeMillis()}"),
+        action = a.optString("action", "DELETE"),
+        entityType = a.optString("entityType", ""),
+        entityId = a.optString("entityId", ""),
+        title = a.optString("title", ""),
+        actorUsername = a.optString("actorUsername", "System"),
+        actorRole = a.optString("actorRole", "system"),
+        details = a.optString("details", ""),
+        createdAt = a.optLong("createdAt", System.currentTimeMillis())
+    )
+
     companion object {
         const val HELP_SOLVE_WAIT_MS = 15 * 60 * 1000L
+        const val TRASH_RETENTION_MS = 24L * 60L * 60L * 1000L
+
+        const val ENTITY_BILL = "BILL"
+        const val ENTITY_CUSTOMER = "CUSTOMER"
+        const val ENTITY_PRODUCT = "PRODUCT"
+        const val ENTITY_EXPENSE = "EXPENSE"
+        const val ENTITY_HELP = "HELP"
+        const val ENTITY_SETTLEMENT = "SETTLEMENT"
 
         const val KEY_SEEDED = "seeded_v1"
+        const val KEY_STAFF_APK_MODE = "staff_apk_mode_v1"
+        const val KEY_PREFILL_INVITE_CODE = "prefill_invite_code_v1"
+        const val KEY_STOCK_TRACKED_PREFIX = "stock_tracked_"
         const val KEY_CLOUD_WORKSPACE_ID = "cloud_workspace_id"
         const val KEY_CLOUD_OWNER_UID = "cloud_owner_uid"
         const val KEY_CLOUD_TECH_CODE = "cloud_tech_share_code"

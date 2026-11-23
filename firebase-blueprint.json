@@ -117,6 +117,8 @@
         "createdByUid": { "type": "string" },
         "extraChargeType": { "type": "string" },
         "extraChargeAmount": { "type": "number" },
+        "secondaryChargeType": { "type": "string" },
+        "secondaryChargeAmount": { "type": "number" },
         "staffRating": { "type": "integer" },
         "staffReviewNote": { "type": "string" },
         "documentType": { "type": "string", "enum": ["BILL", "QUOTATION"] },
@@ -130,6 +132,7 @@
         "itemsJson", "subtotal", "discount", "grandTotal", "paidAmount",
         "dueAmount", "paymentMode", "signatureBase64", "customQrText",
         "createdBy", "createdByUid", "extraChargeType", "extraChargeAmount",
+        "secondaryChargeType", "secondaryChargeAmount",
         "staffRating", "staffReviewNote", "documentType", "helpBill",
         "helpRequestId", "quotationNote", "updatedAt"
       ]
@@ -152,7 +155,7 @@
     },
     "WorkspaceProduct": {
       "title": "Product Catalog Item",
-      "description": "CCTV product with category folder and default rate.",
+      "description": "CCTV product with category folder, default rate, and inventory stock levels.",
       "type": "object",
       "properties": {
         "productId": { "type": "string" },
@@ -160,9 +163,11 @@
         "unit": { "type": "string" },
         "defaultRate": { "type": "number" },
         "folder": { "type": "string" },
+        "stockQty": { "type": "number" },
+        "minStockAlert": { "type": "number" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["productId", "name", "unit", "defaultRate", "folder", "updatedAt"]
+      "required": ["productId", "name", "unit", "defaultRate", "folder", "stockQty", "minStockAlert", "updatedAt"]
     },
     "WorkspaceHelpRequest": {
       "title": "Customer Help Request",
@@ -206,6 +211,74 @@
         "createdAt": { "type": "integer" }
       },
       "required": ["settlementId", "technicianUsername", "amount", "note", "recordedBy", "createdAt"]
+    },
+    "WorkspaceExpense": {
+      "title": "Business Expense",
+      "description": "Operational expense tracked by Admin for net profit calculation and Super Admin read-only analytics.",
+      "type": "object",
+      "properties": {
+        "expenseId": { "type": "string" },
+        "title": { "type": "string" },
+        "category": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "note": { "type": "string" },
+        "recordedBy": { "type": "string" },
+        "createdAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" },
+        "serverUpdatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "expenseId", "title", "category", "amount", "date", "note",
+        "recordedBy", "createdAt", "updatedAt", "serverUpdatedAt"
+      ]
+    },
+    "WorkspaceTrashItem": {
+      "title": "24-Hour Soft-Delete Trash Item",
+      "description": "Recoverable deleted record enforced by Firestore security rules to wait 24 hours before permanent deletion.",
+      "type": "object",
+      "properties": {
+        "trashId": { "type": "string" },
+        "entityType": { "type": "string", "enum": ["BILL", "CUSTOMER", "PRODUCT", "EXPENSE", "HELP_REQUEST"] },
+        "entityId": { "type": "string" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "payloadJson": { "type": "string" },
+        "deletedBy": { "type": "string" },
+        "deletedByRole": { "type": "string" },
+        "status": { "type": "string", "enum": ["TRASHED", "RESTORED"] },
+        "deletedAt": { "type": "string", "format": "date-time" },
+        "deletedAtMillis": { "type": "integer" },
+        "expireAt": { "type": "string", "format": "date-time" },
+        "restoredAt": { "type": "integer" },
+        "restoredBy": { "type": "string" }
+      },
+      "required": [
+        "trashId", "entityType", "entityId", "title", "summary", "payloadJson",
+        "deletedBy", "deletedByRole", "status", "deletedAt", "deletedAtMillis",
+        "expireAt", "restoredAt", "restoredBy"
+      ]
+    },
+    "WorkspaceAuditLog": {
+      "title": "Security & Deletion Audit Log",
+      "description": "Append-only audit trail for deletions, restores, 24h auto-purges, and expense changes.",
+      "type": "object",
+      "properties": {
+        "logId": { "type": "string" },
+        "action": { "type": "string" },
+        "entityType": { "type": "string" },
+        "entityId": { "type": "string" },
+        "title": { "type": "string" },
+        "actorUsername": { "type": "string" },
+        "actorRole": { "type": "string" },
+        "details": { "type": "string" },
+        "createdAt": { "type": "integer" },
+        "serverCreatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "logId", "action", "entityType", "entityId", "title",
+        "actorUsername", "actorRole", "details", "createdAt", "serverCreatedAt"
+      ]
     }
   },
   "firestore": {
@@ -216,8 +289,11 @@
     "/workspaces/{workspaceId}/accounts/{accountId}": { "schema": "WorkspaceAccount", "description": "Workspace username/password accounts." },
     "/workspaces/{workspaceId}/bills/{billId}": { "schema": "WorkspaceBill", "description": "Synced bills and quotations." },
     "/workspaces/{workspaceId}/customers/{customerId}": { "schema": "WorkspaceCustomer", "description": "Synced customers." },
-    "/workspaces/{workspaceId}/products/{productId}": { "schema": "WorkspaceProduct", "description": "Synced products catalog." },
+    "/workspaces/{workspaceId}/products/{productId}": { "schema": "WorkspaceProduct", "description": "Synced products catalog with inventory stock." },
     "/workspaces/{workspaceId}/helpRequests/{helpId}": { "schema": "WorkspaceHelpRequest", "description": "Synced help desk tickets." },
-    "/workspaces/{workspaceId}/settlements/{settlementId}": { "schema": "WorkspaceSettlement", "description": "Synced technician settlements." }
+    "/workspaces/{workspaceId}/settlements/{settlementId}": { "schema": "WorkspaceSettlement", "description": "Synced technician settlements." },
+    "/workspaces/{workspaceId}/expenses/{expenseId}": { "schema": "WorkspaceExpense", "description": "Synced business expenses." },
+    "/workspaces/{workspaceId}/trash/{trashId}": { "schema": "WorkspaceTrashItem", "description": "24-hour recoverable trash bin." },
+    "/workspaces/{workspaceId}/auditLogs/{logId}": { "schema": "WorkspaceAuditLog", "description": "Append-only security audit trail." }
   }
 }

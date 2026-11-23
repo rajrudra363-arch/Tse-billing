@@ -1,14 +1,17 @@
 package com.example.data
 
-import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.util.Log
 import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
+import com.example.R
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -30,21 +33,19 @@ data class CloudAuthUser(
 
 object GoogleAuthHelper {
     private const val TAG = "GoogleAuthHelper"
-    private const val FALLBACK_WEB_CLIENT_ID =
-        "760882645284-ha4304oiq1ql4fobu04lmben27c32lgk.apps.googleusercontent.com"
 
-    @SuppressLint("DiscouragedApi")
+    private tailrec fun Context.findActivity(): Activity? = when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }
+
     private fun resolveWebClientId(context: Context): String {
-        val resId = context.resources.getIdentifier(
-            "default_web_client_id",
-            "string",
-            context.packageName
-        )
-        if (resId != 0) {
-            val resolved = runCatching { context.getString(resId) }.getOrDefault("").trim()
-            if (resolved.isNotEmpty()) return resolved
+        val id = runCatching { context.getString(R.string.default_web_client_id).trim() }.getOrDefault("")
+        if (id.isEmpty()) {
+            error("Google Sign-In configuration missing (default_web_client_id). Rebuild with Google Services plugin.")
         }
-        return FALLBACK_WEB_CLIENT_ID
+        return id
     }
 
     fun currentUser(context: Context): CloudAuthUser? {
@@ -78,6 +79,7 @@ object GoogleAuthHelper {
                 )
             }
             val webClientId = resolveWebClientId(context)
+            val credContext: Context = context.findActivity() ?: context
             val option = GetGoogleIdOption.Builder()
                 .setServerClientId(webClientId)
                 .setFilterByAuthorizedAccounts(true)
@@ -86,8 +88,8 @@ object GoogleAuthHelper {
             val req = GetCredentialRequest.Builder()
                 .addCredentialOption(option)
                 .build()
-            val cm = CredentialManager.create(context)
-            val response = cm.getCredential(context, req)
+            val cm = CredentialManager.create(credContext)
+            val response = cm.getCredential(credContext, req)
             val user = exchangeCredential(auth, response.credential)
             Result.success(user)
         } catch (e: CancellationException) {
@@ -107,13 +109,29 @@ object GoogleAuthHelper {
             }
             val auth = FirebaseAuth.getInstance()
             val webClientId = resolveWebClientId(activityContext)
-            val signInOption = GetSignInWithGoogleOption.Builder(webClientId)
-                .build()
-            val req = GetCredentialRequest.Builder()
-                .addCredentialOption(signInOption)
-                .build()
-            val cm = CredentialManager.create(activityContext)
-            val response = cm.getCredential(activityContext, req)
+            val credContext: Context = activityContext.findActivity() ?: activityContext
+            val cm = CredentialManager.create(credContext)
+
+            val response = try {
+                val signInOption = GetSignInWithGoogleOption.Builder(webClientId)
+                    .build()
+                val req = GetCredentialRequest.Builder()
+                    .addCredentialOption(signInOption)
+                    .build()
+                cm.getCredential(credContext, req)
+            } catch (_: NoCredentialException) {
+                // Fallback for devices/accounts without GetSignInWithGoogleOption support
+                val fallbackOption = GetGoogleIdOption.Builder()
+                    .setServerClientId(webClientId)
+                    .setFilterByAuthorizedAccounts(false)
+                    .setAutoSelectEnabled(false)
+                    .build()
+                val fallbackReq = GetCredentialRequest.Builder()
+                    .addCredentialOption(fallbackOption)
+                    .build()
+                cm.getCredential(credContext, fallbackReq)
+            }
+
             val user = exchangeCredential(auth, response.credential)
                 ?: return Result.failure(IllegalStateException("Google Sign-In did not return a valid ID token."))
             Result.success(user)
@@ -121,6 +139,20 @@ object GoogleAuthHelper {
             throw e
         } catch (_: GetCredentialCancellationException) {
             Result.failure(IllegalStateException("Google Sign-In cancelled."))
+        } catch (_: NoCredentialException) {
+            Result.failure(
+                IllegalStateException(
+                    "No Google account credential found on this device. Please add a Google account in device Settings and try again."
+                )
+            )
+        } catch (e: GetCredentialException) {
+            Log.e(TAG, "CredentialManager error (${e.type})", e)
+            Result.failure(
+                IllegalStateException(
+                    e.errorMessage?.toString()?.takeIf { it.isNotBlank() }
+                        ?: "Google Sign-In failed (${e.type}). Check internet connection & Google Play Services."
+                )
+            )
         } catch (t: Throwable) {
             Log.e(TAG, "Google Sign-In failed", t)
             Result.failure(Exception(t.message ?: "Google Sign-In failed. Ensure Google Play Services is available.", t))
@@ -153,7 +185,8 @@ object GoogleAuthHelper {
                 FirebaseAuth.getInstance().signOut()
             }
             runCatching {
-                val cm = CredentialManager.create(context)
+                val credContext: Context = context.findActivity() ?: context
+                val cm = CredentialManager.create(credContext)
                 cm.clearCredentialState(ClearCredentialStateRequest())
             }
         }

@@ -15,6 +15,12 @@ object ApkShareHelper {
     const val ROLE_TECHNICIAN = "technician"
     const val ROLE_SUPER_ADMIN = "super_admin"
 
+    fun buildInviteDeepLink(targetRole: String, shareCode: String): String {
+        val role = if (targetRole == ROLE_SUPER_ADMIN) ROLE_SUPER_ADMIN else ROLE_TECHNICIAN
+        val code = java.net.URLEncoder.encode(shareCode.trim(), "UTF-8")
+        return "tsebilling://join?role=$role&code=$code"
+    }
+
     fun buildInviteMessage(
         targetRole: String,
         shareCode: String,
@@ -23,16 +29,22 @@ object ApkShareHelper {
     ): String {
         val roleTitle = if (targetRole == ROLE_SUPER_ADMIN) "Super Admin (View-Only Analytics)" else "Technician (Field Billing)"
         val cleanCode = shareCode.ifBlank { "Ask Admin for Invite Code" }
+        val deepLink = if (shareCode.isNotBlank()) buildInviteDeepLink(targetRole, shareCode) else ""
         return buildString {
             appendLine("*$companyName — TSE Billing App (v$versionName)*")
             appendLine("Role Access: *$roleTitle*")
             appendLine()
             appendLine("Your Workspace Invite Code:")
             appendLine("*$cleanCode*")
+            if (deepLink.isNotBlank()) {
+                appendLine()
+                appendLine("One-Tap Direct Login Link (after installing APK):")
+                appendLine(deepLink)
+            }
             appendLine()
             appendLine("How to start:")
             appendLine("1. Install the attached APK file.")
-            appendLine("2. Open the app -> Direct Login opens automatically.")
+            appendLine("2. Tap the Direct Login Link above (or open the app).")
             appendLine("3. Sign in with Google, enter Invite Code *$cleanCode*, then log in with your Username & Password.")
             if (targetRole == ROLE_TECHNICIAN) {
                 appendLine("Note: All bills & quotations you create save directly to Admin's cloud workspace.")

@@ -45,6 +45,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -76,9 +77,13 @@ import com.example.data.UserSession
 import com.example.ui.components.ProvideSafeTextToolbar
 import com.example.ui.components.bringIntoViewOnFocus
 import com.example.ui.components.clearFocusAndHideToolbar
+import com.example.ui.theme.AmberWarn
 import com.example.ui.theme.GreenPaid
+import com.example.ui.theme.GreenPaidBg
 import com.example.ui.theme.NavyPrimary
 import com.example.ui.theme.RedDue
+import com.example.ui.theme.RedDueBg
+import com.example.ui.theme.RedDueDark
 import com.example.ui.theme.TealAccent
 import com.example.util.LocationHelper
 import java.util.Locale
@@ -473,12 +478,16 @@ fun ProductsScreen(
     user: UserSession,
     onAddProduct: (name: String, unit: String, rateText: String, folder: String) -> Unit,
     onUpdateProduct: (id: Long, name: String, unit: String, rateText: String, folder: String) -> Unit,
-    onDeleteProduct: (Long) -> Unit
+    onDeleteProduct: (Long) -> Unit,
+    onAddProductWithStock: ((name: String, unit: String, rateText: String, folder: String, stockQtyText: String, minStockAlertText: String) -> Unit)? = null,
+    onUpdateProductWithStock: ((id: Long, name: String, unit: String, rateText: String, folder: String, stockQtyText: String, minStockAlertText: String) -> Unit)? = null
 ) {
     val canManageProducts = user.isAdmin && !user.isSuperAdmin
     var name by remember { mutableStateOf("") }
     var unit by remember { mutableStateOf("Nos") }
     var rate by remember { mutableStateOf("") }
+    var stockQty by remember { mutableStateOf("") }
+    var minStockAlert by remember { mutableStateOf("") }
     var folder by remember { mutableStateOf("CCTV Cameras") }
     var folderMenuOpen by remember { mutableStateOf(false) }
     var selectedFolderFilter by remember { mutableStateOf("All") }
@@ -575,16 +584,43 @@ fun ProductsScreen(
                                 modifier = Modifier.weight(1.2f).bringIntoViewOnFocus().testTag("new_product_rate")
                             )
                         }
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            OutlinedTextField(
+                                value = stockQty,
+                                onValueChange = { stockQty = it },
+                                label = { Text("Opening Stock Qty") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("new_product_stock")
+                            )
+                            OutlinedTextField(
+                                value = minStockAlert,
+                                onValueChange = { minStockAlert = it },
+                                label = { Text("Low-Stock Alert At") },
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                singleLine = true,
+                                modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("new_product_min_stock")
+                            )
+                        }
                         Button(
                             onClick = {
                                 clearFocusAndHideToolbar(focusManager, textToolbar)
                                 val resolvedFolder = folder.trim().ifBlank { "General" }
+                                val addCall: (String) -> Unit = { nm ->
+                                    if (onAddProductWithStock != null) {
+                                        onAddProductWithStock(nm, unit, rate, resolvedFolder, stockQty, minStockAlert)
+                                    } else {
+                                        onAddProduct(nm, unit, rate, resolvedFolder)
+                                    }
+                                }
                                 if (name.isNotBlank()) {
-                                    onAddProduct(name, unit, rate, resolvedFolder)
+                                    addCall(name)
                                     name = ""
                                     rate = ""
+                                    stockQty = ""
+                                    minStockAlert = ""
                                 } else {
-                                    onAddProduct("", unit, rate, resolvedFolder)
+                                    addCall("")
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
@@ -639,6 +675,12 @@ fun ProductsScreen(
                             FilterChip(
                                 selected = selectedFolderFilter == folderName,
                                 onClick = { selectedFolderFilter = folderName },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = TealAccent,
+                                    selectedLabelColor = Color.White,
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    labelColor = MaterialTheme.colorScheme.onSurface
+                                ),
                                 label = { Text("$folderName ($count)", fontWeight = FontWeight.SemiBold) },
                                 modifier = Modifier.testTag("product_folder_chip_${folderName.replace(" ", "_")}")
                             )
@@ -695,6 +737,38 @@ fun ProductsScreen(
                                 color = TealAccent,
                                 fontWeight = FontWeight.SemiBold
                             )
+                            val isLowStock = prod.minStockAlert > 0.0 && prod.stockQty <= prod.minStockAlert
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Surface(
+                                    color = if (isLowStock) RedDueBg else GreenPaidBg,
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = "Stock: ${formatStockNum(prod.stockQty)} ${prod.unit}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isLowStock) RedDueDark else GreenPaid,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                    )
+                                }
+                                if (isLowStock) {
+                                    Surface(
+                                        color = RedDue,
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Text(
+                                            text = "LOW STOCK (≤${formatStockNum(prod.minStockAlert)})",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Black,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
                         }
                         if (canManageProducts) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -729,20 +803,35 @@ fun ProductsScreen(
             product = productToEdit,
             folderSuggestions = allFolders,
             onDismiss = { editingProduct = null },
-            onSave = { updatedName, updatedUnit, updatedRate, updatedFolder ->
-                onUpdateProduct(productToEdit.id, updatedName, updatedUnit, updatedRate, updatedFolder)
+            onSave = { updatedName, updatedUnit, updatedRate, updatedFolder, updatedStock, updatedMinAlert ->
+                if (onUpdateProductWithStock != null) {
+                    onUpdateProductWithStock(
+                        productToEdit.id,
+                        updatedName,
+                        updatedUnit,
+                        updatedRate,
+                        updatedFolder,
+                        updatedStock,
+                        updatedMinAlert
+                    )
+                } else {
+                    onUpdateProduct(productToEdit.id, updatedName, updatedUnit, updatedRate, updatedFolder)
+                }
                 editingProduct = null
             }
         )
     }
 }
 
+private fun formatStockNum(v: Double): String =
+    if (v % 1.0 == 0.0) v.toInt().toString() else String.format(Locale.US, "%.1f", v)
+
 @Composable
 private fun EditProductDialog(
     product: ProductEntity,
     folderSuggestions: List<String>,
     onDismiss: () -> Unit,
-    onSave: (name: String, unit: String, rateText: String, folder: String) -> Unit
+    onSave: (name: String, unit: String, rateText: String, folder: String, stockQtyText: String, minStockAlertText: String) -> Unit
 ) {
     var editName by remember(product.id) { mutableStateOf(product.name) }
     var editUnit by remember(product.id) { mutableStateOf(product.unit) }
@@ -755,11 +844,13 @@ private fun EditProductDialog(
             else String.format(Locale.US, "%.2f", product.defaultRate)
         )
     }
+    var editStock by remember(product.id) { mutableStateOf(formatStockNum(product.stockQty)) }
+    var editMinAlert by remember(product.id) { mutableStateOf(formatStockNum(product.minStockAlert)) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Default.Edit, contentDescription = null, tint = TealAccent) },
-        title = { Text("Edit Product & Price") },
+        title = { Text("Edit Product, Price & Stock") },
         text = {
             ProvideSafeTextToolbar {
                 val dialogFocus = LocalFocusManager.current
@@ -814,6 +905,24 @@ private fun EditProductDialog(
                             modifier = Modifier.weight(1.2f).bringIntoViewOnFocus().testTag("edit_product_rate_input")
                         )
                     }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = editStock,
+                            onValueChange = { editStock = it },
+                            label = { Text("Stock Qty") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("edit_product_stock_input")
+                        )
+                        OutlinedTextField(
+                            value = editMinAlert,
+                            onValueChange = { editMinAlert = it },
+                            label = { Text("Low-Stock Alert") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("edit_product_min_stock_input")
+                        )
+                    }
                     DisposableEffect(dialogFocus, dialogToolbar) {
                         onDispose {
                             clearFocusAndHideToolbar(dialogFocus, dialogToolbar)
@@ -828,7 +937,7 @@ private fun EditProductDialog(
             Button(
                 onClick = {
                     clearFocusAndHideToolbar(btnFocus, btnToolbar)
-                    onSave(editName, editUnit, editRate, editFolder.trim().ifBlank { "General" })
+                    onSave(editName, editUnit, editRate, editFolder.trim().ifBlank { "General" }, editStock, editMinAlert)
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
                 modifier = Modifier.testTag("save_edited_product_button")

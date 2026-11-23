@@ -245,6 +245,8 @@ fun AuthScreen(
     cloudUser: CloudAuthUser? = null,
     cloudBusy: Boolean = false,
     hasAdminVerifyCode: Boolean = false,
+    isStaffOnlyApk: Boolean = false,
+    prefillInviteCode: String = "",
     onClearError: () -> Unit,
     onSetupAdmin: (username: String, password: String, confirm: String, adminVerifyCode: String) -> Unit,
     onLogin: (username: String, password: String, antiRobotPassed: Boolean, adminVerifyCode: String) -> Unit,
@@ -352,6 +354,8 @@ fun AuthScreen(
                                 authError = authError,
                                 cloudUser = cloudUser,
                                 cloudBusy = cloudBusy,
+                                isStaffOnlyApk = isStaffOnlyApk,
+                                prefillInviteCode = prefillInviteCode,
                                 onClearError = onClearError,
                                 onSetupAdmin = onSetupAdmin,
                                 onImportBackup = onImportBackup,
@@ -475,6 +479,8 @@ private fun FirstTimeAdminSetupForm(
     authError: String,
     cloudUser: CloudAuthUser?,
     cloudBusy: Boolean,
+    isStaffOnlyApk: Boolean = false,
+    prefillInviteCode: String = "",
     onClearError: () -> Unit,
     onSetupAdmin: (String, String, String, String) -> Unit,
     onImportBackup: (String) -> Unit,
@@ -482,12 +488,17 @@ private fun FirstTimeAdminSetupForm(
     onJoinInviteCode: (String) -> Unit
 ) {
     // Mode 0 = Create Admin Account, Mode 1 = Technician / Super Admin Direct Login (Invite Code), Mode 2 = Sign In (Restore Backup)
-    var setupMode by remember { mutableIntStateOf(0) }
+    var setupMode by remember(isStaffOnlyApk) { mutableIntStateOf(if (isStaffOnlyApk) 1 else 0) }
     val fixedAdminUsername = AuthPolicy.CANONICAL_ADMIN_USERNAME
     var password by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
     var adminVerifyCode by remember { mutableStateOf("") }
-    var inviteCode by remember { mutableStateOf("") }
+    var inviteCode by remember { mutableStateOf(prefillInviteCode) }
+    LaunchedEffect(prefillInviteCode) {
+        if (prefillInviteCode.isNotBlank() && inviteCode.isBlank()) {
+            inviteCode = prefillInviteCode
+        }
+    }
     var showPass by remember { mutableStateOf(false) }
     var showPasteBackupDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -563,40 +574,42 @@ private fun FirstTimeAdminSetupForm(
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(Icons.Default.AdminPanelSettings, contentDescription = null, tint = TealAccent)
             Text(
-                text = "Welcome — Sign In or Setup",
+                text = if (isStaffOnlyApk) "Technician & Super Admin Sign In" else "Welcome — Sign In or Setup",
                 style = MaterialTheme.typography.titleLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
         }
 
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            FilterChip(
-                selected = setupMode == 0,
-                onClick = { setupMode = 0; onClearError() },
-                colors = chipColors,
-                label = { Text("Create Admin", fontWeight = FontWeight.Bold) },
-                modifier = Modifier.testTag("setup_tab_create")
-            )
-            FilterChip(
-                selected = setupMode == 1,
-                onClick = { setupMode = 1; onClearError() },
-                colors = chipColors,
-                leadingIcon = { Icon(Icons.Default.Cloud, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                label = { Text("Direct Login (Invite)", fontWeight = FontWeight.Bold) },
-                modifier = Modifier.testTag("setup_tab_cloud")
-            )
-            FilterChip(
-                selected = setupMode == 2,
-                onClick = { setupMode = 2; onClearError() },
-                colors = chipColors,
-                leadingIcon = { Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                label = { Text("Sign In (Backup)", fontWeight = FontWeight.Bold) },
-                modifier = Modifier.testTag("setup_tab_restore")
-            )
+        if (!isStaffOnlyApk) {
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                FilterChip(
+                    selected = setupMode == 0,
+                    onClick = { setupMode = 0; onClearError() },
+                    colors = chipColors,
+                    label = { Text("Create Admin", fontWeight = FontWeight.Bold) },
+                    modifier = Modifier.testTag("setup_tab_create")
+                )
+                FilterChip(
+                    selected = setupMode == 1,
+                    onClick = { setupMode = 1; onClearError() },
+                    colors = chipColors,
+                    leadingIcon = { Icon(Icons.Default.Cloud, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                    label = { Text("Direct Login (Invite)", fontWeight = FontWeight.Bold) },
+                    modifier = Modifier.testTag("setup_tab_cloud")
+                )
+                FilterChip(
+                    selected = setupMode == 2,
+                    onClick = { setupMode = 2; onClearError() },
+                    colors = chipColors,
+                    leadingIcon = { Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                    label = { Text("Sign In (Backup)", fontWeight = FontWeight.Bold) },
+                    modifier = Modifier.testTag("setup_tab_restore")
+                )
+            }
         }
 
         when (setupMode) {

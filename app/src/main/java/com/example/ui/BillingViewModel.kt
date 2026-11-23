@@ -2,12 +2,14 @@ package com.example.ui
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.net.Uri
 import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
 import com.example.data.AppLanguage
+import com.example.data.AuditLogEntity
 import com.example.data.AuthPolicy
 import com.example.data.BillEntity
 import com.example.data.BillingRepository
@@ -20,6 +22,7 @@ import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
 import com.example.data.CustomerHelpEntity
 import com.example.data.DocumentType
+import com.example.data.ExpenseEntity
 import com.example.data.GoogleAuthHelper
 import com.example.data.InvoiceItem
 import com.example.data.InvoiceItemJson
@@ -27,6 +30,7 @@ import com.example.data.LoginSecurityState
 import com.example.data.PaymentMode
 import com.example.data.ProductEntity
 import com.example.data.TechnicianSettlementEntity
+import com.example.data.TrashItemEntity
 import com.example.data.UpiSettings
 import com.example.data.UserAccountEntity
 import com.example.data.UserSession
@@ -254,6 +258,21 @@ class BillingViewModel(
     val products: StateFlow<List<ProductEntity>> = repository.products
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    val expenses: StateFlow<List<ExpenseEntity>> = repository.expenses
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val trashItems: StateFlow<List<TrashItemEntity>> = repository.trashItems
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val auditLogs: StateFlow<List<AuditLogEntity>> = repository.auditLogs
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val isStaffOnlyApk: StateFlow<Boolean> = repository.isStaffOnlyApk
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val prefillInviteCode: StateFlow<String> = repository.prefillInviteCode
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "")
+
     val companySettings: StateFlow<CompanySettings> = repository.companySettings
         .stateIn(viewModelScope, SharingStarted.Eagerly, CompanySettings())
 
@@ -388,6 +407,7 @@ class BillingViewModel(
     init {
         viewModelScope.launch {
             repository.seedDefaultsIfNeeded()
+            repository.purgeExpiredTrash()
             val initialBills = repository.bills.first()
             _billDraft.update { d ->
                 if (d.editingId == null) d.copy(invoiceNo = repository.computeNextInvoiceNo(initialBills))
@@ -504,8 +524,42 @@ class BillingViewModel(
             },
             onSettlementsChanged = { list ->
                 viewModelScope.launch { repository.mergeCloudSettlementsIntoAdmin(list) }
+            },
+            onExpensesChanged = { list ->
+                viewModelScope.launch { repository.mergeCloudExpensesIntoAdmin(list) }
+            },
+            onTrashChanged = { list ->
+                viewModelScope.launch { repository.mergeCloudTrashIntoAdmin(list) }
+            },
+            onAuditLogsChanged = { list ->
+                viewModelScope.launch { repository.mergeCloudAuditLogsIntoAdmin(list) }
             }
         )
+    }
+
+    fun purgeExpiredTrashIfReady() {
+        viewModelScope.launch {
+            repository.purgeExpiredTrash()
+        }
+    }
+
+    fun handleIncomingInviteUri(uri: Uri?) {
+        if (uri == null) return
+        if (!uri.scheme.equals("tsebilling", ignoreCase = true) ||
+            !uri.host.equals("join", ignoreCase = true)
+        ) {
+            return
+        }
+        val role = uri.getQueryParameter("role").orEmpty()
+        val code = uri.getQueryParameter("code").orEmpty().trim()
+        viewModelScope.launch {
+            repository.setStaffOnlyInviteMode(role = role, inviteCode = code)
+            if (code.isNotBlank() && _cloudUser.value != null) {
+                joinWorkspaceWithInviteCode(code)
+            } else if (code.isNotBlank()) {
+                emitToast("Invite code loaded. Sign in with Google to connect.")
+            }
+        }
     }
 
     fun signInWithGoogle(activityContext: Context, onReady: (() -> Unit)? = null) {
@@ -758,6 +812,11 @@ class BillingViewModel(
         confirmPassword: String,
         adminVerifyCode: String = ""
     ) {
+        if (isStaffOnlyApk.value) {
+            _authError.value = "Admin account creation is disabled on shared Technician/Super Admin APK."
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
         val cleanUser = AuthPolicy.CANONICAL_ADMIN_USERNAME
         val cleanCode = adminVerifyCode.trim()
         val missingReq = AuthPolicy.evaluatePassword(password).firstMissingRequirement()
@@ -1673,7 +1732,7 @@ class BillingViewModel(
             return
         }
         viewModelScope.launch {
-            val deleted = repository.deleteBill(id)
+            val deleted = repository.deleteBill(id, currentUser.username, currentUser.role)
             if (!deleted) {
                 soundEngine.play(SoundCue.ERROR)
                 emitToast("Star rating is locked — rated bills cannot be deleted", isError = true)
@@ -1683,7 +1742,7 @@ class BillingViewModel(
                 _billDraft.update { it.copy(editingId = null) }
             }
             soundEngine.play(SoundCue.DELETE)
-            emitToast("Record deleted")
+            emitToast("Moved to Trash (recoverable for 24h)")
         }
     }
 
@@ -1888,13 +1947,20 @@ class BillingViewModel(
             return
         }
         viewModelScope.launch {
-            repository.deleteCustomer(id)
+            repository.deleteCustomer(id, current.username, current.role)
             soundEngine.play(SoundCue.DELETE)
-            emitToast("Customer removed")
+            emitToast("Customer moved to Trash (recoverable for 24h)")
         }
     }
 
-    fun addProduct(name: String, unit: String, rateText: String, folder: String = "General") {
+    fun addProduct(
+        name: String,
+        unit: String,
+        rateText: String,
+        folder: String = "General",
+        stockQtyText: String = "",
+        minStockAlertText: String = ""
+    ) {
         if (_session.value?.isAdmin != true) {
             soundEngine.play(SoundCue.ERROR)
             emitToast("Admin access only", isError = true)
@@ -1905,14 +1971,24 @@ class BillingViewModel(
             emitToast("Product name required", isError = true)
             return
         }
+        val stockQty = stockQtyText.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
+        val minAlert = minStockAlertText.toDoubleOrNull()?.coerceAtLeast(0.0) ?: 0.0
         viewModelScope.launch {
-            repository.addProduct(name, unit, rateText.toDoubleOrNull() ?: 0.0, folder)
+            repository.addProduct(name, unit, rateText.toDoubleOrNull() ?: 0.0, folder, stockQty, minAlert)
             soundEngine.play(SoundCue.SAVE)
             emitToast("Product added to folder '$folder'")
         }
     }
 
-    fun updateProduct(id: Long, name: String, unit: String, rateText: String, folder: String = "General") {
+    fun updateProduct(
+        id: Long,
+        name: String,
+        unit: String,
+        rateText: String,
+        folder: String = "General",
+        stockQtyText: String = "",
+        minStockAlertText: String = ""
+    ) {
         if (_session.value?.isAdmin != true) {
             soundEngine.play(SoundCue.ERROR)
             emitToast("Admin access only", isError = true)
@@ -1923,23 +1999,98 @@ class BillingViewModel(
             emitToast("Product name required", isError = true)
             return
         }
+        val stockQty = stockQtyText.takeIf { it.isNotBlank() }?.toDoubleOrNull()?.coerceAtLeast(0.0)
+        val minAlert = minStockAlertText.takeIf { it.isNotBlank() }?.toDoubleOrNull()?.coerceAtLeast(0.0)
         viewModelScope.launch {
-            repository.updateProduct(id, name, unit, rateText.toDoubleOrNull() ?: 0.0, folder)
+            repository.updateProduct(id, name, unit, rateText.toDoubleOrNull() ?: 0.0, folder, stockQty, minAlert)
             soundEngine.play(SoundCue.SAVE)
             emitToast("Product updated")
         }
     }
 
     fun deleteProduct(id: Long) {
-        if (_session.value?.isAdmin != true) {
+        val current = _session.value ?: return
+        if (!current.isAdmin) {
             soundEngine.play(SoundCue.ERROR)
             emitToast("Admin access only", isError = true)
             return
         }
         viewModelScope.launch {
-            repository.deleteProduct(id)
+            repository.deleteProduct(id, current.username, current.role)
             soundEngine.play(SoundCue.DELETE)
-            emitToast("Product deleted")
+            emitToast("Product moved to Trash (recoverable for 24h)")
+        }
+    }
+
+    /* ===== Business Expenses & 24h Trash Recovery ===== */
+    fun saveExpense(
+        title: String,
+        category: String,
+        amountText: String,
+        note: String,
+        date: String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()),
+        id: String = "",
+        onSuccess: () -> Unit = {}
+    ) {
+        val current = _session.value
+        if (current == null || !current.isAdmin) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Admin access only", isError = true)
+            return
+        }
+        val amt = amountText.toDoubleOrNull() ?: 0.0
+        val expense = ExpenseEntity(
+            id = id,
+            title = title,
+            category = category,
+            amount = amt,
+            date = date,
+            note = note,
+            recordedBy = current.username
+        )
+        viewModelScope.launch {
+            val res = repository.saveExpense(expense, current.username, current.role)
+            if (res.isSuccess) {
+                soundEngine.play(SoundCue.SAVE)
+                emitToast("Expense saved")
+                onSuccess()
+            } else {
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(res.exceptionOrNull()?.message ?: "Could not save expense", isError = true)
+            }
+        }
+    }
+
+    fun deleteExpense(id: String) {
+        val current = _session.value
+        if (current == null || !current.isAdmin) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Admin access only", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            repository.deleteExpense(id, current.username, current.role)
+            soundEngine.play(SoundCue.DELETE)
+            emitToast("Expense moved to Trash (recoverable for 24h)")
+        }
+    }
+
+    fun restoreTrashItem(trashId: String) {
+        val current = _session.value
+        if (current == null || !current.isAdmin) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Admin access only", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            val res = repository.restoreTrashItem(trashId, current.username, current.role)
+            if (res.isSuccess) {
+                soundEngine.play(SoundCue.SAVE)
+                emitToast(res.getOrNull() ?: "Item restored")
+            } else {
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(res.exceptionOrNull()?.message ?: "Could not restore item", isError = true)
+            }
         }
     }
 
@@ -2080,9 +2231,9 @@ class BillingViewModel(
             return
         }
         viewModelScope.launch {
-            repository.deleteHelpRequest(id)
+            repository.deleteHelpRequest(id, current.username, current.role)
             soundEngine.play(SoundCue.DELETE)
-            emitToast("Help request deleted")
+            emitToast("Help request moved to Trash (recoverable for 24h)")
         }
     }
 

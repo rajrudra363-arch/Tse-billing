@@ -19,8 +19,12 @@ import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
 import androidx.room.Room
+import androidx.sqlite.db.SupportSQLiteDatabase
+import androidx.sqlite.db.SupportSQLiteOpenHelper
+import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.AppDatabase
+import com.example.data.AuditLogEntity
 import com.example.data.AuthPolicy
 import com.example.data.BillEntity
 import com.example.data.BillingRepository
@@ -30,11 +34,13 @@ import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
 import com.example.data.CustomerHelpEntity
 import com.example.data.DocumentType
+import com.example.data.ExpenseEntity
 import com.example.data.InvoiceItem
 import com.example.data.InvoiceItemJson
 import com.example.data.LoginSecurityState
 import com.example.data.PaymentMode
 import com.example.data.ProductEntity
+import com.example.data.TrashItemEntity
 import com.example.data.UpiSettings
 import com.example.data.UserAccountEntity
 import com.example.data.UserSession
@@ -1349,5 +1355,298 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("review_bill_TSE-003").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("send_due_qr_TSE-003").performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun migration7To8_preservesExistingData_andAddsInventoryExpensesTrashAuditTables() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dbName = "migration_v7_to_v8_test.db"
+        context.deleteDatabase(dbName)
+
+        // Create a v7 SQLite database manually and seed existing rows before migrating to v8
+        val helper = FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(dbName)
+                .callback(object : SupportSQLiteOpenHelper.Callback(7) {
+                    override fun onCreate(sDb: SupportSQLiteDatabase) {
+                        sDb.execSQL(
+                            "CREATE TABLE IF NOT EXISTS `bills` (`id` TEXT NOT NULL PRIMARY KEY, `invoiceNo` TEXT NOT NULL, `date` TEXT NOT NULL, `customerName` TEXT NOT NULL, `customerDetails` TEXT NOT NULL, `itemsJson` TEXT NOT NULL, `subtotal` REAL NOT NULL, `discount` REAL NOT NULL, `grandTotal` REAL NOT NULL, `paidAmount` REAL NOT NULL, `dueAmount` REAL NOT NULL, `paymentMode` TEXT NOT NULL, `signatureBase64` TEXT NOT NULL, `customQrText` TEXT NOT NULL, `createdBy` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, `extraChargeType` TEXT NOT NULL DEFAULT 'NONE', `extraChargeAmount` REAL NOT NULL DEFAULT 0.0, `staffRating` INTEGER NOT NULL DEFAULT 0, `staffReviewNote` TEXT NOT NULL DEFAULT '', `documentType` TEXT NOT NULL DEFAULT 'BILL', `isHelpBill` INTEGER NOT NULL DEFAULT 0, `helpRequestId` INTEGER NOT NULL DEFAULT 0, `quotationNote` TEXT NOT NULL DEFAULT '', `secondaryChargeType` TEXT NOT NULL DEFAULT 'NONE', `secondaryChargeAmount` REAL NOT NULL DEFAULT 0.0)"
+                        )
+                        sDb.execSQL(
+                            "CREATE TABLE IF NOT EXISTS `customers` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `details` TEXT NOT NULL, `phone` TEXT NOT NULL DEFAULT '', `address` TEXT NOT NULL DEFAULT '', `locationUrl` TEXT NOT NULL DEFAULT '')"
+                        )
+                        sDb.execSQL(
+                            "CREATE TABLE IF NOT EXISTS `products` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `unit` TEXT NOT NULL, `defaultRate` REAL NOT NULL, `folder` TEXT NOT NULL DEFAULT 'General')"
+                        )
+                        sDb.execSQL(
+                            "CREATE TABLE IF NOT EXISTS `user_accounts` (`username` TEXT NOT NULL PRIMARY KEY, `displayName` TEXT NOT NULL, `passwordHash` TEXT NOT NULL, `role` TEXT NOT NULL, `phone` TEXT NOT NULL DEFAULT '', `photoBase64` TEXT NOT NULL DEFAULT '')"
+                        )
+                        sDb.execSQL(
+                            "CREATE TABLE IF NOT EXISTS `app_config` (`key` TEXT NOT NULL PRIMARY KEY, `value` TEXT NOT NULL)"
+                        )
+                        sDb.execSQL(
+                            "CREATE TABLE IF NOT EXISTS `customer_help_requests` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `customerName` TEXT NOT NULL, `phone` TEXT NOT NULL, `address` TEXT NOT NULL, `locationUrl` TEXT NOT NULL, `helpDescription` TEXT NOT NULL, `status` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `acceptedBy` TEXT NOT NULL DEFAULT '', `acceptedByName` TEXT NOT NULL DEFAULT '', `acceptedByPhone` TEXT NOT NULL DEFAULT '', `acceptedAt` INTEGER NOT NULL DEFAULT 0, `solvedAt` INTEGER NOT NULL DEFAULT 0, `billId` TEXT NOT NULL DEFAULT '')"
+                        )
+                        sDb.execSQL(
+                            "CREATE TABLE IF NOT EXISTS `technician_settlements` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `technicianUsername` TEXT NOT NULL, `amount` REAL NOT NULL, `note` TEXT NOT NULL, `recordedBy` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)"
+                        )
+                        sDb.execSQL("INSERT INTO `products` (`name`, `unit`, `defaultRate`, `folder`) VALUES ('4MP Bullet Camera', 'Nos', 2400.0, 'CCTV Cameras')")
+                        sDb.execSQL("INSERT INTO `customers` (`name`, `details`, `phone`, `address`, `locationUrl`) VALUES ('Suresh Naik', 'Mapusa', '9876543210', 'Mapusa', '')")
+                        sDb.execSQL("INSERT INTO `bills` (`id`, `invoiceNo`, `date`, `customerName`, `customerDetails`, `itemsJson`, `subtotal`, `discount`, `grandTotal`, `paidAmount`, `dueAmount`, `paymentMode`, `signatureBase64`, `customQrText`, `createdBy`, `updatedAt`) VALUES ('b_v7_1', 'TSE-700', '2026-11-20', 'Suresh Naik', 'Mapusa\n9876543210', '[]', 2400.0, 0.0, 2400.0, 2400.0, 0.0, 'Cash', '', '', '@TotalSolutionEnterprises', 1000)")
+                    }
+                    override fun onUpgrade(sDb: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+                })
+                .build()
+        )
+        helper.writableDatabase.close()
+        helper.close()
+
+        val migratedDb = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
+            .addMigrations(AppDatabase.MIGRATION_7_8)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val products = migratedDb.productDao().getAll()
+            assertEquals(1, products.size)
+            assertEquals("4MP Bullet Camera", products.first().name)
+            assertEquals(0.0, products.first().stockQty, 0.01)
+            assertEquals(0.0, products.first().minStockAlert, 0.01)
+
+            val bills = migratedDb.billDao().observeAll().first()
+            assertEquals(1, bills.size)
+            assertEquals("TSE-700", bills.first().invoiceNo)
+
+            val customers = migratedDb.customerDao().getAll()
+            assertEquals(1, customers.size)
+            assertEquals("Suresh Naik", customers.first().name)
+
+            migratedDb.expenseDao().upsert(
+                ExpenseEntity(
+                    id = "exp_mig_1",
+                    title = "Cable Purchase",
+                    category = "Inventory",
+                    amount = 1200.0,
+                    date = "2026-11-22",
+                    note = "90m coil",
+                    recordedBy = "@TotalSolutionEnterprises"
+                )
+            )
+            assertEquals(1, migratedDb.expenseDao().getAll().size)
+            assertEquals(0, migratedDb.trashItemDao().getAll().size)
+            assertEquals(0, migratedDb.auditLogDao().getAll().size)
+        } finally {
+            migratedDb.close()
+            context.deleteDatabase(dbName)
+        }
+    }
+
+    @Test
+    fun productStock_deductsOnBillSave_adjustsOnEdit_ignoresQuotation_restoresAndRededucts() = runTest {
+        repo.addProduct(
+            name = "2MP Dome Camera",
+            unit = "Nos",
+            rate = 1500.0,
+            folder = "CCTV Cameras",
+            stockQty = 10.0,
+            minStockAlert = 3.0
+        )
+
+        val camBefore = repo.products.first().first { it.name == "2MP Dome Camera" }
+        assertEquals(10.0, camBefore.stockQty, 0.01)
+        assertEquals(3.0, camBefore.minStockAlert, 0.01)
+
+        // Saving a QUOTATION must NOT deduct stock
+        val quotation = BillEntity(
+            id = "q_stock_1",
+            invoiceNo = "QTN-001",
+            date = "2026-11-22",
+            customerName = "Prospect Client",
+            customerDetails = "Panaji\n9822110099",
+            itemsJson = InvoiceItemJson.toJson(listOf(InvoiceItem(description = "2MP Dome Camera", qty = 4.0, rate = 1500.0))),
+            subtotal = 6000.0,
+            discount = 0.0,
+            grandTotal = 6000.0,
+            paidAmount = 0.0,
+            dueAmount = 0.0,
+            paymentMode = PaymentMode.CASH.label,
+            signatureBase64 = "",
+            customQrText = "",
+            createdBy = "@TotalSolutionEnterprises",
+            documentType = DocumentType.QUOTATION.name
+        )
+        repo.saveBill(quotation)
+        assertEquals(10.0, repo.products.first().first().stockQty, 0.01)
+
+        // Saving a BILL for 3 units deducts stock from 10 -> 7
+        val bill = quotation.copy(
+            id = "b_stock_1",
+            invoiceNo = "TSE-001",
+            documentType = DocumentType.BILL.name,
+            paidAmount = 4500.0,
+            subtotal = 4500.0,
+            grandTotal = 4500.0,
+            itemsJson = InvoiceItemJson.toJson(listOf(InvoiceItem(description = "2MP Dome Camera", qty = 3.0, rate = 1500.0)))
+        )
+        repo.saveBill(bill)
+        assertEquals(7.0, repo.products.first().first().stockQty, 0.01)
+
+        // Editing the same bill from 3 -> 5 units deducts net delta (2 units): 7 -> 5
+        val editedBill = bill.copy(
+            subtotal = 7500.0,
+            grandTotal = 7500.0,
+            paidAmount = 7500.0,
+            itemsJson = InvoiceItemJson.toJson(listOf(InvoiceItem(description = "2MP Dome Camera", qty = 5.0, rate = 1500.0)))
+        )
+        repo.saveBill(editedBill)
+        assertEquals(5.0, repo.products.first().first().stockQty, 0.01)
+
+        // Soft-deleting the bill restores stock back from 5 -> 10
+        assertTrue(repo.deleteBill("b_stock_1", actorUsername = "Admin", actorRole = "admin"))
+        assertEquals(10.0, repo.products.first().first().stockQty, 0.01)
+
+        // Restoring the bill from Trash re-deducts stock back from 10 -> 5
+        val trashItem = repo.trashItems.first().first { it.entityId == "b_stock_1" }
+        val restoreRes = repo.restoreTrashItem(trashItem.id, actorUsername = "Admin", actorRole = "admin")
+        assertTrue(restoreRes.isSuccess)
+        assertEquals(5.0, repo.products.first().first().stockQty, 0.01)
+    }
+
+    @Test
+    fun expenseTracking_andBackupV7_roundTripPreservesStockExpensesTrashAndAuditLogs() = runTest {
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Tse@2026!", "4321")
+        repo.addProduct(
+            name = "SMPS 8CH",
+            unit = "Nos",
+            rate = 950.0,
+            folder = "Power",
+            stockQty = 6.0,
+            minStockAlert = 2.0
+        )
+        val saveExp = repo.saveExpense(
+            ExpenseEntity(
+                id = "",
+                title = "Diesel Generator Fuel",
+                category = "Travel",
+                amount = 650.0,
+                date = "2026-11-22",
+                note = "South Goa visit"
+            ),
+            actorUsername = AuthPolicy.CANONICAL_ADMIN_USERNAME,
+            actorRole = "admin"
+        )
+        assertTrue(saveExp.isSuccess)
+        val exp = saveExp.getOrThrow()
+
+        // Create and soft-delete a temporary product so Trash & Audit logs also populate
+        repo.addProduct("Temp Wire", "Mtr", 20.0, "Cables", stockQty = 50.0, minStockAlert = 5.0)
+        val tempProd = repo.products.first().first { it.name == "Temp Wire" }
+        repo.deleteProduct(tempProd.id, actorUsername = AuthPolicy.CANONICAL_ADMIN_USERNAME, actorRole = "admin")
+
+        val backupJson = repo.exportBackupJson()
+        assertTrue(backupJson.contains("\"schemaVersion\": 7") || backupJson.contains("\"schemaVersion\":7"))
+
+        // Import into a brand new in-memory database and verify full v7 round-trip
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val targetDb = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val targetRepo = BillingRepository(targetDb)
+            val importRes = targetRepo.importBackupJson(backupJson)
+            assertTrue(importRes.isSuccess)
+
+            val restoredProd = targetRepo.products.first().first { it.name == "SMPS 8CH" }
+            assertEquals(6.0, restoredProd.stockQty, 0.01)
+            assertEquals(2.0, restoredProd.minStockAlert, 0.01)
+
+            val restoredExp = targetRepo.expenses.first().firstOrNull { it.id == exp.id }
+            assertNotNull(restoredExp)
+            assertEquals(650.0, restoredExp!!.amount, 0.01)
+
+            assertTrue(targetRepo.trashItems.first().any { it.entityId == tempProd.id.toString() && it.status == "TRASHED" })
+            assertTrue(targetRepo.auditLogs.first().any { it.action == "EXPENSE_ADD" })
+            assertTrue(targetRepo.auditLogs.first().any { it.action == "DELETE" })
+        } finally {
+            targetDb.close()
+        }
+    }
+
+    @Test
+    fun trashRetention24Hours_softDeleteRestoreAutoPurgeAndRatedBillGuard() = runTest {
+        val now = 1_700_000_000_000L
+        val twentyFourHoursMs = 24L * 60L * 60L * 1000L
+
+        // Rated bill (1..5 stars) CANNOT be deleted
+        val ratedBill = BillEntity(
+            id = "b_rated_guard",
+            invoiceNo = "TSE-901",
+            date = "2026-11-22",
+            customerName = "Locked Review Client",
+            customerDetails = "Panaji",
+            itemsJson = "[]",
+            subtotal = 1000.0,
+            discount = 0.0,
+            grandTotal = 1000.0,
+            paidAmount = 1000.0,
+            dueAmount = 0.0,
+            paymentMode = PaymentMode.CASH.label,
+            signatureBase64 = "",
+            customQrText = "",
+            createdBy = "tech1",
+            staffRating = 5,
+            staffReviewNote = "Superb!"
+        )
+        repo.saveBill(ratedBill)
+        assertFalse(repo.deleteBill("b_rated_guard", nowMillis = now))
+        assertNotNull(repo.getBillById("b_rated_guard"))
+
+        // Expense soft-delete -> 23h later still restorable; Customer soft-delete -> 24h+1ms later auto-purged
+        val exp = repo.saveExpense(
+            ExpenseEntity(id = "exp_ladder_1", title = "Ladder Repair", category = "Tools", amount = 300.0, date = "2026-11-22")
+        ).getOrThrow()
+        repo.deleteExpense(exp.id, actorUsername = "Admin", actorRole = "admin", nowMillis = now)
+        assertEquals(0, repo.expenses.first().size)
+
+        val expTrash = repo.trashItems.first().first { it.entityId == exp.id }
+        val earlyPurgeCount = repo.purgeExpiredTrash(nowMillis = now + twentyFourHoursMs - 60_000L)
+        assertEquals(0, earlyPurgeCount)
+        assertTrue(repo.restoreTrashItem(expTrash.id, nowMillis = now + twentyFourHoursMs - 60_000L).isSuccess)
+        assertEquals(1, repo.expenses.first().size)
+
+        // Now delete a Customer and let 24h window expire
+        repo.saveCustomer(name = "Expired Client", details = "Margao", phone = "9876000011", address = "Margao")
+        val cust = repo.customers.first().first { it.name == "Expired Client" }
+        repo.deleteCustomer(cust.id, actorUsername = "Admin", actorRole = "admin", nowMillis = now)
+        assertFalse(repo.customers.first().any { it.id == cust.id })
+
+        val purged = repo.purgeExpiredTrash(nowMillis = now + twentyFourHoursMs + 1_000L)
+        assertEquals(1, purged)
+        assertFalse(repo.trashItems.first().any { it.entityId == cust.id.toString() })
+        assertTrue(repo.auditLogs.first().any { it.action == "AUTO_PURGE_24H" && it.entityId == cust.id.toString() })
+    }
+
+    @Test
+    fun authScreen_staffOnlyApk_hidesCreateAdminAndRestoreTabs_andPrefillsInviteCode() {
+        composeTestRule.setContent {
+            TseBillingTheme(darkTheme = false) {
+                AuthScreen(
+                    isAdminConfigured = false,
+                    accounts = emptyList(),
+                    authError = "",
+                    isStaffOnlyApk = true,
+                    prefillInviteCode = "TSE-TECH-INV99",
+                    onClearError = {},
+                    onSetupAdmin = { _, _, _, _ -> },
+                    onLogin = { _, _, _, _ -> }
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("setup_tab_create").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("setup_tab_restore").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("cloud_invite_code_input")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .assertTextContains("TSE-TECH-INV99")
     }
 }

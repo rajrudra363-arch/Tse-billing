@@ -3,6 +3,7 @@ package com.example
 import android.Manifest
 import android.content.Context
 import android.content.ContextWrapper
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -80,6 +81,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -105,6 +107,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.AppDatabase
 import com.example.data.BillingRepository
@@ -169,6 +174,7 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         soundEngine = SoundEngine(applicationContext)
+        viewModel.handleIncomingInviteUri(intent?.data)
         enableEdgeToEdge()
 
         setContent {
@@ -176,6 +182,12 @@ class MainActivity : FragmentActivity() {
                 TseBillingApp(viewModel = viewModel)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        viewModel.handleIncomingInviteUri(intent.data)
     }
 
     override fun onDestroy() {
@@ -239,6 +251,22 @@ fun TseBillingApp(viewModel: BillingViewModel) {
         val cloudBusy by viewModel.cloudBusy.collectAsStateWithLifecycle()
         val cloudWorkspaceInfo by viewModel.cloudWorkspaceInfo.collectAsStateWithLifecycle()
         val hasAdminVerifyCode by viewModel.hasAdminVerifyCode.collectAsStateWithLifecycle()
+        val expenses by viewModel.expenses.collectAsStateWithLifecycle()
+        val trashItems by viewModel.trashItems.collectAsStateWithLifecycle()
+        val auditLogs by viewModel.auditLogs.collectAsStateWithLifecycle()
+        val isStaffOnlyApk by viewModel.isStaffOnlyApk.collectAsStateWithLifecycle()
+        val prefillInviteCode by viewModel.prefillInviteCode.collectAsStateWithLifecycle()
+
+        val lifecycleOwner = LocalLifecycleOwner.current
+        DisposableEffect(lifecycleOwner) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    viewModel.purgeExpiredTrashIfReady()
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        }
 
         val scope = rememberCoroutineScope()
         var pendingSavePdfPayload by remember { mutableStateOf<InvoicePrintPayload?>(null) }
@@ -511,13 +539,15 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     cloudUser = cloudUser,
                     cloudBusy = cloudBusy,
                     hasAdminVerifyCode = hasAdminVerifyCode,
+                    isStaffOnlyApk = isStaffOnlyApk,
+                    prefillInviteCode = prefillInviteCode,
                     onClearError = viewModel::clearAuthError,
                     onSetupAdmin = viewModel::setupAdmin,
                     onLogin = { u, p, antiRobotPassed, verifyCode ->
                         viewModel.login(u, p, antiRobotPassed, adminVerifyCode = verifyCode)
                     },
                     onImportBackup = { json -> viewModel.importBackupJson(json, allowPreSetupRestore = true) },
-                    onSignInGoogle = { viewModel.signInWithGoogle(context) },
+                    onSignInGoogle = { viewModel.signInWithGoogle(context.findFragmentActivity() ?: context) },
                     onJoinInviteCode = viewModel::joinWorkspaceWithInviteCode,
                     onResetAdminPassword = viewModel::resetAdminPassword
                 )
@@ -787,9 +817,11 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                     MainTab.PRODUCTS -> ProductsScreen(
                                         products = products,
                                         user = currentSession,
-                                        onAddProduct = viewModel::addProduct,
-                                        onUpdateProduct = viewModel::updateProduct,
-                                        onDeleteProduct = viewModel::deleteProduct
+                                        onAddProduct = { n, u, r, f -> viewModel.addProduct(n, u, r, f) },
+                                        onUpdateProduct = { id, n, u, r, f -> viewModel.updateProduct(id, n, u, r, f) },
+                                        onDeleteProduct = viewModel::deleteProduct,
+                                        onAddProductWithStock = viewModel::addProduct,
+                                        onUpdateProductWithStock = viewModel::updateProduct
                                     )
 
                                     MainTab.ANALYTICS -> SuperAdminDashboardScreen(
@@ -797,7 +829,8 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         customers = customers,
                                         helpRequests = helpRequests,
                                         products = products,
-                                        technicianPerformance = technicianPerformance
+                                        technicianPerformance = technicianPerformance,
+                                        expenses = expenses
                                     )
 
                                     MainTab.ADMIN -> AdminPanelScreen(
@@ -810,6 +843,9 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         cloudWorkspaceInfo = cloudWorkspaceInfo,
                                         cloudBusy = cloudBusy,
                                         availableUpdate = availableUpdate,
+                                        expenses = expenses,
+                                        trashItems = trashItems,
+                                        auditLogs = auditLogs,
                                         onSaveUpi = viewModel::saveUpiSettings,
                                         onClearUpi = viewModel::clearUpiId,
                                         onAddTechnician = viewModel::addTechnician,
@@ -820,11 +856,17 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         onRecordCashSettlement = viewModel::recordTechnicianCashSettlement,
                                         onSaveVoiceAndNoteSettings = viewModel::saveVoiceAndNoteSettings,
                                         onTestVoice = viewModel::testVoiceAnnouncement,
-                                        onSignInGoogle = { viewModel.signInWithGoogle(context) },
+                                        onSignInGoogle = { viewModel.signInWithGoogle(context.findFragmentActivity() ?: context) },
                                         onEnsureCloudWorkspace = viewModel::ensureAdminCloudWorkspace,
                                         onShareApkWhatsApp = { targetRole -> viewModel.shareApkViaWhatsApp(context, targetRole) },
                                         onUpdateAdminVerifyCode = viewModel::updateAdminVerifyCode,
-                                        onUpdateAdminCredentials = viewModel::updateAdminCredentials
+                                        onUpdateAdminCredentials = viewModel::updateAdminCredentials,
+                                        onSaveExpense = { title, cat, amt, note, onDone ->
+                                            viewModel.saveExpense(title, cat, amt, note, onSuccess = onDone)
+                                        },
+                                        onDeleteExpense = viewModel::deleteExpense,
+                                        onRestoreTrash = viewModel::restoreTrashItem,
+                                        onPurgeExpiredTrash = viewModel::purgeExpiredTrashIfReady
                                     )
 
                                     MainTab.SETTINGS -> SettingsScreen(

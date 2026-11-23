@@ -52,6 +52,12 @@ service cloud.firestore {
         memberDoc(workspaceId, request.auth.uid).data.role == 'technician';
     }
 
+    function isSuperAdminMember(workspaceId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+        memberDoc(workspaceId, request.auth.uid).data.role == 'super_admin';
+    }
+
     function isValidWorkspaceCreate(workspaceId) {
       let d = request.resource.data;
       return d.keys().hasAll([
@@ -253,18 +259,49 @@ service cloud.firestore {
         allow get, list: if isWorkspaceMember(workspaceId);
         allow create: if isWorkspaceAdmin(workspaceId) && isValidId(productId) &&
           request.resource.data.keys().hasAll(['productId', 'name', 'unit', 'defaultRate', 'folder', 'updatedAt']) &&
-          request.resource.data.keys().hasOnly(['productId', 'name', 'unit', 'defaultRate', 'folder', 'updatedAt']) &&
+          request.resource.data.keys().hasOnly([
+            'productId', 'name', 'unit', 'defaultRate', 'folder', 'stockQty', 'minStockAlert', 'updatedAt'
+          ]) &&
           request.resource.data.productId == productId &&
           request.resource.data.name is string && request.resource.data.name.size() >= 1 &&
           request.resource.data.unit is string &&
           request.resource.data.defaultRate is number && request.resource.data.defaultRate >= 0 &&
           request.resource.data.folder is string &&
+          (!('stockQty' in request.resource.data) ||
+            (request.resource.data.stockQty is number && request.resource.data.stockQty >= 0)) &&
+          (!('minStockAlert' in request.resource.data) ||
+            (request.resource.data.minStockAlert is number && request.resource.data.minStockAlert >= 0)) &&
           request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
-        allow update: if isWorkspaceAdmin(workspaceId) &&
-          request.resource.data.productId == resource.data.productId &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'unit', 'defaultRate', 'folder', 'updatedAt']) &&
-          request.resource.data.defaultRate is number && request.resource.data.defaultRate >= 0 &&
-          request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
+        allow update: if (
+          (
+            isWorkspaceAdmin(workspaceId) &&
+            request.resource.data.productId == resource.data.productId &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'name', 'unit', 'defaultRate', 'folder', 'stockQty', 'minStockAlert', 'updatedAt'
+            ]) &&
+            request.resource.data.name is string && request.resource.data.name.size() >= 1 &&
+            request.resource.data.defaultRate is number && request.resource.data.defaultRate >= 0 &&
+            (!('stockQty' in request.resource.data) ||
+              (request.resource.data.stockQty is number && request.resource.data.stockQty >= 0)) &&
+            (!('minStockAlert' in request.resource.data) ||
+              (request.resource.data.minStockAlert is number && request.resource.data.minStockAlert >= 0))
+          ) || (
+            isTechnicianMember(workspaceId) &&
+            request.resource.data.productId == resource.data.productId &&
+            request.resource.data.name == resource.data.name &&
+            request.resource.data.unit == resource.data.unit &&
+            request.resource.data.defaultRate == resource.data.defaultRate &&
+            request.resource.data.folder == resource.data.folder &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'stockQty', 'minStockAlert', 'updatedAt'
+            ]) &&
+            (!('minStockAlert' in resource.data) ||
+              request.resource.data.minStockAlert == resource.data.minStockAlert) &&
+            request.resource.data.stockQty is number && request.resource.data.stockQty >= 0 &&
+            (!('minStockAlert' in request.resource.data) ||
+              (request.resource.data.minStockAlert is number && request.resource.data.minStockAlert >= 0))
+          )
+        ) && request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
         allow delete: if isWorkspaceAdmin(workspaceId);
       }
 
@@ -361,6 +398,102 @@ service cloud.firestore {
           request.resource.data.settlementId == settlementId &&
           request.resource.data.amount is number && request.resource.data.amount > 0;
         allow update, delete: if isWorkspaceAdmin(workspaceId);
+      }
+
+      match /expenses/{expenseId} {
+        allow get, list: if isWorkspaceAdmin(workspaceId) || isSuperAdminMember(workspaceId);
+        allow create: if isWorkspaceAdmin(workspaceId) && isValidId(expenseId) &&
+          request.resource.data.keys().hasAll([
+            'expenseId', 'title', 'category', 'amount', 'date', 'note',
+            'recordedBy', 'createdAt', 'updatedAt', 'serverUpdatedAt'
+          ]) &&
+          request.resource.data.keys().hasOnly([
+            'expenseId', 'title', 'category', 'amount', 'date', 'note',
+            'recordedBy', 'createdAt', 'updatedAt', 'serverUpdatedAt'
+          ]) &&
+          request.resource.data.expenseId == expenseId &&
+          request.resource.data.title is string && request.resource.data.title.size() >= 1 &&
+          request.resource.data.category is string &&
+          request.resource.data.amount is number && request.resource.data.amount >= 0 &&
+          request.resource.data.date is string &&
+          request.resource.data.note is string &&
+          request.resource.data.recordedBy is string &&
+          request.resource.data.createdAt is int &&
+          request.resource.data.updatedAt is int &&
+          request.resource.data.serverUpdatedAt is timestamp && request.resource.data.serverUpdatedAt <= request.time;
+        allow update: if isWorkspaceAdmin(workspaceId) &&
+          request.resource.data.expenseId == resource.data.expenseId &&
+          request.resource.data.createdAt == resource.data.createdAt &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'title', 'category', 'amount', 'date', 'note', 'recordedBy', 'updatedAt', 'serverUpdatedAt'
+          ]) &&
+          request.resource.data.title is string && request.resource.data.title.size() >= 1 &&
+          request.resource.data.amount is number && request.resource.data.amount >= 0 &&
+          request.resource.data.updatedAt is int &&
+          request.resource.data.serverUpdatedAt is timestamp && request.resource.data.serverUpdatedAt <= request.time;
+        allow delete: if isWorkspaceAdmin(workspaceId);
+      }
+
+      match /trash/{trashId} {
+        allow get, list: if isWorkspaceAdmin(workspaceId);
+        allow create: if isWorkspaceAdmin(workspaceId) && isValidId(trashId) &&
+          request.resource.data.keys().hasAll([
+            'trashId', 'entityType', 'entityId', 'title', 'summary', 'payloadJson',
+            'deletedBy', 'deletedByRole', 'status', 'deletedAt', 'deletedAtMillis',
+            'expireAt', 'restoredAt', 'restoredBy'
+          ]) &&
+          request.resource.data.keys().hasOnly([
+            'trashId', 'entityType', 'entityId', 'title', 'summary', 'payloadJson',
+            'deletedBy', 'deletedByRole', 'status', 'deletedAt', 'deletedAtMillis',
+            'expireAt', 'restoredAt', 'restoredBy'
+          ]) &&
+          request.resource.data.trashId == trashId &&
+          request.resource.data.entityType in ['BILL', 'CUSTOMER', 'PRODUCT', 'EXPENSE', 'HELP_REQUEST'] &&
+          request.resource.data.entityId is string && request.resource.data.entityId.size() >= 1 &&
+          request.resource.data.title is string &&
+          request.resource.data.summary is string &&
+          request.resource.data.payloadJson is string && request.resource.data.payloadJson.size() <= 300000 &&
+          request.resource.data.deletedBy is string &&
+          request.resource.data.deletedByRole is string &&
+          request.resource.data.status == 'TRASHED' &&
+          request.resource.data.deletedAt is timestamp && request.resource.data.deletedAt <= request.time &&
+          request.resource.data.deletedAtMillis is int &&
+          request.resource.data.expireAt is timestamp &&
+          request.resource.data.restoredAt is int &&
+          request.resource.data.restoredBy is string;
+        allow update: if isWorkspaceAdmin(workspaceId) &&
+          resource.data.status == 'TRASHED' &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'restoredAt', 'restoredBy']) &&
+          request.resource.data.status == 'RESTORED' &&
+          request.resource.data.restoredAt is int &&
+          request.resource.data.restoredBy is string;
+        allow delete: if isWorkspaceAdmin(workspaceId) &&
+          resource.data.deletedAt is timestamp &&
+          request.time >= resource.data.deletedAt + duration.value(24, 'h');
+      }
+
+      match /auditLogs/{logId} {
+        allow get, list: if isWorkspaceAdmin(workspaceId) || isSuperAdminMember(workspaceId);
+        allow create: if isWorkspaceAdmin(workspaceId) && isValidId(logId) &&
+          request.resource.data.keys().hasAll([
+            'logId', 'action', 'entityType', 'entityId', 'title',
+            'actorUsername', 'actorRole', 'details', 'createdAt', 'serverCreatedAt'
+          ]) &&
+          request.resource.data.keys().hasOnly([
+            'logId', 'action', 'entityType', 'entityId', 'title',
+            'actorUsername', 'actorRole', 'details', 'createdAt', 'serverCreatedAt'
+          ]) &&
+          request.resource.data.logId == logId &&
+          request.resource.data.action is string && request.resource.data.action.size() >= 1 &&
+          request.resource.data.entityType is string &&
+          request.resource.data.entityId is string &&
+          request.resource.data.title is string &&
+          request.resource.data.actorUsername is string &&
+          request.resource.data.actorRole is string &&
+          request.resource.data.details is string &&
+          request.resource.data.createdAt is int &&
+          request.resource.data.serverCreatedAt is timestamp && request.resource.data.serverCreatedAt <= request.time;
+        allow update, delete: if false;
       }
     }
 

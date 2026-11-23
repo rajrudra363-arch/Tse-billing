@@ -38,6 +38,9 @@ interface CustomerDao {
     @Query("SELECT * FROM customers ORDER BY name COLLATE NOCASE ASC")
     suspend fun getAll(): List<CustomerEntity>
 
+    @Query("SELECT * FROM customers WHERE id = :id LIMIT 1")
+    suspend fun findById(id: Long): CustomerEntity?
+
     @Query("SELECT * FROM customers WHERE LOWER(name) = LOWER(:name) LIMIT 1")
     suspend fun findByName(name: String): CustomerEntity?
 
@@ -58,6 +61,12 @@ interface ProductDao {
 
     @Query("SELECT * FROM products ORDER BY folder COLLATE NOCASE ASC, id ASC")
     suspend fun getAll(): List<ProductEntity>
+
+    @Query("SELECT * FROM products WHERE id = :id LIMIT 1")
+    suspend fun findById(id: Long): ProductEntity?
+
+    @Query("SELECT * FROM products WHERE LOWER(name) = LOWER(:name) LIMIT 1")
+    suspend fun findByName(name: String): ProductEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(products: List<ProductEntity>)
@@ -172,5 +181,62 @@ interface TechnicianSettlementDao {
     suspend fun reassignTechnician(oldUsername: String, newUsername: String)
 
     @Query("DELETE FROM technician_settlements")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface ExpenseDao {
+    @Query("SELECT * FROM expenses ORDER BY date DESC, updatedAt DESC")
+    fun observeAll(): Flow<List<ExpenseEntity>>
+
+    @Query("SELECT * FROM expenses ORDER BY date DESC, updatedAt DESC")
+    suspend fun getAll(): List<ExpenseEntity>
+
+    @Query("SELECT * FROM expenses WHERE id = :id LIMIT 1")
+    suspend fun findById(id: String): ExpenseEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(expense: ExpenseEntity)
+
+    @Query("DELETE FROM expenses WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM expenses")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface TrashItemDao {
+    @Query("SELECT * FROM trash_items WHERE status = 'TRASHED' ORDER BY deletedAt DESC")
+    fun observeActive(): Flow<List<TrashItemEntity>>
+
+    @Query("SELECT * FROM trash_items ORDER BY deletedAt DESC")
+    suspend fun getAll(): List<TrashItemEntity>
+
+    @Query("SELECT * FROM trash_items WHERE id = :id LIMIT 1")
+    suspend fun findById(id: String): TrashItemEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(item: TrashItemEntity)
+
+    @Query("DELETE FROM trash_items WHERE id = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM trash_items")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface AuditLogDao {
+    @Query("SELECT * FROM audit_logs ORDER BY createdAt DESC LIMIT 200")
+    fun observeRecent(): Flow<List<AuditLogEntity>>
+
+    @Query("SELECT * FROM audit_logs ORDER BY createdAt DESC")
+    suspend fun getAll(): List<AuditLogEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(log: AuditLogEntity)
+
+    @Query("DELETE FROM audit_logs")
     suspend fun deleteAll()
 }

@@ -15,9 +15,12 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         UserAccountEntity::class,
         AppConfigEntity::class,
         CustomerHelpEntity::class,
-        TechnicianSettlementEntity::class
+        TechnicianSettlementEntity::class,
+        ExpenseEntity::class,
+        TrashItemEntity::class,
+        AuditLogEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -28,6 +31,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun appConfigDao(): AppConfigDao
     abstract fun customerHelpDao(): CustomerHelpDao
     abstract fun technicianSettlementDao(): TechnicianSettlementDao
+    abstract fun expenseDao(): ExpenseDao
+    abstract fun trashItemDao(): TrashItemDao
+    abstract fun auditLogDao(): AuditLogDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -128,6 +134,62 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE products ADD COLUMN stockQty REAL NOT NULL DEFAULT 0.0")
+                db.execSQL("ALTER TABLE products ADD COLUMN minStockAlert REAL NOT NULL DEFAULT 0.0")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `expenses` (
+                        `id` TEXT NOT NULL PRIMARY KEY,
+                        `title` TEXT NOT NULL,
+                        `category` TEXT NOT NULL,
+                        `amount` REAL NOT NULL,
+                        `date` TEXT NOT NULL,
+                        `note` TEXT NOT NULL,
+                        `recordedBy` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `trash_items` (
+                        `id` TEXT NOT NULL PRIMARY KEY,
+                        `entityType` TEXT NOT NULL,
+                        `entityId` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `summary` TEXT NOT NULL,
+                        `payloadJson` TEXT NOT NULL,
+                        `deletedBy` TEXT NOT NULL,
+                        `deletedByRole` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `deletedAt` INTEGER NOT NULL,
+                        `expireAt` INTEGER NOT NULL,
+                        `restoredAt` INTEGER NOT NULL,
+                        `restoredBy` TEXT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `audit_logs` (
+                        `id` TEXT NOT NULL PRIMARY KEY,
+                        `action` TEXT NOT NULL,
+                        `entityType` TEXT NOT NULL,
+                        `entityId` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `actorUsername` TEXT NOT NULL,
+                        `actorRole` TEXT NOT NULL,
+                        `details` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -143,7 +205,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_3_4,
                     MIGRATION_4_5,
                     MIGRATION_5_6,
-                    MIGRATION_6_7
+                    MIGRATION_6_7,
+                    MIGRATION_7_8
                 ).build().also { INSTANCE = it }
             }
         }

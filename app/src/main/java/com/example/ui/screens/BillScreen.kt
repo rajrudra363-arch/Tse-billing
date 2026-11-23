@@ -321,6 +321,14 @@ fun BillScreen(
                                 clearFocusAndHideToolbar(focusManager, textToolbar)
                                 onToggleSheetPreview(!draft.showSheetPreview)
                             },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = TealAccent,
+                                selectedLabelColor = Color.White,
+                                selectedLeadingIconColor = Color.White,
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                labelColor = MaterialTheme.colorScheme.onSurface,
+                                iconColor = MaterialTheme.colorScheme.onSurface
+                            ),
                             label = { Text(if (draft.showSheetPreview) "Hide A4" else "A4 Preview") },
                             leadingIcon = {
                                 Icon(
@@ -345,6 +353,14 @@ fun BillScreen(
                                     clearFocusAndHideToolbar(focusManager, textToolbar)
                                     onSetDocumentType(docType)
                                 },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = TealAccent,
+                                    selectedLabelColor = Color.White,
+                                    selectedLeadingIconColor = Color.White,
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    labelColor = MaterialTheme.colorScheme.onSurface,
+                                    iconColor = MaterialTheme.colorScheme.onSurface
+                                ),
                                 label = { Text(docType.label, fontWeight = FontWeight.Bold) },
                                 modifier = Modifier
                                     .weight(1f)
@@ -480,6 +496,14 @@ fun BillScreen(
                                                 clearFocusAndHideToolbar(focusManager, textToolbar)
                                                 onCustomerSelected(c)
                                             },
+                                            colors = FilterChipDefaults.filterChipColors(
+                                                selectedContainerColor = TealAccent,
+                                                selectedLabelColor = Color.White,
+                                                selectedLeadingIconColor = Color.White,
+                                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                                labelColor = MaterialTheme.colorScheme.onSurface,
+                                                iconColor = MaterialTheme.colorScheme.onSurface
+                                            ),
                                             label = { Text("${c.name} (${c.phone})") },
                                             modifier = Modifier.testTag("bill_customer_match_${c.id}")
                                         )
@@ -617,6 +641,11 @@ fun BillScreen(
                                 }
                             },
                             enabled = !locationBusy,
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                                contentColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                             modifier = Modifier.testTag("bill_gps_location_button")
                         ) {
                             Icon(Icons.Default.MyLocation, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -634,6 +663,11 @@ fun BillScreen(
                                     LocationHelper.openInGoogleMaps(context, query)
                                 }
                             },
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                                contentColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                             modifier = Modifier.testTag("bill_open_map_button")
                         ) {
                             Icon(Icons.Default.Map, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -913,6 +947,7 @@ fun BillScreen(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                         }
+                        val summaryBtnContentColor = if (isNightClosed) Color(0xFFF1F5F9) else Color.White
                         Button(
                             onClick = {
                                 clearFocusAndHideToolbar(focusManager, textToolbar)
@@ -921,13 +956,15 @@ fun BillScreen(
                             enabled = !isNightClosed,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = TealAccent,
-                                contentColor = Color.White
+                                contentColor = Color.White,
+                                disabledContainerColor = Color(0xFF334155),
+                                disabledContentColor = Color(0xFFF1F5F9)
                             ),
                             modifier = Modifier.height(52.dp).testTag("get_summary_button")
                         ) {
-                            Icon(Icons.Default.Summarize, contentDescription = null, tint = Color.White)
+                            Icon(Icons.Default.Summarize, contentDescription = null, tint = summaryBtnContentColor)
                             Spacer(Modifier.width(8.dp))
-                            Text("Get Summary", fontWeight = FontWeight.Bold, color = Color.White)
+                            Text("Get Summary", fontWeight = FontWeight.Bold, color = summaryBtnContentColor)
                         }
                     }
                 }
@@ -1070,6 +1107,11 @@ private fun InvoiceItemEditorCard(
                         clearFocusAndHideToolbar(itemFocusManager, itemTextToolbar)
                         folderMenuOpen = true
                     },
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                     modifier = Modifier.fillMaxWidth().height(46.dp).testTag("item_folder_btn_$index"),
                     shape = RoundedCornerShape(10.dp)
                 ) {
@@ -1113,6 +1155,11 @@ private fun InvoiceItemEditorCard(
                         clearFocusAndHideToolbar(itemFocusManager, itemTextToolbar)
                         productMenuOpen = true
                     },
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                     modifier = Modifier.fillMaxWidth().height(48.dp).testTag("item_product_btn_$index"),
                     shape = RoundedCornerShape(10.dp)
                 ) {
@@ -1266,6 +1313,11 @@ private fun InvoiceItemEditorCard(
                         clearFocusAndHideToolbar(itemFocusManager, itemTextToolbar)
                         onEnterAddNext()
                     },
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                     modifier = Modifier.fillMaxWidth().testTag("quick_add_next_item_$index")
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))

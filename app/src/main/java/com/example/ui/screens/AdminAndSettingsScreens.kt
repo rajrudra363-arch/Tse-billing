@@ -45,12 +45,14 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.FolderShared
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Person
@@ -58,6 +60,8 @@ import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QrCode2
+import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material.icons.filled.RestoreFromTrash
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
@@ -108,10 +112,13 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.fragment.app.FragmentActivity
 import com.example.BuildConfig
+import com.example.data.AuditLogEntity
 import com.example.data.AuthPolicy
 import com.example.data.CloudAuthUser
 import com.example.data.CloudWorkspaceInfo
 import com.example.data.CompanySettings
+import com.example.data.ExpenseEntity
+import com.example.data.TrashItemEntity
 import com.example.data.UpiSettings
 import com.example.data.UserAccountEntity
 import com.example.data.UserSession
@@ -161,6 +168,9 @@ fun AdminPanelScreen(
     cloudWorkspaceInfo: CloudWorkspaceInfo = CloudWorkspaceInfo(),
     cloudBusy: Boolean = false,
     availableUpdate: GitHubReleaseInfo? = null,
+    expenses: List<ExpenseEntity> = emptyList(),
+    trashItems: List<TrashItemEntity> = emptyList(),
+    auditLogs: List<AuditLogEntity> = emptyList(),
     onSaveUpi: (upiId: String, payeeName: String) -> Unit,
     onClearUpi: () -> Unit,
     onAddTechnician: (name: String, phone: String, username: String, password: String, photoBitmap: Bitmap?, onDone: () -> Unit) -> Unit,
@@ -175,7 +185,11 @@ fun AdminPanelScreen(
     onEnsureCloudWorkspace: () -> Unit = {},
     onShareApkWhatsApp: (targetRole: String) -> Unit = {},
     onUpdateAdminVerifyCode: (currentAdminPass: String, newCode: String, onSuccess: () -> Unit) -> Unit = { _, _, _ -> },
-    onUpdateAdminCredentials: (currentAdminPass: String, newPass: String, confirmNewPass: String, newCode: String, onSuccess: () -> Unit) -> Unit = { _, _, _, _, _ -> }
+    onUpdateAdminCredentials: (currentAdminPass: String, newPass: String, confirmNewPass: String, newCode: String, onSuccess: () -> Unit) -> Unit = { _, _, _, _, _ -> },
+    onSaveExpense: (title: String, category: String, amountText: String, note: String, onSuccess: () -> Unit) -> Unit = { _, _, _, _, _ -> },
+    onDeleteExpense: (String) -> Unit = {},
+    onRestoreTrash: (String) -> Unit = {},
+    onPurgeExpiredTrash: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1195,6 +1209,268 @@ fun AdminPanelScreen(
                             fontWeight = FontWeight.Bold,
                             color = Color.White
                         )
+                    }
+                }
+            }
+        }
+
+        // Business Expenses Manager
+        item {
+            var expTitle by remember { mutableStateOf("") }
+            var expCategory by remember { mutableStateOf("Travel / Fuel") }
+            var expAmount by remember { mutableStateOf("") }
+            var expNote by remember { mutableStateOf("") }
+            val totalExp = expenses.sumOf { it.amount }
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.testTag("admin_expenses_card")
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.ReceiptLong, contentDescription = null, tint = TealAccent)
+                            Text("Business Expenses", style = MaterialTheme.typography.titleMedium)
+                        }
+                        Text(
+                            text = "Total: ₹${String.format(Locale.US, "%.2f", totalExp)}",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Black,
+                            color = RedDue
+                        )
+                    }
+                    OutlinedTextField(
+                        value = expTitle,
+                        onValueChange = { expTitle = it },
+                        label = { Text("Expense Title (e.g. Fuel, Cable Purchase)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_expense_title")
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = expCategory,
+                            onValueChange = { expCategory = it },
+                            label = { Text("Category") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("new_expense_category")
+                        )
+                        OutlinedTextField(
+                            value = expAmount,
+                            onValueChange = { expAmount = it },
+                            label = { Text("Amount (₹)") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).bringIntoViewOnFocus().testTag("new_expense_amount")
+                        )
+                    }
+                    OutlinedTextField(
+                        value = expNote,
+                        onValueChange = { expNote = it },
+                        label = { Text("Note (Optional)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus()
+                    )
+                    Button(
+                        onClick = {
+                            clearFocusAndHideToolbar(focusManager, textToolbar)
+                            onSaveExpense(expTitle, expCategory, expAmount, expNote) {
+                                expTitle = ""
+                                expAmount = ""
+                                expNote = ""
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("add_expense_button")
+                    ) {
+                        Icon(Icons.Default.Save, contentDescription = null, tint = Color.White)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Record Business Expense", fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                    if (expenses.isNotEmpty()) {
+                        HorizontalDivider()
+                        expenses.take(15).forEach { exp ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(exp.title, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                                    Text(
+                                        text = "${exp.category} · ${exp.date} · @${exp.recordedBy}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = "₹${String.format(Locale.US, "%.2f", exp.amount)}",
+                                        fontWeight = FontWeight.Black,
+                                        color = RedDue
+                                    )
+                                    IconButton(
+                                        onClick = { onDeleteExpense(exp.id) },
+                                        modifier = Modifier.testTag("delete_expense_${exp.id}")
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Move expense to trash", tint = RedDue)
+                                    }
+                                }
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            }
+        }
+
+        // Trash & 24-Hour Recovery
+        item {
+            val trashedActive = remember(trashItems) {
+                trashItems.filter { it.status == "TRASHED" }
+            }
+            val nowMs = System.currentTimeMillis()
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.testTag("admin_trash_section")
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Default.RestoreFromTrash, contentDescription = null, tint = TealAccent)
+                            Text("Trash & 24-Hour Recovery (${trashedActive.size})", style = MaterialTheme.typography.titleMedium)
+                        }
+                        if (trashedActive.isNotEmpty()) {
+                            TextButton(onClick = onPurgeExpiredTrash) {
+                                Text("Clean Expired", color = RedDue, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                    Text(
+                        text = "Deleted records stay recoverable here for 24 hours. After 24 hours they are permanently removed and logged.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (trashedActive.isEmpty()) {
+                        Text(
+                            text = "Trash is empty.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        trashedActive.forEach { tr ->
+                            val remMs = (tr.expireAt - nowMs).coerceAtLeast(0L)
+                            val remHrs = remMs / 3_600_000L
+                            val remMins = (remMs % 3_600_000L) / 60_000L
+                            Surface(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Text(
+                                            text = "[${tr.entityType}] ${tr.title}",
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = tr.summary,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = if (remMs > 0L) {
+                                                "Auto-deletes in ${remHrs}h ${remMins}m · Deleted by @${tr.deletedBy}"
+                                            } else {
+                                                "24h window expired · Pending purge"
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = RedDue,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                    Button(
+                                        onClick = { onRestoreTrash(tr.id) },
+                                        colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
+                                        modifier = Modifier.testTag("restore_trash_${tr.id}")
+                                    ) {
+                                        Text("Restore", fontWeight = FontWeight.Bold, color = Color.White)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Permanent Audit Log
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.testTag("admin_audit_log_card")
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.History, contentDescription = null, tint = BlueAction)
+                        Text("Security & Deletion Audit Log (${auditLogs.size})", style = MaterialTheme.typography.titleMedium)
+                    }
+                    if (auditLogs.isEmpty()) {
+                        Text(
+                            text = "No audit events recorded yet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        val fmt = remember { java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US) }
+                        auditLogs.take(25).forEach { log ->
+                            val actionColor = when (log.action) {
+                                "RESTORE", "EXPENSE_ADD" -> GreenPaid
+                                "AUTO_PURGE_24H", "DELETE" -> RedDue
+                                else -> BlueAction
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "${log.action} · ${log.entityType}: ${log.title}",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = actionColor
+                                    )
+                                    Text(
+                                        text = "${log.details} · by @${log.actorUsername} (${log.actorRole})",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Text(
+                                    text = fmt.format(java.util.Date(log.createdAt)),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            HorizontalDivider()
+                        }
                     }
                 }
             }

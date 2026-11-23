@@ -623,7 +623,8 @@ private fun SavedDocCard(
                     append(" · Paid: ₹${String.format(Locale.US, "%.2f", bill.paidAmount)}")
                 },
                 style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.SemiBold,
+                color = if (hasDue) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onSurface
             )
 
             if (!isQuotation && (bill.staffRating > 0 || bill.staffReviewNote.isNotBlank())) {
@@ -682,12 +683,20 @@ private fun SavedDocCard(
                 }
             }
 
+            val outlinedColors = ButtonDefaults.outlinedButtonColors(
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                contentColor = MaterialTheme.colorScheme.onSurface
+            )
+            val outlinedBorder = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 OutlinedButton(
                     onClick = onPreview,
+                    colors = outlinedColors,
+                    border = outlinedBorder,
                     modifier = Modifier.testTag("preview_saved_${bill.invoiceNo}")
                 ) {
                     Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -697,6 +706,8 @@ private fun SavedDocCard(
 
                 OutlinedButton(
                     onClick = onPrintBill,
+                    colors = outlinedColors,
+                    border = outlinedBorder,
                     modifier = Modifier.testTag("print_saved_${bill.invoiceNo}")
                 ) {
                     Icon(Icons.Default.Print, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -706,6 +717,8 @@ private fun SavedDocCard(
 
                 OutlinedButton(
                     onClick = onSavePdf,
+                    colors = outlinedColors,
+                    border = outlinedBorder,
                     modifier = Modifier.testTag("save_pdf_saved_${bill.invoiceNo}")
                 ) {
                     Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -716,6 +729,8 @@ private fun SavedDocCard(
                 if (isAdmin && !isSuperAdmin) {
                     OutlinedButton(
                         onClick = onSharePdf,
+                        colors = outlinedColors,
+                        border = outlinedBorder,
                         modifier = Modifier.testTag("share_pdf_saved_${bill.invoiceNo}")
                     ) {
                         Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -726,6 +741,8 @@ private fun SavedDocCard(
 
                 OutlinedButton(
                     onClick = onSavePhoto,
+                    colors = outlinedColors,
+                    border = outlinedBorder,
                     modifier = Modifier.testTag("save_photo_saved_${bill.invoiceNo}")
                 ) {
                     Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -736,6 +753,8 @@ private fun SavedDocCard(
                 if (isAdmin && !isSuperAdmin) {
                     OutlinedButton(
                         onClick = onSharePhoto,
+                        colors = outlinedColors,
+                        border = outlinedBorder,
                         modifier = Modifier.testTag("share_photo_saved_${bill.invoiceNo}")
                     ) {
                         Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -745,7 +764,12 @@ private fun SavedDocCard(
 
                     Button(
                         onClick = onWhatsAppPdf,
-                        colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = GreenPaid,
+                            contentColor = Color.White,
+                            disabledContainerColor = Color(0xFF334155),
+                            disabledContentColor = Color(0xFFF1F5F9)
+                        ),
                         modifier = Modifier.testTag("wa_pdf_saved_${bill.invoiceNo}")
                     ) {
                         Icon(Icons.Default.Chat, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
@@ -756,7 +780,12 @@ private fun SavedDocCard(
                     if (!isQuotation) {
                         Button(
                             onClick = onOpenPaymentReview,
-                            colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = BlueAction,
+                                contentColor = Color.White,
+                                disabledContainerColor = Color(0xFF334155),
+                                disabledContentColor = Color(0xFFF1F5F9)
+                            ),
                             modifier = Modifier.testTag("review_bill_${bill.invoiceNo}")
                         ) {
                             Icon(Icons.Default.Payments, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
@@ -767,7 +796,12 @@ private fun SavedDocCard(
                         if (hasDue) {
                             Button(
                                 onClick = onSendDueQr,
-                                colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = BlueAction,
+                                    contentColor = Color.White,
+                                    disabledContainerColor = Color(0xFF334155),
+                                    disabledContentColor = Color(0xFFF1F5F9)
+                                ),
                                 modifier = Modifier.testTag("send_due_qr_${bill.invoiceNo}")
                             ) {
                                 Icon(Icons.Default.QrCode2, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
@@ -776,7 +810,12 @@ private fun SavedDocCard(
                             }
                             Button(
                                 onClick = onMarkDuePaid,
-                                colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = GreenPaid,
+                                    contentColor = Color.White,
+                                    disabledContainerColor = Color(0xFF334155),
+                                    disabledContentColor = Color(0xFFF1F5F9)
+                                ),
                                 modifier = Modifier.testTag("mark_due_paid_${bill.invoiceNo}")
                             ) {
                                 Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
@@ -788,7 +827,12 @@ private fun SavedDocCard(
 
                     Button(
                         onClick = onOpenBill,
-                        colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = TealAccent,
+                            contentColor = Color.White,
+                            disabledContainerColor = Color(0xFF334155),
+                            disabledContentColor = Color(0xFFF1F5F9)
+                        ),
                         modifier = Modifier.testTag("open_saved_${bill.invoiceNo}")
                     ) {
                         Icon(Icons.Default.Edit, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
@@ -799,7 +843,12 @@ private fun SavedDocCard(
                     if (bill.staffRating == 0) {
                         Button(
                             onClick = onDeleteBill,
-                            colors = ButtonDefaults.buttonColors(containerColor = RedDue, contentColor = Color.White),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = RedDue,
+                                contentColor = Color.White,
+                                disabledContainerColor = Color(0xFF334155),
+                                disabledContentColor = Color(0xFFF1F5F9)
+                            ),
                             modifier = Modifier.testTag("delete_saved_${bill.invoiceNo}")
                         ) {
                             Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
@@ -811,7 +860,7 @@ private fun SavedDocCard(
                     Text(
                         text = if (isSuperAdmin) "View only (Super Admin)" else "View / Print / Save only (Admin handles Share & Edit)",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (hasDue) MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.align(Alignment.CenterVertically)
                     )
                 }

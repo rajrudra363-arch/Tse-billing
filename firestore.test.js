@@ -301,4 +301,174 @@ describe("TSE Billing Firestore Rules", () => {
     await assertSucceeds(verifiedBootAdmin.collection("workspaces").doc("ws_tse_1").get());
     await assertFails(unverifiedImposter.collection("workspaces").doc("ws_tse_1").get());
   });
+
+  test("product stock updates, expense RBAC, 24h trash retention, and immutable audit logs", async () => {
+    const ownerDb = testEnv.authenticatedContext("owner_1", {
+      email: "owner@example.com",
+      email_verified: true
+    }).firestore(DB_ID);
+    const techDb = testEnv.authenticatedContext("tech_1", {
+      email: "tech@example.com",
+      email_verified: true
+    }).firestore(DB_ID);
+    const saDb = testEnv.authenticatedContext("sa_1", {
+      email: "sa@example.com",
+      email_verified: true
+    }).firestore(DB_ID);
+
+    await assertSucceeds(ownerDb.collection("workspaces").doc("ws_tse_1").set(validWorkspaceData("owner_1")));
+    await assertSucceeds(
+      techDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("tech_1").set({
+        userId: "tech_1",
+        email: "tech@example.com",
+        displayName: "Rahul Tech",
+        role: "technician",
+        inviteCode: "TSE_TECH_991122",
+        createdAt: nowTs(),
+        updatedAt: nowTs()
+      })
+    );
+    await assertSucceeds(
+      saDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("sa_1").set({
+        userId: "sa_1",
+        email: "sa@example.com",
+        displayName: "Auditor",
+        role: "super_admin",
+        inviteCode: "TSE_SA_883344",
+        createdAt: nowTs(),
+        updatedAt: nowTs()
+      })
+    );
+
+    // Product with stockQty and minStockAlert: Admin creates; Technician can ONLY adjust stockQty
+    const prodRefAdmin = ownerDb.collection("workspaces").doc("ws_tse_1").collection("products").doc("p_1");
+    const prodRefTech = techDb.collection("workspaces").doc("ws_tse_1").collection("products").doc("p_1");
+    await assertSucceeds(prodRefAdmin.set({
+      productId: "p_1",
+      name: "Dome Camera 2MP",
+      unit: "Nos",
+      defaultRate: 1450,
+      folder: "CCTV Cameras",
+      stockQty: 12,
+      minStockAlert: 3,
+      updatedAt: nowTs()
+    }));
+    await assertSucceeds(prodRefTech.update({
+      stockQty: 10,
+      updatedAt: nowTs()
+    }));
+    await assertFails(prodRefTech.update({
+      defaultRate: 100,
+      updatedAt: nowTs()
+    }));
+
+    // Expenses: Admin CRUD; Super Admin read-only; Technician denied read/write
+    const expAdmin = ownerDb.collection("workspaces").doc("ws_tse_1").collection("expenses").doc("exp_1");
+    const expSa = saDb.collection("workspaces").doc("ws_tse_1").collection("expenses").doc("exp_1");
+    const expTech = techDb.collection("workspaces").doc("ws_tse_1").collection("expenses").doc("exp_1");
+    const expTechCreate = techDb.collection("workspaces").doc("ws_tse_1").collection("expenses").doc("exp_2");
+
+    await assertSucceeds(expAdmin.set({
+      expenseId: "exp_1",
+      title: "Petrol & Site Visit",
+      category: "Travel",
+      amount: 450,
+      date: "2026-11-22",
+      note: "Calangute client",
+      recordedBy: "Manoj",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      serverUpdatedAt: nowTs()
+    }));
+    await assertSucceeds(expSa.get());
+    await assertFails(expSa.delete());
+    await assertFails(expTech.get());
+    await assertFails(expTechCreate.set({
+      expenseId: "exp_2",
+      title: "Fake",
+      category: "Misc",
+      amount: 100,
+      date: "2026-11-22",
+      note: "",
+      recordedBy: "tech",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      serverUpdatedAt: nowTs()
+    }));
+
+    // Trash: Admin creates and restores; immediate delete (<24h) MUST FAIL; >24h old doc delete SUCCEEDS; non-admins denied
+    const trashRefAdmin = ownerDb.collection("workspaces").doc("ws_tse_1").collection("trash").doc("tr_1");
+    const trashRefSa = saDb.collection("workspaces").doc("ws_tse_1").collection("trash").doc("tr_1");
+    const trashRefTech = techDb.collection("workspaces").doc("ws_tse_1").collection("trash").doc("tr_1");
+
+    await assertSucceeds(trashRefAdmin.set({
+      trashId: "tr_1",
+      entityType: "BILL",
+      entityId: "b_del_1",
+      title: "TSE-010 — Test",
+      summary: "Bill · ₹1000.00",
+      payloadJson: "{}",
+      deletedBy: "Manoj",
+      deletedByRole: "admin",
+      status: "TRASHED",
+      deletedAt: nowTs(),
+      deletedAtMillis: Date.now(),
+      expireAt: new Date(Date.now() + 86400000),
+      restoredAt: 0,
+      restoredBy: ""
+    }));
+    await assertFails(trashRefSa.get());
+    await assertFails(trashRefTech.get());
+    await assertFails(trashRefAdmin.delete()); // < 24h must fail
+    await assertSucceeds(trashRefAdmin.update({
+      status: "RESTORED",
+      restoredAt: Date.now(),
+      restoredBy: "Manoj"
+    }));
+
+    // Seed an expired trash document (> 24 hours old) and verify Admin can purge it
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const expiredAt = new Date(Date.now() - 86_405_000);
+      await ctx.firestore(DB_ID).collection("workspaces").doc("ws_tse_1").collection("trash").doc("tr_expired").set({
+        trashId: "tr_expired",
+        entityType: "CUSTOMER",
+        entityId: "99",
+        title: "Old Customer",
+        summary: "Saved Customer",
+        payloadJson: "{}",
+        deletedBy: "Manoj",
+        deletedByRole: "admin",
+        status: "TRASHED",
+        deletedAt: expiredAt,
+        deletedAtMillis: expiredAt.getTime(),
+        expireAt: new Date(expiredAt.getTime() + 86400000),
+        restoredAt: 0,
+        restoredBy: ""
+      });
+    });
+    await assertSucceeds(
+      ownerDb.collection("workspaces").doc("ws_tse_1").collection("trash").doc("tr_expired").delete()
+    );
+
+    // Audit logs: Admin creates; Admin & Super Admin read; Technician denied; update & delete ALWAYS denied
+    const logAdmin = ownerDb.collection("workspaces").doc("ws_tse_1").collection("auditLogs").doc("log_1");
+    const logSa = saDb.collection("workspaces").doc("ws_tse_1").collection("auditLogs").doc("log_1");
+    const logTech = techDb.collection("workspaces").doc("ws_tse_1").collection("auditLogs").doc("log_1");
+    await assertSucceeds(logAdmin.set({
+      logId: "log_1",
+      action: "DELETE",
+      entityType: "BILL",
+      entityId: "b_del_1",
+      title: "TSE-010 — Test",
+      actorUsername: "Manoj",
+      actorRole: "admin",
+      details: "Moved to Trash (24h retention)",
+      createdAt: Date.now(),
+      serverCreatedAt: nowTs()
+    }));
+    await assertSucceeds(logSa.get());
+    await assertFails(logTech.get());
+    await assertFails(logAdmin.update({ details: "tampered" }));
+    await assertFails(logAdmin.delete());
+  });
 });

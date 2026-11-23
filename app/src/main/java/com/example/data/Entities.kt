@@ -49,7 +49,9 @@ data class ProductEntity(
     val name: String,
     val unit: String = "Nos",
     val defaultRate: Double = 0.0,
-    val folder: String = "General"
+    val folder: String = "General",
+    val stockQty: Double = 0.0,
+    val minStockAlert: Double = 0.0
 )
 
 @Entity(tableName = "user_accounts")
@@ -94,5 +96,48 @@ data class TechnicianSettlementEntity(
     val amount: Double,
     val note: String = "",
     val recordedBy: String = "",
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "expenses")
+data class ExpenseEntity(
+    @PrimaryKey val id: String,
+    val title: String,
+    val category: String = "General",
+    val amount: Double = 0.0,
+    val date: String = "",
+    val note: String = "",
+    val recordedBy: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "trash_items")
+data class TrashItemEntity(
+    @PrimaryKey val id: String,
+    val entityType: String,
+    val entityId: String,
+    val title: String,
+    val summary: String,
+    val payloadJson: String,
+    val deletedBy: String,
+    val deletedByRole: String,
+    val status: String = "TRASHED",
+    val deletedAt: Long = System.currentTimeMillis(),
+    val expireAt: Long = System.currentTimeMillis() + 86_400_000L,
+    val restoredAt: Long = 0L,
+    val restoredBy: String = ""
+)
+
+@Entity(tableName = "audit_logs")
+data class AuditLogEntity(
+    @PrimaryKey val id: String,
+    val action: String,
+    val entityType: String,
+    val entityId: String,
+    val title: String,
+    val actorUsername: String,
+    val actorRole: String,
+    val details: String = "",
     val createdAt: Long = System.currentTimeMillis()
 )

@@ -43,6 +43,7 @@ import com.example.data.BillEntity
 import com.example.data.CustomerEntity
 import com.example.data.CustomerHelpEntity
 import com.example.data.DocumentType
+import com.example.data.ExpenseEntity
 import com.example.data.PaymentMode
 import com.example.data.ProductEntity
 import com.example.ui.TechnicianPerformanceSummary
@@ -65,7 +66,8 @@ fun SuperAdminDashboardScreen(
     customers: List<CustomerEntity>,
     helpRequests: List<CustomerHelpEntity>,
     products: List<ProductEntity>,
-    technicianPerformance: List<TechnicianPerformanceSummary>
+    technicianPerformance: List<TechnicianPerformanceSummary>,
+    expenses: List<ExpenseEntity> = emptyList()
 ) {
     val taxBills = remember(bills) {
         bills.filter { DocumentType.fromString(it.documentType) == DocumentType.BILL }
@@ -74,6 +76,12 @@ fun SuperAdminDashboardScreen(
         bills.filter { DocumentType.fromString(it.documentType) == DocumentType.QUOTATION }
     }
     val totalRevenue = taxBills.sumOf { it.grandTotal }
+    val totalCollected = taxBills.sumOf { it.paidAmount }
+    val totalExpenses = expenses.sumOf { it.amount }
+    val netProfit = totalCollected - totalExpenses
+    val lowStockProducts = remember(products) {
+        products.filter { it.minStockAlert > 0.0 && it.stockQty <= it.minStockAlert }
+    }
     val onlineRevenue = taxBills
         .filter { PaymentMode.fromString(it.paymentMode) == PaymentMode.ONLINE }
         .sumOf { it.paidAmount }
@@ -178,6 +186,50 @@ fun SuperAdminDashboardScreen(
                     accent = AmberWarn,
                     modifier = Modifier.fillMaxWidth(0.48f)
                 )
+                KpiCard(
+                    title = "Total Expenses",
+                    value = "₹${String.format(Locale.US, "%.0f", totalExpenses)}",
+                    subtitle = "${expenses.size} Recorded",
+                    bg = RedDueBg,
+                    accent = RedDueDark,
+                    modifier = Modifier.fillMaxWidth(0.48f)
+                )
+                KpiCard(
+                    title = "Net Profit",
+                    value = "₹${String.format(Locale.US, "%.0f", netProfit)}",
+                    subtitle = "Collected minus Expenses",
+                    bg = if (netProfit >= 0.0) GreenPaidBg else RedDueBg,
+                    accent = if (netProfit >= 0.0) GreenPaid else RedDueDark,
+                    modifier = Modifier.fillMaxWidth(0.48f)
+                )
+            }
+        }
+
+        if (lowStockProducts.isNotEmpty()) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = RedDueBg),
+                    border = BorderStroke(1.dp, RedDue),
+                    modifier = Modifier.testTag("analytics_low_stock_card")
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "Low-Stock Inventory Alert (${lowStockProducts.size})",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Black,
+                            color = RedDueDark
+                        )
+                        lowStockProducts.take(8).forEach { prod ->
+                            Text(
+                                text = "• ${prod.name} (${prod.folder}): ${prod.stockQty.toInt()} ${prod.unit} left (Alert ≤ ${prod.minStockAlert.toInt()})",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF1E293B)
+                            )
+                        }
+                    }
+                }
             }
         }
 

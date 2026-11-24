@@ -123,6 +123,7 @@ import com.example.ui.BillingEvent
 import com.example.ui.BillingViewModel
 import com.example.ui.MainTab
 import com.example.ui.components.AuthScreen
+import com.example.ui.components.MandatoryPasswordChangeScreen
 import com.example.ui.components.PaymentAndReviewDialog
 import com.example.ui.components.ProvideSafeTextToolbar
 import com.example.ui.components.SplashOverlay
@@ -249,6 +250,8 @@ fun TseBillingApp(viewModel: BillingViewModel) {
         val adminLoginSecurityState by viewModel.adminLoginSecurityState.collectAsStateWithLifecycle()
         val cloudUser by viewModel.cloudUser.collectAsStateWithLifecycle()
         val cloudBusy by viewModel.cloudBusy.collectAsStateWithLifecycle()
+        val cloudTechBusy by viewModel.cloudTechBusy.collectAsStateWithLifecycle()
+        val pendingTechPasswordChange by viewModel.pendingTechPasswordChange.collectAsStateWithLifecycle()
         val cloudWorkspaceInfo by viewModel.cloudWorkspaceInfo.collectAsStateWithLifecycle()
         val hasAdminVerifyCode by viewModel.hasAdminVerifyCode.collectAsStateWithLifecycle()
         val expenses by viewModel.expenses.collectAsStateWithLifecycle()
@@ -470,6 +473,14 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                             customerName = event.customerName
                         )
                     }
+                    is BillingEvent.NotifySyncAlert -> {
+                        AdminNotificationHelper.notifySyncAlert(
+                            context = context,
+                            notificationId = event.id.hashCode(),
+                            title = event.title,
+                            message = event.message
+                        )
+                    }
                 }
             }
         }
@@ -528,7 +539,24 @@ fun TseBillingApp(viewModel: BillingViewModel) {
         }
 
         Box(modifier = Modifier.fillMaxSize()) {
-            if (session == null) {
+            val activePendingPasswordChange = pendingTechPasswordChange
+            if (activePendingPasswordChange != null) {
+                MandatoryPasswordChangeScreen(
+                    pendingState = activePendingPasswordChange,
+                    authError = authError,
+                    busy = cloudBusy,
+                    logoBase64 = company.logoBase64,
+                    onSubmitNewPassword = viewModel::completeFirstLoginPasswordChange,
+                    onSignOut = { viewModel.cancelPendingPasswordChangeAndSignOut(context) }
+                )
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .imePadding()
+                )
+            } else if (session == null) {
                 AuthScreen(
                     isAdminConfigured = isAdminConfigured,
                     accounts = accounts,
@@ -548,6 +576,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     },
                     onImportBackup = { json -> viewModel.importBackupJson(json, allowPreSetupRestore = true) },
                     onSignInGoogle = { viewModel.signInWithGoogle(context.findFragmentActivity() ?: context) },
+                    onSignInTechnicianEmail = viewModel::loginTechnicianWithEmail,
                     onJoinInviteCode = viewModel::joinWorkspaceWithInviteCode,
                     onResetAdminPassword = viewModel::resetAdminPassword
                 )
@@ -842,6 +871,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         cloudUser = cloudUser,
                                         cloudWorkspaceInfo = cloudWorkspaceInfo,
                                         cloudBusy = cloudBusy,
+                                        cloudTechBusy = cloudTechBusy,
                                         availableUpdate = availableUpdate,
                                         expenses = expenses,
                                         trashItems = trashItems,
@@ -849,6 +879,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         onSaveUpi = viewModel::saveUpiSettings,
                                         onClearUpi = viewModel::clearUpiId,
                                         onAddTechnician = viewModel::addTechnician,
+                                        onCreateCloudTechnician = viewModel::createCloudTechnicianAccount,
                                         onUpdateTechnician = viewModel::updateTechnician,
                                         onRemoveTechnician = viewModel::removeTechnician,
                                         onAddSuperAdmin = viewModel::addSuperAdmin,

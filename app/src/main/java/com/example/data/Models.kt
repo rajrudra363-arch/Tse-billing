@@ -158,6 +158,8 @@ data class UserSession(
 
 object AuthPolicy {
     const val CANONICAL_ADMIN_USERNAME = "@TotalSolutionEnterprises"
+    const val PRIMARY_ADMIN_EMAIL = "rajrudra363@gmail.com"
+    const val FIREBASE_EMAIL_AUTH_MARKER = "FIREBASE_EMAIL_AUTH_ONLY"
 
     data class PasswordStrengthResult(
         val hasMinLength: Boolean,
@@ -198,6 +200,26 @@ object AuthPolicy {
         hasSpecialChar = password.any { !it.isLetterOrDigit() && !it.isWhitespace() },
         hasNoWhitespace = password.none { it.isWhitespace() }
     )
+
+    fun isValidEmail(email: String): Boolean {
+        val trimmed = email.trim()
+        if (trimmed.length < 5 || trimmed.length > 254 || trimmed.any { it.isWhitespace() }) return false
+        val atIdx = trimmed.indexOf('@')
+        if (atIdx <= 0 || atIdx != trimmed.lastIndexOf('@')) return false
+        val domain = trimmed.substring(atIdx + 1)
+        val dotIdx = domain.indexOf('.')
+        return dotIdx > 0 && dotIdx < domain.lastIndex && !domain.startsWith('.') && !domain.endsWith('.')
+    }
+
+    fun deriveUsernameFromEmailOrName(email: String, name: String): String {
+        val seed = email.trim().substringBefore('@').ifBlank { name.trim() }
+        val cleaned = seed.lowercase(java.util.Locale.US)
+            .replace(Regex("[^a-z0-9_]"), "_")
+            .replace(Regex("_+"), "_")
+            .trim('_')
+            .take(32)
+        return if (cleaned.length >= 3) cleaned else "${cleaned}tech".take(8)
+    }
 
     fun formatHandle(username: String): String {
         val clean = username.trim()

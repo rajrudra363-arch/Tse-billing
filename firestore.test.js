@@ -471,4 +471,195 @@ describe("TSE Billing Firestore Rules", () => {
     await assertFails(logAdmin.update({ details: "tampered" }));
     await assertFails(logAdmin.delete());
   });
+
+  test("cloud-provisioned technician first-login password flag and strict self-update restrictions", async () => {
+    const ownerDb = testEnv.authenticatedContext("owner_1", {
+      email: "rajrudra363@gmail.com",
+      email_verified: true
+    }).firestore(DB_ID);
+    const techDb = testEnv.authenticatedContext("cloud_tech_1", {
+      email: "rahul.tech@example.com",
+      email_verified: true
+    }).firestore(DB_ID);
+    const otherTechDb = testEnv.authenticatedContext("cloud_tech_2", {
+      email: "other.tech@example.com",
+      email_verified: true
+    }).firestore(DB_ID);
+
+    await assertSucceeds(ownerDb.collection("workspaces").doc("ws_tse_1").set(validWorkspaceData("owner_1")));
+
+    // Admin provisions technician member document with mustChangePassword = true (zero passwords stored)
+    const techMemberRefAdmin = ownerDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("cloud_tech_1");
+    await assertSucceeds(techMemberRefAdmin.set({
+      userId: "cloud_tech_1",
+      email: "rahul.tech@example.com",
+      displayName: "Rahul Tech",
+      name: "Rahul Tech",
+      username: "rahul_tech",
+      phone: "9876543210",
+      role: "technician",
+      workspaceId: "ws_tse_1",
+      inviteCode: "TSE_TECH_991122",
+      mustChangePassword: true,
+      authProvider: "password",
+      createdByUid: "owner_1",
+      createdAt: nowTs(),
+      updatedAt: nowTs()
+    }));
+
+    // Never permit creating member doc with raw password field
+    await assertFails(
+      ownerDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("cloud_tech_bad").set({
+        userId: "cloud_tech_bad",
+        email: "bad@example.com",
+        displayName: "Bad",
+        role: "technician",
+        inviteCode: "TSE_TECH_991122",
+        password: "plaintext_forbidden",
+        createdAt: nowTs(),
+        updatedAt: nowTs()
+      })
+    );
+
+    const techMemberRefSelf = techDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("cloud_tech_1");
+    await assertSucceeds(techMemberRefSelf.get());
+
+    // Other user cannot flip cloud_tech_1's mustChangePassword flag
+    await assertFails(
+      otherTechDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("cloud_tech_1").update({
+        mustChangePassword: false,
+        passwordChangedAt: nowTs(),
+        updatedAt: nowTs()
+      })
+    );
+
+    // Technician cannot escalate role while completing first-login password change
+    await assertFails(techMemberRefSelf.update({
+      mustChangePassword: false,
+      role: "admin",
+      passwordChangedAt: nowTs(),
+      updatedAt: nowTs()
+    }));
+
+    // Technician can clear mustChangePassword once (true -> false)
+    await assertSucceeds(techMemberRefSelf.update({
+      mustChangePassword: false,
+      passwordChangedAt: nowTs(),
+      updatedAt: nowTs()
+    }));
+
+    // Technician cannot toggle mustChangePassword back to true
+    await assertFails(techMemberRefSelf.update({
+      mustChangePassword: true,
+      updatedAt: nowTs()
+    }));
+  });
+
+  test("notification sync rules across admin, technician, super_admin, and outsider", async () => {
+    const ownerDb = testEnv.authenticatedContext("owner_1", {
+      email: "rajrudra363@gmail.com",
+      email_verified: true
+    }).firestore(DB_ID);
+    const techDb = testEnv.authenticatedContext("tech_1", {
+      email: "tech@example.com",
+      email_verified: true
+    }).firestore(DB_ID);
+    const saDb = testEnv.authenticatedContext("sa_1", {
+      email: "sa@example.com",
+      email_verified: true
+    }).firestore(DB_ID);
+    const outsiderDb = testEnv.authenticatedContext("outsider_1", {
+      email: "outsider@example.com",
+      email_verified: true
+    }).firestore(DB_ID);
+
+    await assertSucceeds(ownerDb.collection("workspaces").doc("ws_tse_1").set(validWorkspaceData("owner_1")));
+    await assertSucceeds(
+      techDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("tech_1").set({
+        userId: "tech_1",
+        email: "tech@example.com",
+        displayName: "Rahul Tech",
+        role: "technician",
+        inviteCode: "TSE_TECH_991122",
+        createdAt: nowTs(),
+        updatedAt: nowTs()
+      })
+    );
+    await assertSucceeds(
+      saDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("sa_1").set({
+        userId: "sa_1",
+        email: "sa@example.com",
+        displayName: "Auditor",
+        role: "super_admin",
+        inviteCode: "TSE_SA_883344",
+        createdAt: nowTs(),
+        updatedAt: nowTs()
+      })
+    );
+
+    const adminNotifRef = ownerDb.collection("workspaces").doc("ws_tse_1").collection("notifications").doc("n_admin_1");
+    await assertSucceeds(adminNotifRef.set({
+      notifId: "n_admin_1",
+      category: "PRODUCT",
+      title: "Product Updated",
+      message: "Dome Camera price updated",
+      targetRole: "all",
+      targetUsername: "",
+      createdBy: "Manoj",
+      createdByUid: "owner_1",
+      createdAt: nowTs()
+    }));
+
+    const techNotifRef = techDb.collection("workspaces").doc("ws_tse_1").collection("notifications").doc("n_tech_1");
+    await assertSucceeds(techNotifRef.set({
+      notifId: "n_tech_1",
+      category: "BILLING",
+      title: "New Bill TSE-011",
+      message: "Bill created for Ramesh",
+      targetRole: "admin",
+      targetUsername: "",
+      createdBy: "rahul_tech",
+      createdByUid: "tech_1",
+      createdAt: nowTs()
+    }));
+
+    // Spoofing createdByUid fails
+    await assertFails(
+      techDb.collection("workspaces").doc("ws_tse_1").collection("notifications").doc("n_spoof").set({
+        notifId: "n_spoof",
+        category: "PAYMENT",
+        title: "Spoof",
+        message: "Spoofed uid",
+        targetRole: "all",
+        targetUsername: "",
+        createdBy: "Manoj",
+        createdByUid: "owner_1",
+        createdAt: nowTs()
+      })
+    );
+
+    // Super Admin can read but CANNOT create notifications
+    await assertSucceeds(saDb.collection("workspaces").doc("ws_tse_1").collection("notifications").get());
+    await assertFails(
+      saDb.collection("workspaces").doc("ws_tse_1").collection("notifications").doc("n_sa_1").set({
+        notifId: "n_sa_1",
+        category: "SYSTEM",
+        title: "SA Blocked",
+        message: "Should fail",
+        targetRole: "all",
+        targetUsername: "",
+        createdBy: "sa",
+        createdByUid: "sa_1",
+        createdAt: nowTs()
+      })
+    );
+
+    // Outsider cannot read notifications
+    await assertFails(outsiderDb.collection("workspaces").doc("ws_tse_1").collection("notifications").get());
+
+    // Notifications are append-only (update/delete denied even for Admin)
+    await assertFails(adminNotifRef.update({ title: "Edited" }));
+    await assertFails(adminNotifRef.delete());
+  });
 });
+

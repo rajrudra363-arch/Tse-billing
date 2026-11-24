@@ -18,6 +18,7 @@ import com.example.data.ChargeType
 import com.example.data.CloudAuthUser
 import com.example.data.CloudSyncRepository
 import com.example.data.CloudWorkspaceInfo
+import com.example.data.CloudWorkspaceNotification
 import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
 import com.example.data.CustomerHelpEntity
@@ -171,7 +172,24 @@ sealed interface BillingEvent {
         val technicianUsername: String,
         val customerName: String
     ) : BillingEvent
+    data class NotifySyncAlert(
+        val id: String,
+        val title: String,
+        val message: String
+    ) : BillingEvent
 }
+
+data class PendingPasswordChangeState(
+    val uid: String,
+    val email: String,
+    val name: String,
+    val username: String,
+    val phone: String,
+    val photoBase64: String,
+    val role: String,
+    val workspaceId: String,
+    val companyName: String
+)
 
 class BillingViewModel(
     private val repository: BillingRepository,
@@ -218,11 +236,19 @@ class BillingViewModel(
     private val _cloudBusy = MutableStateFlow(false)
     val cloudBusy: StateFlow<Boolean> = _cloudBusy.asStateFlow()
 
+    private val _cloudTechBusy = MutableStateFlow(false)
+    val cloudTechBusy: StateFlow<Boolean> = _cloudTechBusy.asStateFlow()
+
+    private val _pendingTechPasswordChange = MutableStateFlow<PendingPasswordChangeState?>(null)
+    val pendingTechPasswordChange: StateFlow<PendingPasswordChangeState?> = _pendingTechPasswordChange.asStateFlow()
+
     private val _cloudStatusMessage = MutableStateFlow("")
     val cloudStatusMessage: StateFlow<String> = _cloudStatusMessage.asStateFlow()
 
     private val seenRemoteBillIds = mutableSetOf<String>()
     private var initialRemoteBillsLoaded = false
+    private val seenRemoteNotifIds = mutableSetOf<String>()
+    private var initialRemoteNotifsLoaded = false
 
     private val _events = MutableSharedFlow<BillingEvent>(extraBufferCapacity = 16)
     val events: SharedFlow<BillingEvent> = _events.asSharedFlow()
@@ -442,7 +468,22 @@ class BillingViewModel(
             val currentAuth = GoogleAuthHelper.currentUser(sync.contextForAuth())
             if (currentAuth != null) {
                 _cloudUser.value = currentAuth
-                syncExistingCloudWorkspace()
+                val forcedTech = sync.checkCurrentTechnicianPasswordChangeRequired(savedWs.workspaceId).getOrNull()
+                if (forcedTech != null) {
+                    _pendingTechPasswordChange.value = PendingPasswordChangeState(
+                        uid = forcedTech.uid,
+                        email = forcedTech.email,
+                        name = forcedTech.name,
+                        username = forcedTech.username,
+                        phone = forcedTech.phone,
+                        photoBase64 = forcedTech.photoBase64,
+                        role = forcedTech.role,
+                        workspaceId = forcedTech.workspaceId,
+                        companyName = forcedTech.companyName
+                    )
+                } else {
+                    syncExistingCloudWorkspace()
+                }
             } else {
                 val silent = GoogleAuthHelper.trySilentGoogleSignIn(sync.contextForAuth()).getOrNull()
                 if (silent != null) {
@@ -476,6 +517,8 @@ class BillingViewModel(
 
     private fun startCloudRealtimeSync(ws: CloudWorkspaceInfo) {
         val sync = cloudSync ?: return
+        seenRemoteNotifIds.clear()
+        initialRemoteNotifsLoaded = false
         sync.startRealtimeWorkspaceSync(
             workspaceId = ws.workspaceId,
             deviceRole = ws.deviceRole,
@@ -533,8 +576,70 @@ class BillingViewModel(
             },
             onAuditLogsChanged = { list ->
                 viewModelScope.launch { repository.mergeCloudAuditLogsIntoAdmin(list) }
+            },
+            onNotificationsChanged = { list ->
+                handleRemoteNotifications(list)
             }
         )
+    }
+
+    private fun handleRemoteNotifications(list: List<CloudWorkspaceNotification>) {
+        if (!initialRemoteNotifsLoaded) {
+            seenRemoteNotifIds.addAll(list.map { it.id })
+            initialRemoteNotifsLoaded = true
+            return
+        }
+        val activeUser = _session.value
+        val activeUid = _cloudUser.value?.uid.orEmpty()
+        val roleForUser = when {
+            activeUser == null -> cloudWorkspaceInfo.value.deviceRole.lowercase(Locale.US)
+            activeUser.isAdmin -> "admin"
+            activeUser.isSuperAdmin -> "super_admin"
+            else -> "technician"
+        }
+        val newlyArrived = list.filter { it.id !in seenRemoteNotifIds }
+        seenRemoteNotifIds.addAll(list.map { it.id })
+
+        newlyArrived.forEach { notif ->
+            if (activeUid.isNotBlank() && notif.createdByUid == activeUid) return@forEach
+            val roleMatches = notif.targetRole == "all" || notif.targetRole.equals(roleForUser, ignoreCase = true)
+            val userMatches = notif.targetUsername.isBlank() ||
+                (activeUser != null && notif.targetUsername.equals(activeUser.username, ignoreCase = true))
+            if (roleMatches && userMatches && activeUser != null) {
+                emitToast("${notif.title}: ${notif.message}")
+                _events.tryEmit(
+                    BillingEvent.NotifySyncAlert(
+                        id = notif.id,
+                        title = notif.title,
+                        message = notif.message
+                    )
+                )
+            }
+        }
+    }
+
+    private fun pushCloudNotification(
+        category: String,
+        title: String,
+        message: String,
+        targetRole: String = "all",
+        targetUsername: String = ""
+    ) {
+        val sync = cloudSync ?: return
+        val wsId = cloudWorkspaceInfo.value.workspaceId
+        if (wsId.isBlank()) return
+        val actor = _session.value?.username.orEmpty().ifBlank { _cloudUser.value?.email.orEmpty() }
+        viewModelScope.launch {
+            sync.pushNotification(
+                workspaceId = wsId,
+                category = category,
+                title = title,
+                message = message,
+                targetRole = targetRole,
+                createdBy = actor,
+                targetUsername = targetUsername
+            )
+        }
     }
 
     fun purgeExpiredTrashIfReady() {
@@ -680,8 +785,142 @@ class BillingViewModel(
             cloudSync?.stopListeners()
             GoogleAuthHelper.signOutGoogle(context)
             _cloudUser.value = null
+            _pendingTechPasswordChange.value = null
             _cloudStatusMessage.value = ""
             emitToast("Google account signed out")
+        }
+    }
+
+    fun loginTechnicianWithEmail(email: String, password: String) {
+        val sync = cloudSync ?: run {
+            emitToast("Cloud service not initialized.", isError = true)
+            return
+        }
+        val cleanEmail = email.trim().lowercase(Locale.US)
+        if (!AuthPolicy.isValidEmail(cleanEmail)) {
+            _authError.value = "Enter a valid Technician email address."
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
+        if (password.isBlank()) {
+            _authError.value = "Enter Technician password."
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
+        viewModelScope.launch {
+            _cloudBusy.value = true
+            _authError.value = ""
+            val res = sync.signInTechnicianWithEmail(cleanEmail, password)
+            if (res.isFailure) {
+                _cloudBusy.value = false
+                val msg = res.exceptionOrNull()?.message ?: "Technician login failed."
+                _authError.value = msg
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(msg, isError = true)
+                return@launch
+            }
+            val info = res.getOrNull()!!
+            _cloudUser.value = CloudAuthUser(
+                uid = info.uid,
+                email = info.email,
+                displayName = info.name
+            )
+            val snap = sync.fetchFullWorkspaceSnapshot(info.workspaceId, info.role).getOrNull()
+            if (snap != null) {
+                seenRemoteBillIds.clear()
+                seenRemoteBillIds.addAll(snap.bills.map { it.id })
+                initialRemoteBillsLoaded = true
+                repository.applyCloudSnapshot(snap)
+                startCloudRealtimeSync(snap.workspace)
+            }
+            _cloudBusy.value = false
+
+            if (info.mustChangePassword) {
+                _session.value = null
+                _pendingTechPasswordChange.value = PendingPasswordChangeState(
+                    uid = info.uid,
+                    email = info.email,
+                    name = info.name,
+                    username = info.username,
+                    phone = info.phone,
+                    photoBase64 = info.photoBase64,
+                    role = info.role,
+                    workspaceId = info.workspaceId,
+                    companyName = info.companyName
+                )
+                soundEngine.play(SoundCue.CLICK)
+                emitToast("First login: please set a new password to continue.")
+            } else {
+                _pendingTechPasswordChange.value = null
+                _session.value = UserSession(
+                    username = info.username,
+                    displayName = info.name,
+                    role = info.role,
+                    phone = info.phone,
+                    photoBase64 = info.photoBase64
+                )
+                _activeTab.value = MainTab.BILL
+                soundEngine.play(SoundCue.SAVE)
+                emitToast("Login successful — Welcome ${info.name} (Technician)")
+                val cfg = voiceAndNoteSettings.value
+                soundEngine.speakEnglish(cfg.postLoginVoice, cfg.voiceModelId)
+            }
+        }
+    }
+
+    fun completeFirstLoginPasswordChange(newPassword: String, confirmPassword: String) {
+        val pending = _pendingTechPasswordChange.value ?: return
+        val sync = cloudSync ?: return
+        val missing = AuthPolicy.evaluatePassword(newPassword).firstMissingRequirement()
+        if (missing != null) {
+            _authError.value = missing
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
+        if (newPassword != confirmPassword) {
+            _authError.value = "New passwords do not match."
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
+        viewModelScope.launch {
+            _cloudBusy.value = true
+            _authError.value = ""
+            val res = sync.updateCurrentTechnicianPassword(pending.workspaceId, newPassword)
+            _cloudBusy.value = false
+            if (res.isFailure) {
+                val msg = res.exceptionOrNull()?.message ?: "Could not update password."
+                _authError.value = msg
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(msg, isError = true)
+                return@launch
+            }
+            _pendingTechPasswordChange.value = null
+            _session.value = UserSession(
+                username = pending.username,
+                displayName = pending.name,
+                role = pending.role,
+                phone = pending.phone,
+                photoBase64 = pending.photoBase64
+            )
+            _activeTab.value = MainTab.BILL
+            soundEngine.play(SoundCue.SAVE)
+            emitToast("Password changed! Welcome ${pending.name} (Technician)")
+            val cfg = voiceAndNoteSettings.value
+            soundEngine.speakEnglish(cfg.postLoginVoice, cfg.voiceModelId)
+        }
+    }
+
+    fun cancelPendingPasswordChangeAndSignOut(context: Context) {
+        viewModelScope.launch {
+            cloudSync?.stopListeners()
+            GoogleAuthHelper.signOutGoogle(context)
+            repository.clearVolatileSessionCache()
+            _pendingTechPasswordChange.value = null
+            _cloudUser.value = null
+            _session.value = null
+            _authError.value = ""
+            soundEngine.play(SoundCue.CLICK)
+            emitToast("Signed out")
         }
     }
 
@@ -1519,6 +1758,28 @@ class BillingViewModel(
             val payload = billToPayload(entity)
             _exportOptionsPayload.value = payload
             val createdByTech = currentUser.isTechnician
+            val docWord = if (isQuotation) "Quotation" else "Bill"
+            val custLabel = entity.customerName.ifBlank { "Customer" }
+            pushCloudNotification(
+                category = "BILLING",
+                title = "$docWord ${entity.invoiceNo} Synced",
+                message = "@${currentUser.username} saved $docWord for $custLabel (Total ₹${String.format(Locale.US, "%.0f", entity.grandTotal)})",
+                targetRole = if (createdByTech) "admin" else "all"
+            )
+            if (!isQuotation) {
+                val billedNames = draft.items.map { it.description.trim().lowercase(Locale.ROOT) }.toSet()
+                products.value.filter { p ->
+                    p.minStockAlert > 0.0 && p.stockQty <= p.minStockAlert &&
+                        p.name.trim().lowercase(Locale.ROOT) in billedNames
+                }.forEach { low ->
+                    pushCloudNotification(
+                        category = "STOCK",
+                        title = "Low Stock: ${low.name}",
+                        message = "Only ${formatInputNum(low.stockQty)} ${low.unit} left (Alert level: ${formatInputNum(low.minStockAlert)})",
+                        targetRole = "all"
+                    )
+                }
+            }
             emitToast(
                 if (isQuotation) "Quotation ${entity.invoiceNo} generated & saved!"
                 else if (createdByTech) "Bill ${entity.invoiceNo} saved & Admin notified to send PDF to customer!"
@@ -1654,6 +1915,12 @@ class BillingViewModel(
             if (updated != null) {
                 soundEngine.play(SoundCue.SAVE)
                 emitToast("Due payment received for ${bill.invoiceNo}! Due balance is now ₹0.00")
+                pushCloudNotification(
+                    category = "PAYMENT",
+                    title = "Due Cleared: ${bill.invoiceNo}",
+                    message = "Full payment received for ${bill.customerName.ifBlank { "Customer" }}",
+                    targetRole = "all"
+                )
             } else {
                 soundEngine.play(SoundCue.ERROR)
                 emitToast("Bill record not found", isError = true)
@@ -1878,6 +2145,12 @@ class BillingViewModel(
                 " · ${finalRating}★ for @${existing.createdBy}${if (ratingAlreadyLocked) " (Rating locked)" else ""}"
             } else ""
             emitToast("$statusMsg$ratingMsg")
+            pushCloudNotification(
+                category = "PAYMENT",
+                title = "Payment Update: ${existing.invoiceNo}",
+                message = "$statusMsg (${existing.customerName.ifBlank { "Customer" }})",
+                targetRole = "all"
+            )
         }
     }
 
@@ -1932,6 +2205,12 @@ class BillingViewModel(
             )
             soundEngine.play(SoundCue.SAVE)
             emitToast(if (id > 0L) "Customer updated" else "Customer saved")
+            pushCloudNotification(
+                category = "CUSTOMER",
+                title = if (id > 0L) "Customer Updated" else "New Customer Added",
+                message = "${name.trim()}${if (phone.isNotBlank()) " · ${phone.trim()}" else ""}",
+                targetRole = "all"
+            )
         }
     }
 
@@ -1977,6 +2256,12 @@ class BillingViewModel(
             repository.addProduct(name, unit, rateText.toDoubleOrNull() ?: 0.0, folder, stockQty, minAlert)
             soundEngine.play(SoundCue.SAVE)
             emitToast("Product added to folder '$folder'")
+            pushCloudNotification(
+                category = "PRODUCT",
+                title = "New Product: ${name.trim()}",
+                message = "₹${rateText.ifBlank { "0" }}/$unit · Stock ${formatInputNum(stockQty)}",
+                targetRole = "all"
+            )
         }
     }
 
@@ -2005,6 +2290,12 @@ class BillingViewModel(
             repository.updateProduct(id, name, unit, rateText.toDoubleOrNull() ?: 0.0, folder, stockQty, minAlert)
             soundEngine.play(SoundCue.SAVE)
             emitToast("Product updated")
+            pushCloudNotification(
+                category = if (stockQty != null) "STOCK" else "PRODUCT",
+                title = "Product Synced: ${name.trim()}",
+                message = "Rate ₹${rateText.ifBlank { "0" }}/$unit${stockQty?.let { " · Stock ${formatInputNum(it)}" } ?: ""}",
+                targetRole = "all"
+            )
         }
     }
 
@@ -2133,6 +2424,12 @@ class BillingViewModel(
             )
             soundEngine.play(SoundCue.SAVE)
             emitToast(if (id > 0L) "Help request updated" else "Help request saved for Technicians")
+            pushCloudNotification(
+                category = "SERVICE_REQUEST",
+                title = if (id > 0L) "Service Request Updated" else "New Service Request",
+                message = "${customerName.ifBlank { phone }} — ${helpDescription.trim().take(80)}",
+                targetRole = "technician"
+            )
             onSaved?.invoke(saved)
         }
     }
@@ -2146,8 +2443,15 @@ class BillingViewModel(
         viewModelScope.launch {
             val res = repository.acceptHelpRequest(requestId, user)
             if (res.isSuccess) {
+                val req = res.getOrNull()
                 soundEngine.play(SoundCue.SAVE)
                 emitToast("Request accepted by @${user.username}. Solved/Not Solved unlocks in 15 min.")
+                pushCloudNotification(
+                    category = "SERVICE_REQUEST",
+                    title = "Service Accepted by @${user.username}",
+                    message = "${req?.customerName.orEmpty().ifBlank { req?.phone.orEmpty() }} is now in progress",
+                    targetRole = "admin"
+                )
             } else {
                 soundEngine.play(SoundCue.ERROR)
                 emitToast(res.exceptionOrNull()?.message ?: "Could not accept request", isError = true)
@@ -2167,8 +2471,15 @@ class BillingViewModel(
                 enforce15MinWait = !user.isAdmin
             )
             if (res.isSuccess) {
+                val req = res.getOrNull()
                 soundEngine.play(SoundCue.SAVE)
                 emitToast("Marked Solved! Tap Get Bill to generate support invoice.")
+                pushCloudNotification(
+                    category = "SERVICE_REQUEST",
+                    title = "Service Request Solved",
+                    message = "${req?.customerName.orEmpty().ifBlank { "#$requestId" }} marked SOLVED by @${user.username}",
+                    targetRole = "admin"
+                )
             } else {
                 soundEngine.play(SoundCue.ERROR)
                 emitToast(res.exceptionOrNull()?.message ?: "Could not mark Solved", isError = true)
@@ -2188,8 +2499,15 @@ class BillingViewModel(
                 enforce15MinWait = !user.isAdmin
             )
             if (res.isSuccess) {
+                val req = res.getOrNull()
                 soundEngine.play(SoundCue.CLICK)
                 emitToast("Status updated: Not Solved")
+                pushCloudNotification(
+                    category = "SERVICE_REQUEST",
+                    title = "Service Not Solved",
+                    message = "${req?.customerName.orEmpty().ifBlank { "#$requestId" }} marked NOT SOLVED by @${user.username}",
+                    targetRole = "admin"
+                )
             } else {
                 soundEngine.play(SoundCue.ERROR)
                 emitToast(res.exceptionOrNull()?.message ?: "Could not update status", isError = true)
@@ -2285,6 +2603,113 @@ class BillingViewModel(
         }
     }
 
+    /**
+     * Provisions a real Firebase Authentication Email/Password account for a Technician via Admin SDK
+     * Cloud Function (`createTechnicianAccount`), keeping the Admin's Google Sign-In session intact.
+     */
+    fun createCloudTechnicianAccount(
+        name: String,
+        phone: String,
+        email: String,
+        username: String,
+        initialPassword: String,
+        photoBitmap: Bitmap?,
+        onSuccess: () -> Unit
+    ) {
+        val currentSession = _session.value
+        if (currentSession == null || !currentSession.isAdmin) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Admin access only", isError = true)
+            return
+        }
+        val cleanName = name.trim()
+        val cleanEmail = email.trim().lowercase(Locale.US)
+        if (cleanName.length < 2) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Enter technician full name (min 2 chars)", isError = true)
+            return
+        }
+        if (!AuthPolicy.isValidEmail(cleanEmail)) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Enter a valid Technician email address", isError = true)
+            return
+        }
+        if (cleanEmail.equals(AuthPolicy.PRIMARY_ADMIN_EMAIL, ignoreCase = true)) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Admin email cannot be used as a technician account", isError = true)
+            return
+        }
+        AuthPolicy.evaluatePassword(initialPassword).firstMissingRequirement()?.let { msg ->
+            soundEngine.play(SoundCue.ERROR)
+            emitToast(msg, isError = true)
+            return
+        }
+        val sync = cloudSync ?: run {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Cloud service not initialized", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            _cloudTechBusy.value = true
+            try {
+                val activeGoogleUser = _cloudUser.value ?: GoogleAuthHelper.currentUser(sync.contextForAuth())
+                if (activeGoogleUser == null) {
+                    soundEngine.play(SoundCue.ERROR)
+                    emitToast("Please sign in with Google (${AuthPolicy.PRIMARY_ADMIN_EMAIL}) first in Cloud Sync above.", isError = true)
+                    return@launch
+                }
+                _cloudUser.value = activeGoogleUser
+
+                var wsId = repository.getActiveWorkspaceId()
+                if (wsId.isBlank()) {
+                    ensureAdminCloudWorkspaceInternal(pushLocal = true)
+                    wsId = repository.getActiveWorkspaceId()
+                }
+                if (wsId.isBlank()) {
+                    soundEngine.play(SoundCue.ERROR)
+                    emitToast("Activate Cloud Workspace before creating Firebase Technician accounts.", isError = true)
+                    return@launch
+                }
+
+                val photoB64 = if (photoBitmap != null) encodeScaledPng(photoBitmap, maxW = 360f) else ""
+                val res = sync.createTechnicianAccountViaCloud(
+                    workspaceId = wsId,
+                    name = cleanName,
+                    email = cleanEmail,
+                    initialPassword = initialPassword,
+                    phone = phone.trim(),
+                    username = username.trim(),
+                    photoBase64 = photoB64
+                )
+                if (res.isSuccess) {
+                    val created = res.getOrNull()!!
+                    repository.mergeCloudAccountsIntoAdmin(
+                        listOf(
+                            UserAccountEntity(
+                                username = created.username,
+                                displayName = created.name,
+                                passwordHash = AuthPolicy.FIREBASE_EMAIL_AUTH_MARKER,
+                                role = "technician",
+                                phone = phone.trim(),
+                                photoBase64 = photoB64
+                            )
+                        )
+                    )
+                    soundEngine.play(SoundCue.SAVE)
+                    emitToast(
+                        "Firebase Technician created: ${created.email} (@${created.username}). Must change password on first login."
+                    )
+                    onSuccess()
+                } else {
+                    soundEngine.play(SoundCue.ERROR)
+                    emitToast(res.exceptionOrNull()?.message ?: "Failed to create Firebase Technician", isError = true)
+                }
+            } finally {
+                _cloudTechBusy.value = false
+            }
+        }
+    }
+
     fun updateTechnician(
         oldUsername: String,
         newUsername: String,
@@ -2367,6 +2792,13 @@ class BillingViewModel(
             if (res.isSuccess) {
                 soundEngine.play(SoundCue.SAVE)
                 emitToast("Cleared ₹${String.format(Locale.US, "%.2f", amount)} from @$technicianUsername cash balance")
+                pushCloudNotification(
+                    category = "PAYMENT",
+                    title = "Cash Settlement Recorded",
+                    message = "Admin cleared ₹${String.format(Locale.US, "%.2f", amount)} for @$technicianUsername",
+                    targetRole = "technician",
+                    targetUsername = technicianUsername
+                )
                 onSuccess()
             } else {
                 soundEngine.play(SoundCue.ERROR)

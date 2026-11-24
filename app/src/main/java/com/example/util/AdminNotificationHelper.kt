@@ -42,20 +42,55 @@ object AdminNotificationHelper {
                 if (!granted) return
             }
             val custLabel = customerName.ifBlank { "Customer" }
+            notifySyncAlert(
+                context = context,
+                notificationId = invoiceNo.hashCode(),
+                title = "New Bill $invoiceNo by @$technicianUsername",
+                message = "Technician @$technicianUsername created bill $invoiceNo for $custLabel. Open Saved Bills and tap WhatsApp PDF to send it to the customer."
+            )
+        } catch (_: Throwable) {
+            // Safe fallback: UI Snackbar still notifies Admin
+        }
+    }
+
+    fun notifySyncAlert(
+        context: Context,
+        notificationId: Int,
+        title: String,
+        message: String
+    ) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                if (nm != null && nm.getNotificationChannel(CHANNEL_ID) == null) {
+                    val channel = NotificationChannel(
+                        CHANNEL_ID,
+                        "TSE Admin & Sync Alerts",
+                        NotificationManager.IMPORTANCE_HIGH
+                    ).apply {
+                        description = "Live Firebase sync notifications for Billing, Payments, Stock, and Service Requests."
+                    }
+                    nm.createNotificationChannel(channel)
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val granted = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+                if (!granted) return
+            }
             val notif = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.mipmap.ic_launcher_round)
-                .setContentTitle("New Bill $invoiceNo by @$technicianUsername")
-                .setContentText("Send $invoiceNo PDF to $custLabel via WhatsApp from Saved Bills.")
-                .setStyle(
-                    NotificationCompat.BigTextStyle()
-                        .bigText("Technician @$technicianUsername created bill $invoiceNo for $custLabel. Open Saved Bills and tap WhatsApp PDF to send it to the customer.")
-                )
+                .setContentTitle(title)
+                .setContentText(message)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(message))
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setAutoCancel(true)
                 .build()
-            NotificationManagerCompat.from(context).notify(invoiceNo.hashCode(), notif)
+            NotificationManagerCompat.from(context).notify(notificationId, notif)
         } catch (_: Throwable) {
-            // Safe fallback: UI Snackbar still notifies Admin
+            // Safe fallback: UI Snackbar still displays
         }
     }
 }

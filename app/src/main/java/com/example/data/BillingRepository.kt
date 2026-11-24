@@ -936,7 +936,7 @@ class BillingRepository(
                 currentProducts[idx] = updatedProduct
                 changed = true
                 if (wsId.isNotBlank()) {
-                    cloudSync?.pushProduct(wsId, updatedProduct)
+                    cloudSync?.pushProductStockAdjustment(wsId, updatedProduct)
                 }
             }
         }
@@ -2274,7 +2274,7 @@ class BillingRepository(
             _volatileAccounts.value = snapshot.accounts
             _volatileProducts.value = snapshot.products
             _volatileCustomers.value = snapshot.customers
-            _volatileBills.value = if (role == "super_admin") snapshot.bills else emptyList()
+            _volatileBills.value = if (role == "super_admin" || role == "technician") snapshot.bills else emptyList()
             _volatileHelpRequests.value = snapshot.helpRequests
             _volatileSettlements.value = if (role == "super_admin") snapshot.settlements else emptyList()
             _volatileExpenses.value = if (role == "super_admin") snapshot.expenses else emptyList()
@@ -2350,7 +2350,9 @@ class BillingRepository(
 
     suspend fun mergeCloudBillsIntoAdmin(cloudBills: List<BillEntity>) {
         if (_volatileCloudActive.value) {
-            if (_volatileDeviceRole.value.equals("super_admin", ignoreCase = true)) {
+            if (_volatileDeviceRole.value.equals("super_admin", ignoreCase = true) ||
+                _volatileDeviceRole.value.equals("technician", ignoreCase = true)
+            ) {
                 _volatileBills.value = cloudBills
             }
             return

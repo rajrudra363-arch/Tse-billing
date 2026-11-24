@@ -13,7 +13,10 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.PersistentCacheSettings
+import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.functions.FirebaseFunctions
+import com.google.firebase.functions.FirebaseFunctionsException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
@@ -59,9 +62,45 @@ data class CloudWorkspaceSnapshot(
     val auditLogs: List<AuditLogEntity> = emptyList()
 )
 
+data class CloudTechCreationResult(
+    val uid: String,
+    val email: String,
+    val name: String,
+    val username: String,
+    val role: String,
+    val workspaceId: String,
+    val mustChangePassword: Boolean
+)
+
+data class CloudTechSignInResult(
+    val uid: String,
+    val email: String,
+    val name: String,
+    val username: String,
+    val phone: String,
+    val photoBase64: String,
+    val role: String,
+    val workspaceId: String,
+    val mustChangePassword: Boolean,
+    val companyName: String
+)
+
+data class CloudWorkspaceNotification(
+    val id: String,
+    val category: String,
+    val title: String,
+    val message: String,
+    val targetRole: String,
+    val targetUsername: String,
+    val createdBy: String,
+    val createdByUid: String,
+    val createdAt: Long
+)
+
 class CloudSyncRepository(private val context: Context) {
     companion object {
         private const val TAG = "CloudSyncRepository"
+        private const val FUNCTIONS_REGION = "asia-south1"
         private const val SHARE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
         private const val MAX_BASE64_CHARS = 180_000
         private const val OFFLINE_WRITE_WAIT_MS = 1500L
@@ -77,6 +116,13 @@ class CloudSyncRepository(private val context: Context) {
             FirebaseApp.initializeApp(context)
         }
         FirebaseAuth.getInstance()
+    }.getOrNull()
+
+    private fun getFunctions(): FirebaseFunctions? = runCatching {
+        if (FirebaseApp.getApps(context).isEmpty()) {
+            FirebaseApp.initializeApp(context)
+        }
+        FirebaseFunctions.getInstance(FUNCTIONS_REGION)
     }.getOrNull()
 
     private fun getFirestore(): FirebaseFirestore? = runCatching {
@@ -358,6 +404,302 @@ class CloudSyncRepository(private val context: Context) {
             }
         }
 
+    /**
+     * Calls the Firebase Admin SDK Cloud Function `createTechnicianAccount` without altering or
+     * signing out the Admin's active FirebaseAuth Google Sign-In session.
+     */
+    suspend fun createTechnicianAccountViaCloud(
+        workspaceId: String,
+        name: String,
+        email: String,
+        initialPassword: String,
+        phone: String = "",
+        username: String = "",
+        photoBase64: String = ""
+    ): Result<CloudTechCreationResult> = withContext(Dispatchers.IO) {
+        val currentUser = getAuth()?.currentUser
+            ?: return@withContext Result.failure(
+                IllegalStateException("Admin must sign in with Google first (${AuthPolicy.PRIMARY_ADMIN_EMAIL}).")
+            )
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        if (workspaceId.isBlank()) {
+            return@withContext Result.failure(IllegalStateException("Activate Cloud Workspace before adding cloud technicians."))
+        }
+
+        try {
+            // Refresh ID token silently to ensure server has current email_verified & uid claims.
+            runCatching { currentUser.getIdToken(false).await() }
+
+            val payload = hashMapOf<String, Any>(
+                "workspaceId" to workspaceId.trim(),
+                "name" to name.trim(),
+                "email" to email.trim().lowercase(Locale.US),
+                "initialPassword" to initialPassword,
+                "phone" to phone.trim(),
+                "username" to username.trim(),
+                "role" to "technician"
+            )
+            val result = functions
+                .getHttpsCallable("createTechnicianAccount")
+                .call(payload)
+                .await()
+
+            @Suppress("UNCHECKED_CAST")
+            val data = result.getData() as? Map<String, Any?>
+                ?: return@withContext Result.failure(IllegalStateException("Unexpected server response."))
+
+            val createdUid = data["uid"]?.toString().orEmpty()
+            val createdEmail = data["email"]?.toString().orEmpty().ifBlank { email.trim().lowercase(Locale.US) }
+            val createdName = data["name"]?.toString().orEmpty().ifBlank { name.trim() }
+            val createdUsername = data["username"]?.toString().orEmpty().ifBlank {
+                AuthPolicy.deriveUsernameFromEmailOrName(createdEmail, createdName)
+            }
+            val createdRole = BillingRepository.normalizeRole(data["role"]?.toString().orEmpty())
+            val createdWsId = data["workspaceId"]?.toString().orEmpty().ifBlank { workspaceId }
+            val mustChange = (data["mustChangePassword"] as? Boolean) ?: true
+
+            if (photoBase64.isNotBlank()) {
+                pushAccount(
+                    workspaceId = createdWsId,
+                    account = UserAccountEntity(
+                        username = createdUsername,
+                        displayName = createdName,
+                        passwordHash = AuthPolicy.FIREBASE_EMAIL_AUTH_MARKER,
+                        role = "technician",
+                        phone = phone.trim(),
+                        photoBase64 = sanitizeBase64(photoBase64.trim())
+                    )
+                )
+            }
+
+            Result.success(
+                CloudTechCreationResult(
+                    uid = createdUid,
+                    email = createdEmail,
+                    name = createdName,
+                    username = createdUsername,
+                    role = createdRole,
+                    workspaceId = createdWsId,
+                    mustChangePassword = mustChange
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: FirebaseFunctionsException) {
+            val friendly = when (e.code) {
+                FirebaseFunctionsException.Code.PERMISSION_DENIED ->
+                    e.message ?: "Only a verified Admin can create technician accounts."
+                FirebaseFunctionsException.Code.ALREADY_EXISTS ->
+                    e.message ?: "This email is already registered in Firebase Authentication."
+                FirebaseFunctionsException.Code.UNAUTHENTICATED ->
+                    "Admin Google session expired. Please sign in with Google again."
+                FirebaseFunctionsException.Code.NOT_FOUND ->
+                    "Cloud Function 'createTechnicianAccount' not deployed yet or workspace missing."
+                FirebaseFunctionsException.Code.INVALID_ARGUMENT ->
+                    e.message ?: "Invalid technician details."
+                else -> e.message ?: "Failed to create technician account on server."
+            }
+            Log.e(TAG, "Cloud Function error (${e.code}): $friendly", e)
+            Result.failure(IllegalStateException(friendly, e))
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to call createTechnicianAccount", e)
+            Result.failure(
+                IllegalStateException(
+                    e.message ?: "Could not reach Cloud Function. Ensure functions are deployed.",
+                    e
+                )
+            )
+        }
+    }
+
+    /**
+     * Authenticates a Technician using Firebase Authentication Email/Password provider
+     * and reads their workspace role and `mustChangePassword` flag from Firestore.
+     */
+    suspend fun signInTechnicianWithEmail(
+        email: String,
+        password: String
+    ): Result<CloudTechSignInResult> = withContext(Dispatchers.IO) {
+        val cleanEmail = email.trim().lowercase(Locale.US)
+        if (!AuthPolicy.isValidEmail(cleanEmail)) {
+            return@withContext Result.failure(IllegalArgumentException("Enter a valid Technician email address."))
+        }
+        if (password.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("Enter your password."))
+        }
+        val auth = getAuth()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Auth is not initialized."))
+        val db = getFirestore()
+            ?: return@withContext Result.failure(IllegalStateException("Cloud database is not initialized."))
+
+        try {
+            val authResult = auth.signInWithEmailAndPassword(cleanEmail, password).await()
+            val user = authResult.user
+                ?: return@withContext Result.failure(IllegalStateException("Authentication failed."))
+            val profileRes = resolveSignedInTechnicianProfile(user.uid, db)
+            if (profileRes.isFailure) {
+                runCatching { auth.signOut() }
+            }
+            profileRes
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Email/Password sign-in failed for $cleanEmail", e)
+            Result.failure(
+                IllegalStateException(
+                    e.message ?: "Invalid email or password, or Email/Password login is disabled.",
+                    e
+                )
+            )
+        }
+    }
+
+    suspend fun checkCurrentTechnicianPasswordChangeRequired(
+        workspaceIdHint: String = ""
+    ): Result<CloudTechSignInResult?> = withContext(Dispatchers.IO) {
+        val user = getAuth()?.currentUser ?: return@withContext Result.success(null)
+        val db = getFirestore() ?: return@withContext Result.success(null)
+        val isGoogleProvider = user.providerData.any { it.providerId == "google.com" }
+        val isPasswordProvider = user.providerData.any { it.providerId == "password" }
+        if (!isPasswordProvider && isGoogleProvider) {
+            return@withContext Result.success(null)
+        }
+        val resolved = resolveSignedInTechnicianProfile(user.uid, db, workspaceIdHint).getOrNull()
+        if (resolved != null && resolved.role == "technician" && resolved.mustChangePassword) {
+            Result.success(resolved)
+        } else {
+            Result.success(null)
+        }
+    }
+
+    private suspend fun resolveSignedInTechnicianProfile(
+        uid: String,
+        db: FirebaseFirestore,
+        workspaceIdHint: String = ""
+    ): Result<CloudTechSignInResult> {
+        return try {
+            val wsDoc = if (workspaceIdHint.isNotBlank()) {
+                val hintSnap = runCatching {
+                    db.collection("workspaces").document(workspaceIdHint).get().await()
+                }.getOrNull()
+                if (hintSnap != null && hintSnap.exists()) hintSnap else null
+            } else {
+                null
+            } ?: db.collection("workspaces")
+                .whereArrayContains("memberUids", uid)
+                .limit(1)
+                .get()
+                .await()
+                .documents
+                .firstOrNull()
+
+            if (wsDoc == null || !wsDoc.exists()) {
+                return Result.failure(IllegalStateException("No Technician workspace assigned to this account."))
+            }
+
+            val wsId = wsDoc.id
+            val memberSnap = db.collection("workspaces").document(wsId)
+                .collection("members").document(uid)
+                .get()
+                .await()
+            if (!memberSnap.exists()) {
+                return Result.failure(IllegalStateException("Technician membership record not found in workspace."))
+            }
+
+            val role = BillingRepository.normalizeRole(memberSnap.getString("role").orEmpty())
+            val email = memberSnap.getString("email").orEmpty()
+            val name = memberSnap.getString("name").orEmpty()
+                .ifBlank { memberSnap.getString("displayName").orEmpty() }
+                .ifBlank { "Technician" }
+            val username = memberSnap.getString("username").orEmpty()
+                .ifBlank { AuthPolicy.deriveUsernameFromEmailOrName(email, name) }
+            val phone = memberSnap.getString("phone").orEmpty()
+            val mustChangePassword = memberSnap.getBoolean("mustChangePassword") ?: false
+            val companyName = wsDoc.getString("companyName").orEmpty()
+                .ifBlank { BillingRepository.DEFAULT_COMPANY_NAME }
+
+            val photoB64 = runCatching {
+                db.collection("workspaces").document(wsId)
+                    .collection("accounts").document(username.lowercase(Locale.US))
+                    .get().await().getString("photoBase64").orEmpty()
+            }.getOrDefault("")
+
+            Result.success(
+                CloudTechSignInResult(
+                    uid = uid,
+                    email = email,
+                    name = name,
+                    username = username,
+                    phone = phone,
+                    photoBase64 = photoB64,
+                    role = role,
+                    workspaceId = wsId,
+                    mustChangePassword = mustChangePassword,
+                    companyName = companyName
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.GET, "workspaces/members/$uid")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Updates Firebase Auth password for the currently logged-in Technician on first login
+     * and clears `mustChangePassword` in Firestore cleanly.
+     */
+    suspend fun updateCurrentTechnicianPassword(
+        workspaceId: String,
+        newPassword: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val auth = getAuth()
+        val user = auth?.currentUser
+            ?: return@withContext Result.failure(IllegalStateException("Session expired. Please sign in again."))
+        val db = getFirestore()
+            ?: return@withContext Result.failure(IllegalStateException("Cloud database not initialized."))
+
+        AuthPolicy.evaluatePassword(newPassword).firstMissingRequirement()?.let { msg ->
+            return@withContext Result.failure(IllegalArgumentException(msg))
+        }
+
+        try {
+            user.updatePassword(newPassword).await()
+
+            val updates = hashMapOf<String, Any>(
+                "mustChangePassword" to false,
+                "passwordChangedAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+            db.collection("workspaces").document(workspaceId)
+                .collection("members").document(user.uid)
+                .update(updates)
+                .await()
+
+            // Best-effort server confirmation via Cloud Function as well.
+            runCatching {
+                getFunctions()
+                    ?.getHttpsCallable("completeTechnicianPasswordChange")
+                    ?.call(hashMapOf("workspaceId" to workspaceId))
+                    ?.await()
+            }
+
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed updating technician first-login password", e)
+            Result.failure(
+                IllegalStateException(
+                    e.message ?: "Failed to update password. Please sign in again and retry.",
+                    e
+                )
+            )
+        }
+    }
+
     suspend fun uploadFullWorkspaceSnapshot(
         workspaceId: String,
         company: CompanySettings,
@@ -415,11 +757,23 @@ class CloudSyncRepository(private val context: Context) {
                 val customersSnap = wsRef.collection("customers").get().await()
                 val helpSnap = wsRef.collection("helpRequests").get().await()
 
-                val billsList = if (normRole == "admin" || normRole == "super_admin") {
-                    runCatching { wsRef.collection("bills").get().await().documents.mapNotNull(::parseBillDoc) }
-                        .getOrElse { emptyList() }
-                        .sortedByDescending { it.updatedAt }
-                } else emptyList()
+                val billsList = when (normRole) {
+                    "admin", "super_admin" -> {
+                        runCatching { wsRef.collection("bills").get().await().documents.mapNotNull(::parseBillDoc) }
+                            .getOrElse { emptyList() }
+                            .sortedByDescending { it.updatedAt }
+                    }
+                    else -> {
+                        runCatching {
+                            wsRef.collection("bills")
+                                .whereEqualTo("createdByUid", uid)
+                                .get()
+                                .await()
+                                .documents
+                                .mapNotNull(::parseBillDoc)
+                        }.getOrElse { emptyList() }.sortedByDescending { it.updatedAt }
+                    }
+                }
 
                 val settlementsList = if (normRole == "admin" || normRole == "super_admin") {
                     runCatching { wsRef.collection("settlements").get().await().documents.mapNotNull(::parseSettlementDoc) }
@@ -481,7 +835,8 @@ class CloudSyncRepository(private val context: Context) {
         onSettlementsChanged: (List<TechnicianSettlementEntity>) -> Unit,
         onExpensesChanged: (List<ExpenseEntity>) -> Unit = {},
         onTrashChanged: (List<TrashItemEntity>) -> Unit = {},
-        onAuditLogsChanged: (List<AuditLogEntity>) -> Unit = {}
+        onAuditLogsChanged: (List<AuditLogEntity>) -> Unit = {},
+        onNotificationsChanged: (List<CloudWorkspaceNotification>) -> Unit = {}
     ) {
         stopListeners()
         val uid = getAuth()?.currentUser?.uid ?: return
@@ -585,6 +940,18 @@ class CloudSyncRepository(private val context: Context) {
                     onAuditLogsChanged(snap.documents.mapNotNull(::parseAuditLogDoc).sortedByDescending { it.createdAt })
                 }
             }
+        } else {
+            registrations += wsRef.collection("bills")
+                .whereEqualTo("createdByUid", uid)
+                .addSnapshotListener { snap, err ->
+                    if (err != null) {
+                        handleFirestoreError(err, OperationType.LIST, "workspaces/$workspaceId/bills")
+                        return@addSnapshotListener
+                    }
+                    if (snap != null) {
+                        onBillsChanged(snap.documents.mapNotNull(::parseBillDoc).sortedByDescending { it.updatedAt })
+                    }
+                }
         }
 
         if (normRole == "admin") {
@@ -598,6 +965,19 @@ class CloudSyncRepository(private val context: Context) {
                 }
             }
         }
+
+        registrations += wsRef.collection("notifications")
+            .orderBy("createdAt", Query.Direction.DESCENDING)
+            .limit(25)
+            .addSnapshotListener { snap, err ->
+                if (err != null) {
+                    handleFirestoreError(err, OperationType.LIST, "workspaces/$workspaceId/notifications")
+                    return@addSnapshotListener
+                }
+                if (snap != null) {
+                    onNotificationsChanged(snap.documents.mapNotNull(::parseNotificationDoc))
+                }
+            }
     }
 
     suspend fun pushWorkspaceConfig(
@@ -706,6 +1086,35 @@ class CloudSyncRepository(private val context: Context) {
                 throw e
             } catch (e: Exception) {
                 handleFirestoreError(e, OperationType.WRITE, "workspaces/$workspaceId/products/$docId")
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Partial stock-only update so Technicians can sync stock decrements/restorations
+     * cleanly under zero-trust Firestore rules without modifying product price/metadata.
+     */
+    suspend fun pushProductStockAdjustment(workspaceId: String, product: ProductEntity): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            val db = getFirestore() ?: return@withContext Result.success(Unit)
+            if (workspaceId.isBlank() || getAuth()?.currentUser == null || product.id <= 0L) {
+                return@withContext Result.success(Unit)
+            }
+            val docId = "p_${product.id}"
+            try {
+                val updates = hashMapOf<String, Any>(
+                    "stockQty" to product.stockQty.coerceAtLeast(0.0),
+                    "minStockAlert" to product.minStockAlert.coerceAtLeast(0.0),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                db.collection("workspaces").document(workspaceId)
+                    .collection("products").document(docId)
+                    .update(updates).awaitOfflineSafe()
+                Result.success(Unit)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                handleFirestoreError(e, OperationType.UPDATE, "workspaces/$workspaceId/products/$docId")
                 Result.failure(e)
             }
         }
@@ -1093,6 +1502,56 @@ class CloudSyncRepository(private val context: Context) {
             }
         }
 
+    suspend fun pushNotification(
+        workspaceId: String,
+        category: String,
+        title: String,
+        message: String,
+        targetRole: String = "all",
+        createdBy: String = "",
+        targetUsername: String = ""
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val uid = getAuth()?.currentUser?.uid
+        val db = getFirestore()
+        if (workspaceId.isBlank() || uid.isNullOrBlank() || db == null) {
+            return@withContext Result.success(Unit)
+        }
+        val safeTitle = title.trim().take(160)
+        if (safeTitle.isBlank()) return@withContext Result.success(Unit)
+        val safeCategory = when (category.uppercase(Locale.US)) {
+            "PRODUCT", "STOCK", "CUSTOMER", "BILLING", "PAYMENT", "SERVICE_REQUEST", "SYSTEM" ->
+                category.uppercase(Locale.US)
+            else -> "SYSTEM"
+        }
+        val safeTargetRole = when (targetRole.lowercase(Locale.US)) {
+            "admin", "technician", "super_admin", "all" -> targetRole.lowercase(Locale.US)
+            else -> "all"
+        }
+        val notifId = "n_${System.currentTimeMillis()}_${uid.take(6)}_${random.nextInt(1000, 9999)}"
+        try {
+            val data = hashMapOf<String, Any>(
+                "notifId" to notifId,
+                "category" to safeCategory,
+                "title" to safeTitle,
+                "message" to message.trim().take(500),
+                "targetRole" to safeTargetRole,
+                "targetUsername" to targetUsername.trim(),
+                "createdBy" to createdBy.trim().ifBlank { getAuth()?.currentUser?.email.orEmpty() },
+                "createdByUid" to uid,
+                "createdAt" to FieldValue.serverTimestamp()
+            )
+            db.collection("workspaces").document(workspaceId)
+                .collection("notifications").document(notifId)
+                .set(data).awaitOfflineSafe()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, "workspaces/$workspaceId/notifications/$notifId")
+            Result.failure(e)
+        }
+    }
+
     private fun customerDocId(c: CustomerEntity): String {
         val digits = c.phone.filter { it.isDigit() }
         if (digits.length >= 7) return "c_${digits.takeLast(10)}"
@@ -1313,6 +1772,25 @@ class CloudSyncRepository(private val context: Context) {
             actorRole = doc.getString("actorRole").orEmpty(),
             details = doc.getString("details").orEmpty(),
             createdAt = (doc.get("createdAt") as? Number)?.toLong() ?: System.currentTimeMillis()
+        )
+    }
+
+    private fun parseNotificationDoc(doc: DocumentSnapshot): CloudWorkspaceNotification? {
+        val title = doc.getString("title")?.trim().orEmpty()
+        if (title.isEmpty()) return null
+        val notifId = doc.getString("notifId").orEmpty().ifBlank { doc.id }
+        val ts = doc.getTimestamp("createdAt", DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            ?.toDate()?.time ?: System.currentTimeMillis()
+        return CloudWorkspaceNotification(
+            id = notifId,
+            category = doc.getString("category").orEmpty().ifBlank { "SYSTEM" },
+            title = title,
+            message = doc.getString("message").orEmpty(),
+            targetRole = doc.getString("targetRole").orEmpty().ifBlank { "all" },
+            targetUsername = doc.getString("targetUsername").orEmpty(),
+            createdBy = doc.getString("createdBy").orEmpty(),
+            createdByUid = doc.getString("createdByUid").orEmpty(),
+            createdAt = ts
         )
     }
 }

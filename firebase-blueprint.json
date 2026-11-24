@@ -66,14 +66,22 @@
     },
     "WorkspaceMember": {
       "title": "Workspace Member",
-      "description": "Binds a signed-in Google Firebase Auth UID to a role inside a workspace.",
+      "description": "Binds a signed-in Firebase Auth UID (Google or Email/Password) to a role inside a workspace.",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
         "email": { "type": "string" },
         "displayName": { "type": "string" },
+        "name": { "type": "string" },
+        "username": { "type": "string" },
+        "phone": { "type": "string" },
         "role": { "type": "string", "enum": ["admin", "technician", "super_admin"] },
+        "workspaceId": { "type": "string" },
         "inviteCode": { "type": "string" },
+        "mustChangePassword": { "type": "boolean" },
+        "authProvider": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "passwordChangedAt": { "type": "string", "format": "date-time" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -279,6 +287,26 @@
         "logId", "action", "entityType", "entityId", "title",
         "actorUsername", "actorRole", "details", "createdAt", "serverCreatedAt"
       ]
+    },
+    "WorkspaceNotification": {
+      "title": "Workspace Real-Time Sync Notification",
+      "description": "Synced alert broadcast across authorized Admin, Technician, and Super Admin devices for Billing, Payments, Stock, and Service Requests.",
+      "type": "object",
+      "properties": {
+        "notifId": { "type": "string" },
+        "category": { "type": "string", "enum": ["PRODUCT", "STOCK", "CUSTOMER", "BILLING", "PAYMENT", "SERVICE_REQUEST", "SYSTEM"] },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "targetRole": { "type": "string", "enum": ["all", "admin", "technician", "super_admin"] },
+        "targetUsername": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdByUid": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "notifId", "category", "title", "message", "targetRole",
+        "targetUsername", "createdBy", "createdByUid", "createdAt"
+      ]
     }
   },
   "firestore": {
@@ -294,6 +322,7 @@
     "/workspaces/{workspaceId}/settlements/{settlementId}": { "schema": "WorkspaceSettlement", "description": "Synced technician settlements." },
     "/workspaces/{workspaceId}/expenses/{expenseId}": { "schema": "WorkspaceExpense", "description": "Synced business expenses." },
     "/workspaces/{workspaceId}/trash/{trashId}": { "schema": "WorkspaceTrashItem", "description": "24-hour recoverable trash bin." },
-    "/workspaces/{workspaceId}/auditLogs/{logId}": { "schema": "WorkspaceAuditLog", "description": "Append-only security audit trail." }
+    "/workspaces/{workspaceId}/auditLogs/{logId}": { "schema": "WorkspaceAuditLog", "description": "Append-only security audit trail." },
+    "/workspaces/{workspaceId}/notifications/{notifId}": { "schema": "WorkspaceNotification", "description": "Synced workspace notifications." }
   }
 }

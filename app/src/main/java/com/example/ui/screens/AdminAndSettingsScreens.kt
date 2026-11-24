@@ -167,6 +167,7 @@ fun AdminPanelScreen(
     cloudUser: CloudAuthUser? = null,
     cloudWorkspaceInfo: CloudWorkspaceInfo = CloudWorkspaceInfo(),
     cloudBusy: Boolean = false,
+    cloudTechBusy: Boolean = false,
     availableUpdate: GitHubReleaseInfo? = null,
     expenses: List<ExpenseEntity> = emptyList(),
     trashItems: List<TrashItemEntity> = emptyList(),
@@ -174,6 +175,7 @@ fun AdminPanelScreen(
     onSaveUpi: (upiId: String, payeeName: String) -> Unit,
     onClearUpi: () -> Unit,
     onAddTechnician: (name: String, phone: String, username: String, password: String, photoBitmap: Bitmap?, onDone: () -> Unit) -> Unit,
+    onCreateCloudTechnician: (name: String, phone: String, email: String, username: String, initialPassword: String, photoBitmap: Bitmap?, onDone: () -> Unit) -> Unit = { _, _, _, _, _, _, _ -> },
     onUpdateTechnician: (oldUsername: String, newUsername: String, name: String, phone: String, newPassword: String, newPhotoBitmap: Bitmap?, onDone: () -> Unit) -> Unit,
     onRemoveTechnician: (username: String) -> Unit,
     onAddSuperAdmin: (name: String, phone: String, username: String, password: String, onDone: () -> Unit) -> Unit,
@@ -198,6 +200,7 @@ fun AdminPanelScreen(
 
     var techName by remember { mutableStateOf("") }
     var techPhone by remember { mutableStateOf("") }
+    var techEmail by remember { mutableStateOf("") }
     var techUsername by remember { mutableStateOf("") }
     var techPassword by remember { mutableStateOf("") }
     var techPhotoBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -466,16 +469,24 @@ fun AdminPanelScreen(
                         modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_tech_phone")
                     )
                     OutlinedTextField(
+                        value = techEmail,
+                        onValueChange = { techEmail = it },
+                        label = { Text("Technician Email (for Firebase Email Login)") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_tech_email")
+                    )
+                    OutlinedTextField(
                         value = techUsername,
                         onValueChange = { techUsername = it },
-                        label = { Text("Technician Username (min 3 chars)") },
+                        label = { Text("Technician Username (optional for Email Login)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_tech_username")
                     )
                     OutlinedTextField(
                         value = techPassword,
                         onValueChange = { techPassword = it },
-                        label = { Text("Technician Strong Password") },
+                        label = { Text("Technician Initial Strong Password") },
                         visualTransformation = PasswordVisualTransformation(),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_tech_password")
@@ -567,18 +578,73 @@ fun AdminPanelScreen(
                     Button(
                         onClick = {
                             clearFocusAndHideToolbar(focusManager, textToolbar)
-                            onAddTechnician(techName, techPhone, techUsername, techPassword, techPhotoBitmap) {
+                            onCreateCloudTechnician(
+                                techName,
+                                techPhone,
+                                techEmail,
+                                techUsername,
+                                techPassword,
+                                techPhotoBitmap
+                            ) {
                                 techName = ""
                                 techPhone = ""
+                                techEmail = ""
                                 techUsername = ""
                                 techPassword = ""
                                 techPhotoBitmap = null
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+                        enabled = !cloudTechBusy,
+                        colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
+                        modifier = Modifier.fillMaxWidth().height(50.dp).testTag("create_cloud_technician_button")
+                    ) {
+                        if (cloudTechBusy) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = Color.White,
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = if (cloudTechBusy) "Creating Firebase Account..." else "Create Technician Account (Firebase)",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "Firebase Technician accounts use Email/Password via Cloud Function. Admin Google session (${AuthPolicy.PRIMARY_ADMIN_EMAIL}) stays signed in, passwords are never saved to Firestore, and Technicians must set a new password on first login.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            clearFocusAndHideToolbar(focusManager, textToolbar)
+                            onAddTechnician(techName, techPhone, techUsername, techPassword, techPhotoBitmap) {
+                                techName = ""
+                                techPhone = ""
+                                techEmail = ""
+                                techUsername = ""
+                                techPassword = ""
+                                techPhotoBitmap = null
+                            }
+                        },
+                        border = BorderStroke(1.2.dp, GreenPaid),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = GreenPaid),
                         modifier = Modifier.fillMaxWidth().height(48.dp).testTag("add_technician_button")
                     ) {
-                        Text("Add Technician", fontWeight = FontWeight.Bold, color = Color.White)
+                        Text("Add Technician (Local / Invite Code)", fontWeight = FontWeight.Bold, color = GreenPaid)
                     }
 
                     HorizontalDivider()

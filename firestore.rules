@@ -206,11 +206,17 @@ service cloud.firestore {
         allow list: if isWorkspaceAdmin(workspaceId);
         allow create: if isSignedIn() && isValidId(memberUid) &&
           request.resource.data.keys().hasAll(['userId', 'email', 'displayName', 'role', 'inviteCode', 'createdAt', 'updatedAt']) &&
-          request.resource.data.keys().hasOnly(['userId', 'email', 'displayName', 'role', 'inviteCode', 'createdAt', 'updatedAt']) &&
+          request.resource.data.keys().hasOnly([
+            'userId', 'email', 'displayName', 'name', 'username', 'phone',
+            'role', 'workspaceId', 'inviteCode', 'mustChangePassword',
+            'authProvider', 'createdByUid', 'passwordChangedAt', 'createdAt', 'updatedAt'
+          ]) &&
           request.resource.data.userId == memberUid &&
           request.resource.data.email is string &&
           request.resource.data.displayName is string &&
           request.resource.data.inviteCode is string &&
+          (!('mustChangePassword' in request.resource.data) || request.resource.data.mustChangePassword is bool) &&
+          (!('workspaceId' in request.resource.data) || request.resource.data.workspaceId == workspaceId) &&
           request.resource.data.createdAt is timestamp && request.resource.data.createdAt <= request.time &&
           request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time &&
           (
@@ -225,12 +231,30 @@ service cloud.firestore {
               )
             )
           );
-        allow update: if isWorkspaceAdmin(workspaceId) &&
-          request.resource.data.userId == resource.data.userId &&
-          request.resource.data.createdAt == resource.data.createdAt &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'email', 'role', 'updatedAt']) &&
-          request.resource.data.role in ['admin', 'technician', 'super_admin'] &&
-          request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
+        allow update: if (
+          (
+            isWorkspaceAdmin(workspaceId) &&
+            request.resource.data.userId == resource.data.userId &&
+            request.resource.data.createdAt == resource.data.createdAt &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'displayName', 'name', 'username', 'phone', 'email', 'role', 'mustChangePassword', 'updatedAt'
+            ]) &&
+            request.resource.data.role in ['admin', 'technician', 'super_admin']
+          ) || (
+            isSignedIn() &&
+            request.auth.uid == memberUid &&
+            request.resource.data.userId == resource.data.userId &&
+            request.resource.data.role == resource.data.role &&
+            request.resource.data.createdAt == resource.data.createdAt &&
+            resource.data.mustChangePassword == true &&
+            request.resource.data.mustChangePassword == false &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'mustChangePassword', 'passwordChangedAt', 'updatedAt'
+            ]) &&
+            (!('passwordChangedAt' in request.resource.data) ||
+              (request.resource.data.passwordChangedAt is timestamp && request.resource.data.passwordChangedAt <= request.time))
+          )
+        ) && request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
         allow delete: if isWorkspaceAdmin(workspaceId);
       }
 
@@ -493,6 +517,30 @@ service cloud.firestore {
           request.resource.data.details is string &&
           request.resource.data.createdAt is int &&
           request.resource.data.serverCreatedAt is timestamp && request.resource.data.serverCreatedAt <= request.time;
+        allow update, delete: if false;
+      }
+
+      match /notifications/{notifId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if (isWorkspaceAdmin(workspaceId) || isTechnicianMember(workspaceId)) &&
+          isValidId(notifId) &&
+          request.resource.data.keys().hasAll([
+            'notifId', 'category', 'title', 'message', 'targetRole',
+            'targetUsername', 'createdBy', 'createdByUid', 'createdAt'
+          ]) &&
+          request.resource.data.keys().hasOnly([
+            'notifId', 'category', 'title', 'message', 'targetRole',
+            'targetUsername', 'createdBy', 'createdByUid', 'createdAt'
+          ]) &&
+          request.resource.data.notifId == notifId &&
+          request.resource.data.category in ['PRODUCT', 'STOCK', 'CUSTOMER', 'BILLING', 'PAYMENT', 'SERVICE_REQUEST', 'SYSTEM'] &&
+          request.resource.data.title is string && request.resource.data.title.size() >= 1 && request.resource.data.title.size() <= 160 &&
+          request.resource.data.message is string && request.resource.data.message.size() <= 500 &&
+          request.resource.data.targetRole in ['all', 'admin', 'technician', 'super_admin'] &&
+          request.resource.data.targetUsername is string &&
+          request.resource.data.createdBy is string &&
+          request.resource.data.createdByUid == request.auth.uid &&
+          request.resource.data.createdAt is timestamp && request.resource.data.createdAt <= request.time;
         allow update, delete: if false;
       }
     }

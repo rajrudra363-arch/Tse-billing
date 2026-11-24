@@ -7,6 +7,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
@@ -50,8 +51,10 @@ import com.example.ui.BillDraft
 import com.example.ui.BillingEvent
 import com.example.ui.BillingViewModel
 import com.example.ui.MainTab
+import com.example.ui.PendingPasswordChangeState
 import com.example.ui.TechnicianPerformanceSummary
 import com.example.ui.components.AuthScreen
+import com.example.ui.components.MandatoryPasswordChangeScreen
 import com.example.ui.components.PaymentAndReviewDialog
 import com.example.ui.screens.AdminPanelScreen
 import com.example.ui.screens.BillScreen
@@ -1649,4 +1652,180 @@ class ExampleRobolectricTest {
             .assertIsDisplayed()
             .assertTextContains("TSE-TECH-INV99")
     }
+
+    @Test
+    fun adminPanel_createCloudTechnician_invokesCloudCallbackWithEmailAndInitialPassword() {
+        var capturedName = ""
+        var capturedEmail = ""
+        var capturedPassword = ""
+        composeTestRule.setContent {
+            TseBillingTheme {
+                AdminPanelScreen(
+                    upiSettings = UpiSettings(),
+                    accounts = emptyList(),
+                    technicianPerformance = emptyList(),
+                    voiceAndNoteSettings = VoiceAndNoteSettings(),
+                    systemVoiceOptions = emptyList(),
+                    onSaveUpi = { _, _ -> },
+                    onClearUpi = {},
+                    onAddTechnician = { _, _, _, _, _, _ -> },
+                    onCreateCloudTechnician = { name, _, email, _, pass, _, onDone ->
+                        capturedName = name
+                        capturedEmail = email
+                        capturedPassword = pass
+                        onDone()
+                    },
+                    onUpdateTechnician = { _, _, _, _, _, _, _ -> },
+                    onRemoveTechnician = {},
+                    onAddSuperAdmin = { _, _, _, _, _ -> },
+                    onRemoveSuperAdmin = {},
+                    onRecordCashSettlement = { _, _, _, _ -> },
+                    onSaveVoiceAndNoteSettings = {},
+                    onTestVoice = { _, _ -> }
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToNode(hasTestTag("new_tech_name"))
+        composeTestRule.onNodeWithTag("new_tech_name").performTextInput("Rahul Tech")
+        composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToNode(hasTestTag("new_tech_email"))
+        composeTestRule.onNodeWithTag("new_tech_email").performTextInput("rahul.tech@example.com")
+        composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToNode(hasTestTag("new_tech_password"))
+        composeTestRule.onNodeWithTag("new_tech_password").performTextInput("InitPass@2026")
+        composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToNode(hasTestTag("create_cloud_technician_button"))
+        composeTestRule.onNodeWithTag("create_cloud_technician_button").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals("Rahul Tech", capturedName)
+        assertEquals("rahul.tech@example.com", capturedEmail)
+        assertEquals("InitPass@2026", capturedPassword)
+    }
+
+    @Test
+    fun authScreen_techEmailTab_invokesSignInTechnicianEmail() {
+        var capturedEmail = ""
+        var capturedPassword = ""
+        composeTestRule.setContent {
+            TseBillingTheme {
+                AuthScreen(
+                    isAdminConfigured = false,
+                    accounts = emptyList(),
+                    authError = "",
+                    isStaffOnlyApk = true,
+                    onClearError = {},
+                    onSetupAdmin = { _, _, _, _ -> },
+                    onLogin = { _, _, _, _ -> },
+                    onSignInTechnicianEmail = { email, pass ->
+                        capturedEmail = email
+                        capturedPassword = pass
+                    }
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("setup_tab_tech_email").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("tech_email_login_input").performScrollTo().performTextInput("tech1@tse.in")
+        composeTestRule.onNodeWithTag("tech_password_login_input").performScrollTo().performTextInput("Temp@2026")
+        composeTestRule.onNodeWithTag("tech_email_login_submit_button").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals("tech1@tse.in", capturedEmail)
+        assertEquals("Temp@2026", capturedPassword)
+    }
+
+    @Test
+    fun mandatoryPasswordChangeScreen_blocksWeakAndMismatch_submitsStrongMatchingPassword() {
+        var submittedNew = ""
+        var submittedConfirm = ""
+        val pending = PendingPasswordChangeState(
+            uid = "uid_tech_1",
+            email = "rahul.tech@example.com",
+            name = "Rahul Tech",
+            username = "rahul_tech",
+            phone = "9876543210",
+            photoBase64 = "",
+            role = "technician",
+            workspaceId = "ws_tse_1",
+            companyName = "TOTAL SOLUTION ENTERPRISES"
+        )
+        composeTestRule.setContent {
+            TseBillingTheme {
+                MandatoryPasswordChangeScreen(
+                    pendingState = pending,
+                    authError = "",
+                    busy = false,
+                    onSubmitNewPassword = { newP, confP ->
+                        submittedNew = newP
+                        submittedConfirm = confP
+                    },
+                    onSignOut = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("mandatory_password_change_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("first_login_update_password_button").performScrollTo().assertIsNotEnabled()
+
+        // Weak password keeps submit disabled
+        composeTestRule.onNodeWithTag("first_login_new_password").performScrollTo().performTextInput("weak")
+        composeTestRule.onNodeWithTag("first_login_confirm_password").performScrollTo().performTextInput("weak")
+        composeTestRule.onNodeWithTag("first_login_update_password_button").performScrollTo().assertIsNotEnabled()
+
+        // Strong matching password enables submit and calls callback
+        composeTestRule.onNodeWithTag("first_login_new_password").performScrollTo().performTextInput("")
+        composeTestRule.setContent {
+            TseBillingTheme {
+                MandatoryPasswordChangeScreen(
+                    pendingState = pending,
+                    authError = "",
+                    busy = false,
+                    onSubmitNewPassword = { newP, confP ->
+                        submittedNew = newP
+                        submittedConfirm = confP
+                    },
+                    onSignOut = {}
+                )
+            }
+        }
+        composeTestRule.onNodeWithTag("first_login_new_password").performScrollTo().performTextInput("StrongTech@2026")
+        composeTestRule.onNodeWithTag("first_login_confirm_password").performScrollTo().performTextInput("StrongTech@2026")
+        composeTestRule.onNodeWithTag("first_login_update_password_button")
+            .performScrollTo()
+            .assertIsEnabled()
+            .performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals("StrongTech@2026", submittedNew)
+        assertEquals("StrongTech@2026", submittedConfirm)
+    }
+
+    @Test
+    fun billingViewModel_technicianRoleCannotSelectAdminOrAnalyticsTabs() = kotlinx.coroutines.runBlocking {
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234")
+        repo.addTechnician("Tech One", "9876500001", "tech1", "TechPass@123", photoBase64 = "abc")
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val soundEngine = SoundEngine(context)
+        val vm = createTestVm(soundEngine)
+
+        vm.login("tech1", "TechPass@123", antiRobotPassed = true)
+        val deadline = System.currentTimeMillis() + 5000L
+        while (vm.session.value == null && System.currentTimeMillis() < deadline) {
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+            Thread.sleep(25)
+        }
+        assertNotNull(vm.session.value)
+        assertEquals(MainTab.BILL, vm.activeTab.value)
+
+        vm.selectTab(MainTab.ADMIN)
+        assertEquals(MainTab.BILL, vm.activeTab.value)
+
+        vm.selectTab(MainTab.ANALYTICS)
+        assertEquals(MainTab.BILL, vm.activeTab.value)
+
+        vm.selectTab(MainTab.HELP)
+        assertEquals(MainTab.HELP, vm.activeTab.value)
+        soundEngine.release()
+    }
 }
+

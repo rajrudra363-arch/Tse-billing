@@ -1,0 +1,17 @@
+{
+  "name": "tse-billing-functions",
+  "description": "Firebase Cloud Functions (Admin SDK) for TSE Billing secure technician account provisioning",
+  "version": "1.0.0",
+  "main": "index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "test": "node --test functions.test.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.1",
+    "firebase-functions": "^6.0.1"
+  },
+  "private": true
+}

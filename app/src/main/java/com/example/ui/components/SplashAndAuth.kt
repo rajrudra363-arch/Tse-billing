@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -44,12 +45,14 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockClock
@@ -123,6 +126,7 @@ import com.example.data.AuthPolicy
 import com.example.data.CloudAuthUser
 import com.example.data.LoginSecurityState
 import com.example.data.UserAccountEntity
+import com.example.ui.PendingPasswordChangeState
 import com.example.ui.theme.AmberWarn
 import com.example.ui.theme.BlueAction
 import com.example.ui.theme.CyanGlow
@@ -252,6 +256,7 @@ fun AuthScreen(
     onLogin: (username: String, password: String, antiRobotPassed: Boolean, adminVerifyCode: String) -> Unit,
     onImportBackup: (String) -> Unit = {},
     onSignInGoogle: () -> Unit = {},
+    onSignInTechnicianEmail: (email: String, password: String) -> Unit = { _, _ -> },
     onJoinInviteCode: (String) -> Unit = {},
     onResetAdminPassword: (
         recoveryPassword: String,
@@ -360,6 +365,7 @@ fun AuthScreen(
                                 onSetupAdmin = onSetupAdmin,
                                 onImportBackup = onImportBackup,
                                 onSignInGoogle = onSignInGoogle,
+                                onSignInTechnicianEmail = onSignInTechnicianEmail,
                                 onJoinInviteCode = onJoinInviteCode
                             )
 
@@ -374,6 +380,7 @@ fun AuthScreen(
                                 onClearError = onClearError,
                                 onLogin = onLogin,
                                 onSignInGoogle = onSignInGoogle,
+                                onSignInTechnicianEmail = onSignInTechnicianEmail,
                                 onJoinInviteCode = onJoinInviteCode,
                                 onResetAdminPassword = onResetAdminPassword
                             )
@@ -485,9 +492,10 @@ private fun FirstTimeAdminSetupForm(
     onSetupAdmin: (String, String, String, String) -> Unit,
     onImportBackup: (String) -> Unit,
     onSignInGoogle: () -> Unit,
+    onSignInTechnicianEmail: (String, String) -> Unit,
     onJoinInviteCode: (String) -> Unit
 ) {
-    // Mode 0 = Create Admin Account, Mode 1 = Technician / Super Admin Direct Login (Invite Code), Mode 2 = Sign In (Restore Backup)
+    // Mode 0 = Create Admin Account, Mode 1 = Direct Login (Invite), Mode 2 = Sign In (Backup), Mode 3 = Technician Email Login
     var setupMode by remember(isStaffOnlyApk) { mutableIntStateOf(if (isStaffOnlyApk) 1 else 0) }
     val fixedAdminUsername = AuthPolicy.CANONICAL_ADMIN_USERNAME
     var password by remember { mutableStateOf("") }
@@ -580,12 +588,12 @@ private fun FirstTimeAdminSetupForm(
             )
         }
 
-        if (!isStaffOnlyApk) {
-            FlowRow(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (!isStaffOnlyApk) {
                 FilterChip(
                     selected = setupMode == 0,
                     onClick = { setupMode = 0; onClearError() },
@@ -593,14 +601,24 @@ private fun FirstTimeAdminSetupForm(
                     label = { Text("Create Admin", fontWeight = FontWeight.Bold) },
                     modifier = Modifier.testTag("setup_tab_create")
                 )
-                FilterChip(
-                    selected = setupMode == 1,
-                    onClick = { setupMode = 1; onClearError() },
-                    colors = chipColors,
-                    leadingIcon = { Icon(Icons.Default.Cloud, contentDescription = null, modifier = Modifier.size(16.dp)) },
-                    label = { Text("Direct Login (Invite)", fontWeight = FontWeight.Bold) },
-                    modifier = Modifier.testTag("setup_tab_cloud")
-                )
+            }
+            FilterChip(
+                selected = setupMode == 3,
+                onClick = { setupMode = 3; onClearError() },
+                colors = chipColors,
+                leadingIcon = { Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                label = { Text("Technician Email", fontWeight = FontWeight.Bold) },
+                modifier = Modifier.testTag("setup_tab_tech_email")
+            )
+            FilterChip(
+                selected = setupMode == 1,
+                onClick = { setupMode = 1; onClearError() },
+                colors = chipColors,
+                leadingIcon = { Icon(Icons.Default.Cloud, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                label = { Text(if (isStaffOnlyApk) "Invite Code" else "Direct Login (Invite)", fontWeight = FontWeight.Bold) },
+                modifier = Modifier.testTag("setup_tab_cloud")
+            )
+            if (!isStaffOnlyApk) {
                 FilterChip(
                     selected = setupMode == 2,
                     onClick = { setupMode = 2; onClearError() },
@@ -825,6 +843,13 @@ private fun FirstTimeAdminSetupForm(
                     )
                 }
             }
+
+            3 -> TechnicianEmailPasswordLoginSection(
+                authError = authError,
+                cloudBusy = cloudBusy,
+                onClearError = onClearError,
+                onSignInTechnicianEmail = onSignInTechnicianEmail
+            )
 
             else -> {
                 Surface(
@@ -1059,6 +1084,7 @@ private fun TechnicianAdminLoginForm(
     onClearError: () -> Unit,
     onLogin: (String, String, Boolean, String) -> Unit,
     onSignInGoogle: () -> Unit,
+    onSignInTechnicianEmail: (String, String) -> Unit,
     onJoinInviteCode: (String) -> Unit,
     onResetAdminPassword: (
         recoveryPassword: String,
@@ -1147,6 +1173,8 @@ private fun TechnicianAdminLoginForm(
         onLogin(selectedUsername, password, antiRobotPassed, adminVerifyCode)
     }
 
+    var useTechEmailMode by remember { mutableStateOf(false) }
+
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1169,6 +1197,34 @@ private fun TechnicianAdminLoginForm(
                 )
             }
         }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            FilterChip(
+                selected = !useTechEmailMode,
+                onClick = { useTechEmailMode = false; onClearError() },
+                label = { Text("Account Login", fontWeight = FontWeight.Bold) },
+                modifier = Modifier.testTag("login_mode_standard")
+            )
+            FilterChip(
+                selected = useTechEmailMode,
+                onClick = { useTechEmailMode = true; onClearError() },
+                leadingIcon = { Icon(Icons.Default.Email, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                label = { Text("Tech Email Login", fontWeight = FontWeight.Bold) },
+                modifier = Modifier.testTag("login_mode_tech_email")
+            )
+        }
+
+        if (useTechEmailMode) {
+            TechnicianEmailPasswordLoginSection(
+                authError = authError,
+                cloudBusy = cloudBusy,
+                onClearError = onClearError,
+                onSignInTechnicianEmail = onSignInTechnicianEmail
+            )
+        } else {
         Text(
             text = "Welcome to Total Solution Bill system. Verify the distorted CAPTCHA code and enter your password.",
             style = MaterialTheme.typography.bodySmall,
@@ -1549,6 +1605,7 @@ private fun TechnicianAdminLoginForm(
                 color = MaterialTheme.colorScheme.primary
             )
         }
+        }
     }
 
     if (showForgotDialog) {
@@ -1732,3 +1789,317 @@ private fun ForgotAdminPasswordDialog(
         }
     )
 }
+
+@Composable
+private fun TechnicianEmailPasswordLoginSection(
+    authError: String,
+    cloudBusy: Boolean,
+    onClearError: () -> Unit,
+    onSignInTechnicianEmail: (email: String, password: String) -> Unit
+) {
+    var techEmail by remember { mutableStateOf("") }
+    var techPassword by remember { mutableStateOf("") }
+    var showPass by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Surface(
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+            border = BorderStroke(1.dp, BlueAction),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "Technician Firebase Email Login",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Enter the Email and Password provided by Admin. First-time users will be asked to set a new password before entering the Dashboard.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        OutlinedTextField(
+            value = techEmail,
+            onValueChange = { techEmail = it; onClearError() },
+            label = { Text("Technician Email") },
+            leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .bringIntoViewOnFocus()
+                .testTag("tech_email_login_input")
+        )
+
+        OutlinedTextField(
+            value = techPassword,
+            onValueChange = { techPassword = it; onClearError() },
+            label = { Text("Password") },
+            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+            trailingIcon = {
+                IconButton(onClick = { showPass = !showPass }) {
+                    Icon(
+                        if (showPass) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        contentDescription = "Toggle password"
+                    )
+                }
+            },
+            visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = {
+                clearFocusAndHideToolbar(focusManager, textToolbar)
+                onSignInTechnicianEmail(techEmail, techPassword)
+            }),
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .bringIntoViewOnFocus()
+                .testTag("tech_password_login_input")
+        )
+
+        if (authError.isNotEmpty()) {
+            Text(
+                text = authError,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.testTag("tech_email_login_error")
+            )
+        }
+
+        Button(
+            onClick = {
+                clearFocusAndHideToolbar(focusManager, textToolbar)
+                onSignInTechnicianEmail(techEmail, techPassword)
+            },
+            enabled = !cloudBusy,
+            colors = ButtonDefaults.buttonColors(containerColor = BlueAction, contentColor = Color.White),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+                .testTag("tech_email_login_submit_button")
+        ) {
+            if (cloudBusy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    color = Color.White,
+                    strokeWidth = 2.dp
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(
+                text = if (cloudBusy) "Signing In..." else "Sign In as Technician",
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+        }
+    }
+}
+
+@Composable
+fun MandatoryPasswordChangeScreen(
+    pendingState: PendingPasswordChangeState,
+    authError: String,
+    busy: Boolean,
+    logoBase64: String = "",
+    onSubmitNewPassword: (newPassword: String, confirmPassword: String) -> Unit,
+    onSignOut: () -> Unit
+) {
+    BackHandler {
+        // Prevent bypassing mandatory first-login password update
+    }
+
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var showPass by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
+
+    val evaluation = remember(newPassword) { AuthPolicy.evaluatePassword(newPassword) }
+    val canSubmit = !busy && evaluation.isStrong && newPassword == confirmPassword
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Brush.linearGradient(listOf(NavyDeep, Color(0xFF0B5968))))
+            .safeDrawingPadding()
+            .imePadding()
+            .padding(16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            modifier = Modifier
+                .widthIn(max = 460.dp)
+                .fillMaxWidth()
+                .testTag("mandatory_password_change_screen"),
+            shape = RoundedCornerShape(22.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    TseShieldLogo(logoBase64 = logoBase64, modifier = Modifier.size(48.dp))
+                    Column {
+                        Text(
+                            text = "Change Initial Password",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Black,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = pendingState.companyName.ifBlank { "TOTAL SOLUTION ENTERPRISES" },
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TealAccent,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                    border = BorderStroke(1.dp, TealAccent),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "First-Login Security Requirement",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = NavyDeep
+                        )
+                        Text(
+                            text = "Welcome ${pendingState.name} (${pendingState.email}). Replace the Admin-assigned temporary password with your own strong password to unlock the Billing Dashboard.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = newPassword,
+                    onValueChange = { newPassword = it },
+                    label = { Text("New Strong Password") },
+                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                    trailingIcon = {
+                        IconButton(onClick = { showPass = !showPass }) {
+                            Icon(
+                                if (showPass) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = "Toggle password"
+                            )
+                        }
+                    },
+                    visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .bringIntoViewOnFocus()
+                        .testTag("first_login_new_password")
+                )
+
+                PasswordStrengthChecklist(password = newPassword)
+
+                OutlinedTextField(
+                    value = confirmPassword,
+                    onValueChange = { confirmPassword = it },
+                    label = { Text("Confirm New Password") },
+                    isError = confirmPassword.isNotEmpty() && confirmPassword != newPassword,
+                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                    visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = {
+                        if (canSubmit) {
+                            clearFocusAndHideToolbar(focusManager, textToolbar)
+                            onSubmitNewPassword(newPassword, confirmPassword)
+                        }
+                    }),
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .bringIntoViewOnFocus()
+                        .testTag("first_login_confirm_password")
+                )
+
+                if (authError.isNotEmpty()) {
+                    Text(
+                        text = authError,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.testTag("first_login_error_text")
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                        onSubmitNewPassword(newPassword, confirmPassword)
+                    },
+                    enabled = canSubmit,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = GreenPaid,
+                        contentColor = Color.White,
+                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("first_login_update_password_button")
+                ) {
+                    if (busy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(
+                        text = if (busy) "Updating Password..." else "Save New Password & Open Dashboard",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                        onSignOut()
+                    },
+                    enabled = !busy,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("first_login_signout_button")
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Sign Out", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+}
+

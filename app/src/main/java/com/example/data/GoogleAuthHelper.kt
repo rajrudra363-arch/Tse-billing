@@ -113,23 +113,33 @@ object GoogleAuthHelper {
             val cm = CredentialManager.create(credContext)
 
             val response = try {
-                val signInOption = GetSignInWithGoogleOption.Builder(webClientId)
-                    .build()
-                val req = GetCredentialRequest.Builder()
-                    .addCredentialOption(signInOption)
-                    .build()
-                cm.getCredential(credContext, req)
-            } catch (_: NoCredentialException) {
-                // Fallback for devices/accounts without GetSignInWithGoogleOption support
-                val fallbackOption = GetGoogleIdOption.Builder()
+                // Primary: Try GetGoogleIdOption (filterByAuthorizedAccounts = false)
+                // This uses the native Credential Manager bottom sheet which works reliably across all OEMs (Xiaomi/MIUI/HyperOS, Samsung, OnePlus, etc.)
+                // without launching external activities that trigger cancellation on MIUI/HyperOS task switching.
+                val googleIdOption = GetGoogleIdOption.Builder()
                     .setServerClientId(webClientId)
                     .setFilterByAuthorizedAccounts(false)
                     .setAutoSelectEnabled(false)
                     .build()
-                val fallbackReq = GetCredentialRequest.Builder()
-                    .addCredentialOption(fallbackOption)
+                val req = GetCredentialRequest.Builder()
+                    .addCredentialOption(googleIdOption)
                     .build()
-                cm.getCredential(credContext, fallbackReq)
+                cm.getCredential(credContext, req)
+            } catch (firstErr: Exception) {
+                if (firstErr is CancellationException) throw firstErr
+                Log.w(TAG, "GetGoogleIdOption failed (${firstErr::class.simpleName}: ${firstErr.message}), falling back to GetSignInWithGoogleOption", firstErr)
+                try {
+                    val signInOption = GetSignInWithGoogleOption.Builder(webClientId)
+                        .build()
+                    val fallbackReq = GetCredentialRequest.Builder()
+                        .addCredentialOption(signInOption)
+                        .build()
+                    cm.getCredential(credContext, fallbackReq)
+                } catch (secondErr: Exception) {
+                    if (secondErr is CancellationException) throw secondErr
+                    Log.e(TAG, "Both Google sign-in options failed. 1: ${firstErr.message}, 2: ${secondErr.message}", secondErr)
+                    throw secondErr
+                }
             }
 
             val user = exchangeCredential(auth, response.credential)
@@ -137,22 +147,34 @@ object GoogleAuthHelper {
             Result.success(user)
         } catch (e: CancellationException) {
             throw e
-        } catch (_: GetCredentialCancellationException) {
-            Result.failure(IllegalStateException("Google Sign-In cancelled."))
-        } catch (_: NoCredentialException) {
+        } catch (e: GetCredentialCancellationException) {
+            val msg = e.errorMessage?.toString()?.takeIf { it.isNotBlank() } ?: e.message.orEmpty()
+            Log.w(TAG, "GetCredentialCancellationException: type=${e.type}, message=$msg", e)
+            val detailedMsg = when {
+                msg.contains("16", ignoreCase = true) || msg.contains("reauth", ignoreCase = true) ->
+                    "Google account re-authentication required ([16]). Please re-verify your Google account in phone Settings."
+                msg.contains("10", ignoreCase = true) || msg.contains("developer", ignoreCase = true) ->
+                    "Google configuration mismatch (Code 10). Verify app SHA-1 fingerprint in Firebase Console."
+                msg.contains("cancelled by the user", ignoreCase = true) ->
+                    "Google Sign-In was cancelled by system/device ($msg). Please ensure Google Play Services has background permissions, or re-select account."
+                msg.isNotBlank() ->
+                    "Google Sign-In cancelled: $msg"
+                else ->
+                    "Google Sign-In cancelled."
+            }
+            Result.failure(IllegalStateException(detailedMsg))
+        } catch (e: NoCredentialException) {
             Result.failure(
                 IllegalStateException(
                     "No Google account credential found on this device. Please add a Google account in device Settings and try again."
                 )
             )
         } catch (e: GetCredentialException) {
-            Log.e(TAG, "CredentialManager error (${e.type})", e)
-            Result.failure(
-                IllegalStateException(
-                    e.errorMessage?.toString()?.takeIf { it.isNotBlank() }
-                        ?: "Google Sign-In failed (${e.type}). Check internet connection & Google Play Services."
-                )
-            )
+            Log.e(TAG, "CredentialManager error (${e.type}): ${e.message}", e)
+            val errText = e.errorMessage?.toString()?.takeIf { it.isNotBlank() }
+                ?: e.message?.takeIf { it.isNotBlank() }
+                ?: "Google Sign-In failed (${e.type}). Check internet connection & Google Play Services."
+            Result.failure(IllegalStateException(errText))
         } catch (t: Throwable) {
             Log.e(TAG, "Google Sign-In failed", t)
             Result.failure(Exception(t.message ?: "Google Sign-In failed. Ensure Google Play Services is available.", t))

@@ -36,11 +36,13 @@ import com.example.data.CustomerEntity
 import com.example.data.CustomerHelpEntity
 import com.example.data.DocumentType
 import com.example.data.ExpenseEntity
+import com.example.data.HelpCategory
 import com.example.data.InvoiceItem
 import com.example.data.InvoiceItemJson
 import com.example.data.LoginSecurityState
 import com.example.data.PaymentMode
 import com.example.data.ProductEntity
+import com.example.data.TechActivationState
 import com.example.data.TrashItemEntity
 import com.example.data.UpiSettings
 import com.example.data.UserAccountEntity
@@ -60,6 +62,7 @@ import com.example.ui.screens.AdminPanelScreen
 import com.example.ui.screens.BillScreen
 import com.example.ui.screens.CustomerHelpScreen
 import com.example.ui.screens.CustomersScreen
+import com.example.ui.screens.InvoiceSheetPreview
 import com.example.ui.screens.ProductsScreen
 import com.example.ui.screens.SavedBillsScreen
 import com.example.ui.screens.SettingsScreen
@@ -1405,7 +1408,7 @@ class ExampleRobolectricTest {
         helper.close()
 
         val migratedDb = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_7_8)
+            .addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9)
             .allowMainThreadQueries()
             .build()
         try {
@@ -1687,13 +1690,13 @@ class ExampleRobolectricTest {
         }
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToNode(hasTestTag("new_tech_name"))
-        composeTestRule.onNodeWithTag("new_tech_name").performTextInput("Rahul Tech")
+        composeTestRule.onNodeWithTag("new_tech_name").performScrollTo().performTextInput("Rahul Tech")
         composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToNode(hasTestTag("new_tech_email"))
-        composeTestRule.onNodeWithTag("new_tech_email").performTextInput("rahul.tech@example.com")
+        composeTestRule.onNodeWithTag("new_tech_email").performScrollTo().performTextInput("rahul.tech@example.com")
         composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToNode(hasTestTag("new_tech_password"))
-        composeTestRule.onNodeWithTag("new_tech_password").performTextInput("InitPass@2026")
+        composeTestRule.onNodeWithTag("new_tech_password").performScrollTo().performTextInput("InitPass@2026")
         composeTestRule.onNodeWithTag("admin_lazy_list").performScrollToNode(hasTestTag("create_cloud_technician_button"))
-        composeTestRule.onNodeWithTag("create_cloud_technician_button").performClick()
+        composeTestRule.onNodeWithTag("create_cloud_technician_button").performScrollTo().performClick()
         composeTestRule.waitForIdle()
 
         assertEquals("Rahul Tech", capturedName)
@@ -1773,23 +1776,8 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("first_login_update_password_button").performScrollTo().assertIsNotEnabled()
 
         // Strong matching password enables submit and calls callback
-        composeTestRule.onNodeWithTag("first_login_new_password").performScrollTo().performTextInput("")
-        composeTestRule.setContent {
-            TseBillingTheme {
-                MandatoryPasswordChangeScreen(
-                    pendingState = pending,
-                    authError = "",
-                    busy = false,
-                    onSubmitNewPassword = { newP, confP ->
-                        submittedNew = newP
-                        submittedConfirm = confP
-                    },
-                    onSignOut = {}
-                )
-            }
-        }
-        composeTestRule.onNodeWithTag("first_login_new_password").performScrollTo().performTextInput("StrongTech@2026")
-        composeTestRule.onNodeWithTag("first_login_confirm_password").performScrollTo().performTextInput("StrongTech@2026")
+        composeTestRule.onNodeWithTag("first_login_new_password").performScrollTo().performTextReplacement("StrongTech@2026")
+        composeTestRule.onNodeWithTag("first_login_confirm_password").performScrollTo().performTextReplacement("StrongTech@2026")
         composeTestRule.onNodeWithTag("first_login_update_password_button")
             .performScrollTo()
             .assertIsEnabled()
@@ -1826,6 +1814,281 @@ class ExampleRobolectricTest {
         vm.selectTab(MainTab.HELP)
         assertEquals(MainTab.HELP, vm.activeTab.value)
         soundEngine.release()
+    }
+
+    @Test
+    fun migration8To9_preservesCustomerHelpRowsWithNewCategoryAndQuotationColumns() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dbName = "migration_8_9_test_${System.nanoTime()}.db"
+        val callback = object : SupportSQLiteOpenHelper.Callback(8) {
+            override fun onCreate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `customer_help_requests` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `customerName` TEXT NOT NULL,
+                        `phone` TEXT NOT NULL,
+                        `address` TEXT NOT NULL,
+                        `locationUrl` TEXT NOT NULL,
+                        `helpDescription` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `acceptedBy` TEXT NOT NULL,
+                        `acceptedByName` TEXT NOT NULL,
+                        `acceptedByPhone` TEXT NOT NULL,
+                        `acceptedAt` INTEGER NOT NULL,
+                        `solvedAt` INTEGER NOT NULL,
+                        `billId` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+
+            override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+        }
+        val helper = FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(dbName)
+                .callback(callback)
+                .build()
+        )
+        val rawDb = helper.writableDatabase
+        rawDb.execSQL(
+            """
+            INSERT INTO customer_help_requests (
+                customerName, phone, address, locationUrl, helpDescription,
+                status, acceptedBy, acceptedByName, acceptedByPhone, acceptedAt,
+                solvedAt, billId, createdAt, updatedAt
+            ) VALUES (
+                'Kiran Naik', '9876543210', 'Panaji', '', 'Camera offline',
+                'OPEN', '', '', '', 0, 0, '', 1000, 1000
+            )
+            """.trimIndent()
+        )
+        AppDatabase.MIGRATION_8_9.migrate(rawDb)
+        rawDb.query("SELECT customerName, category, quotationStatus, installationDate, installationReminderSent, rejectedReason, assignedTechnician FROM customer_help_requests").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("Kiran Naik", cursor.getString(0))
+            assertEquals("REGULAR_SERVICE", cursor.getString(1))
+            assertEquals("", cursor.getString(2))
+            assertEquals("", cursor.getString(3))
+            assertEquals(0, cursor.getInt(4))
+            assertEquals("", cursor.getString(5))
+            assertEquals("", cursor.getString(6))
+        }
+        helper.close()
+        context.deleteDatabase(dbName)
+    }
+
+    @Test
+    fun stockValidation_blocksBillWhenQtyExceedsStock_andAllowsQuotation() = kotlinx.coroutines.runBlocking {
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234")
+        repo.addProduct("4K Bullet Camera", "Nos", 2500.0, "CCTV", stockQty = 3.0, minStockAlert = 1.0)
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val soundEngine = SoundEngine(context)
+        val vm = createTestVm(soundEngine)
+
+        vm.login(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234", antiRobotPassed = true)
+        val deadline = System.currentTimeMillis() + 5000L
+        while ((vm.session.value == null || vm.products.value.isEmpty()) && System.currentTimeMillis() < deadline) {
+            org.robolectric.shadows.ShadowLooper.runUiThreadTasksIncludingDelayedTasks()
+            Thread.sleep(25)
+        }
+        assertNotNull(vm.session.value)
+
+        val prod = vm.products.value.first { it.name == "4K Bullet Camera" }
+        vm.selectProductForRow(0, prod)
+        vm.updateItemFields(0, qty = 5.0)
+        vm.updateInvoiceNo("TSE-STOCK-1")
+
+        val openDay = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 14)
+            set(Calendar.MINUTE, 0)
+        }.timeInMillis
+
+        vm.openSummaryModal(openDay)
+        assertFalse(vm.billDraft.value.summaryOpen)
+        assertTrue(vm.summaryError.value.contains("Insufficient stock", ignoreCase = true))
+
+        // Switching to Quotation must allow qty > stock without deduction error
+        vm.setDocumentType(DocumentType.QUOTATION)
+        vm.openSummaryModal(openDay)
+        assertTrue(vm.billDraft.value.summaryOpen)
+        soundEngine.release()
+    }
+
+    @Test
+    fun quotationApprovalAndInstallationReminder_updatesStateAndRejectReason() = runTest {
+        repo.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, "Pass@1234")
+        val qReq = repo.saveHelpRequest(
+            customerName = "Sunil Sawant",
+            phone = "9876540001",
+            address = "Margao",
+            locationUrl = "",
+            helpDescription = "8 Camera Quotation",
+            category = HelpCategory.QUOTATION.code,
+            quotationStatus = "PENDING"
+        )
+        assertEquals("QUOTATION", qReq.category)
+        assertEquals("PENDING", qReq.quotationStatus)
+
+        val approvedRes = repo.approveQuotationWithInstallationDate(qReq.id, "2026-01-10", "tech1")
+        assertTrue(approvedRes.isSuccess)
+        val approved = approvedRes.getOrNull()!!
+        assertEquals("INSTALLATION", approved.category)
+        assertEquals("APPROVED", approved.quotationStatus)
+        assertEquals("2026-01-10", approved.installationDate)
+        assertEquals("tech1", approved.assignedTechnician)
+
+        val rejRes = repo.rejectHelpRequest(qReq.id, "tech1", isAdmin = false, reason = "Customer rescheduled")
+        assertTrue(rejRes.isSuccess)
+        assertEquals("REJECTED", rejRes.getOrNull()!!.status)
+        assertEquals("Customer rescheduled", rejRes.getOrNull()!!.rejectedReason)
+    }
+
+    @Test
+    fun billScreen_hidesCameraSignatureBox_andInvoiceSheetPreviewRendersBlankSignatureBox() {
+        val techUser = UserSession(username = "tech1", displayName = "Tech", role = "technician")
+        val draft = BillDraft(
+            invoiceNo = "TSE-SIG-01",
+            date = "2026-11-24",
+            customerName = "Signature Test",
+            items = listOf(InvoiceItem(description = "DVR", qty = 1.0, rate = 4000.0))
+        )
+        var showSheetPreview by mutableStateOf(false)
+        composeTestRule.setContent {
+            TseBillingTheme {
+                if (!showSheetPreview) {
+                    BillScreen(
+                        draft = draft,
+                        products = emptyList(),
+                        customers = emptyList(),
+                        allBills = emptyList(),
+                        company = CompanySettings(),
+                        upi = UpiSettings(),
+                        currentUser = techUser,
+                        isNightClosed = false,
+                        summaryError = "",
+                        exportOptionsPayload = null,
+                        onSetDocumentType = {},
+                        onQuotationNoteChange = {},
+                        onCustomerNameChange = {},
+                        onCustomerSelected = {},
+                        onCustomerDetailsChange = {},
+                        onCustomerLocationUrlChange = {},
+                        onInvoiceNoChange = {},
+                        onInvoiceDateChange = {},
+                        onAddItem = {},
+                        onSelectFolderForRow = { _, _ -> },
+                        onSelectProductForRow = { _, _ -> },
+                        onUpdateItem = { _, _, _, _, _ -> },
+                        onRemoveItem = {},
+                        onExtraChargeTypeChange = {},
+                        onExtraChargeAmountChange = {},
+                        onDiscountChange = {},
+                        onPaidAmountChange = {},
+                        onPaymentModeChange = {},
+                        onSignatureChanged = {},
+                        onCustomQrTextChange = {},
+                        onStaffRatingChange = {},
+                        onStaffReviewChange = {},
+                        onToggleSheetPreview = {},
+                        onResetBill = {},
+                        onOpenSummaryModal = {},
+                        onCloseSummaryModal = {},
+                        onRequestGenerateWithDeviceAuth = {},
+                        onDismissExportOptions = {},
+                        onPrintA4 = {},
+                        onSavePdf = {},
+                        onSharePdf = {},
+                        onSavePhoto = {},
+                        onSharePhoto = {}
+                    )
+                } else {
+                    InvoiceSheetPreview(
+                        draft = draft,
+                        company = CompanySettings(),
+                        upi = UpiSettings()
+                    )
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("camera_signature_box").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("bill_lazy_list").performScrollToNode(hasTestTag("blank_signature_notice"))
+        composeTestRule.onNodeWithTag("blank_signature_notice").assertIsDisplayed()
+
+        showSheetPreview = true
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Customer Signature").assertIsDisplayed()
+    }
+
+    @Test
+    fun authScreen_passkeyActivationGate_filtersUsernameToVerifiedEmail_andTopBarBellBadge() {
+        val accounts = listOf(
+            UserAccountEntity(username = AuthPolicy.CANONICAL_ADMIN_USERNAME, displayName = "Admin", role = "admin", passwordHash = "h1"),
+            UserAccountEntity(username = "rahul_tech", displayName = "Rahul", role = "technician", passwordHash = "h2"),
+            UserAccountEntity(username = "other_tech", displayName = "Other", role = "technician", passwordHash = "h3")
+        )
+        var verifiedState by mutableStateOf(TechActivationState())
+        var showTopBar by mutableStateOf(false)
+        composeTestRule.setContent {
+            TseBillingTheme {
+                if (!showTopBar) {
+                    AuthScreen(
+                        isAdminConfigured = false,
+                        accounts = accounts,
+                        authError = "",
+                        isStaffOnlyApk = true,
+                        techActivationState = verifiedState,
+                        onClearError = {},
+                        onSetupAdmin = { _, _, _, _ -> },
+                        onLogin = { _, _, _, _ -> }
+                    )
+                } else {
+                    TseTopBar(
+                        company = CompanySettings(),
+                        session = UserSession("rahul_tech", "Rahul", "technician"),
+                        voiceAndNote = VoiceAndNoteSettings(),
+                        liveTimeText = "10:00:00 AM",
+                        isNightClosed = false,
+                        soundEnabled = true,
+                        hasAvailableUpdate = false,
+                        unreadNotifications = 3,
+                        onToggleSound = {},
+                        onOpenUpdateDialog = {},
+                        onOpenNotifications = {},
+                        onLogout = {}
+                    )
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("tech_activation_email_input").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("tech_activation_passkey_input").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("verify_activation_button").performScrollTo().assertIsDisplayed()
+
+        verifiedState = TechActivationState(
+            verified = true,
+            email = "rahul@tse.in",
+            username = "rahul_tech",
+            name = "Rahul",
+            workspaceId = "ws1",
+            companyName = "TSE"
+        )
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("tech_activation_verified_badge").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("login_username_dropdown").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("login_user_option_rahul_tech").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("login_user_option_other_tech").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("login_user_option_${AuthPolicy.CANONICAL_ADMIN_USERNAME}").assertDoesNotExist()
+
+        showTopBar = true
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("notification_bell_button").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("notification_unread_badge").assertTextContains("3")
     }
 }
 

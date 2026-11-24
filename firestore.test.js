@@ -661,5 +661,137 @@ describe("TSE Billing Firestore Rules", () => {
     await assertFails(adminNotifRef.update({ title: "Edited" }));
     await assertFails(adminNotifRef.delete());
   });
+
+  test("4 help categories, quotation approval + installation date, technician installation accept/reject, and atomic runTransaction stock decrement", async () => {
+    const ownerDb = testEnv.authenticatedContext("owner_1", {
+      email: "rajrudra363@gmail.com",
+      email_verified: true
+    }).firestore(DB_ID);
+    const techDb = testEnv.authenticatedContext("tech_1", {
+      email: "tech@example.com",
+      email_verified: true
+    }).firestore(DB_ID);
+
+    await assertSucceeds(ownerDb.collection("workspaces").doc("ws_tse_1").set(validWorkspaceData("owner_1")));
+    // Reject plaintext activationPasskey on members
+    await assertFails(
+      ownerDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("tech_1").set({
+        userId: "tech_1",
+        email: "tech@example.com",
+        displayName: "Rahul Tech",
+        role: "technician",
+        inviteCode: "TSE_TECH_991122",
+        activationPasskey: "PLAINTEXT-FORBIDDEN",
+        createdAt: nowTs(),
+        updatedAt: nowTs()
+      })
+    );
+    // Allow hashed activationPasskeyHash on members
+    await assertSucceeds(
+      ownerDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("tech_1").set({
+        userId: "tech_1",
+        email: "tech@example.com",
+        displayName: "Rahul Tech",
+        role: "technician",
+        inviteCode: "TSE_TECH_991122",
+        activationPasskeyHash: "a".repeat(64),
+        createdAt: nowTs(),
+        updatedAt: nowTs()
+      })
+    );
+
+    // Seed product with stock 5
+    await assertSucceeds(
+      ownerDb.collection("workspaces").doc("ws_tse_1").collection("products").doc("p_1").set({
+        productId: "p_1",
+        name: "5MP Bullet Camera",
+        unit: "Nos",
+        defaultRate: 2100,
+        folder: "CCTV Cameras",
+        stockQty: 5,
+        minStockAlert: 1,
+        updatedAt: nowTs()
+      })
+    );
+
+    // Technician atomic runTransaction: decrement stockQty 5 -> 3 and create bill
+    await assertSucceeds(
+      techDb.runTransaction(async (tx) => {
+        const prodRef = techDb.collection("workspaces").doc("ws_tse_1").collection("products").doc("p_1");
+        const prodSnap = await tx.get(prodRef);
+        assert.equal(prodSnap.data().stockQty, 5);
+        tx.update(prodRef, { stockQty: 3, updatedAt: nowTs() });
+        const billRef = techDb.collection("workspaces").doc("ws_tse_1").collection("bills").doc("b_tx_1");
+        tx.set(billRef, validBillData("b_tx_1", "rahul_tech", "tech_1", 0));
+      })
+    );
+
+    // Technician submits Quotation Request -> Admin approves with installationDate -> Technician accepts/rejects Installation
+    const helpRefTech = techDb.collection("workspaces").doc("ws_tse_1").collection("helpRequests").doc("101");
+    const helpRefAdmin = ownerDb.collection("workspaces").doc("ws_tse_1").collection("helpRequests").doc("101");
+
+    await assertSucceeds(helpRefTech.set({
+      helpId: 101,
+      customerName: "Suresh Kamat",
+      phone: "9822001122",
+      address: "Mapusa",
+      locationUrl: "",
+      helpDescription: "4 Camera CCTV Setup Quotation",
+      category: "QUOTATION",
+      quotationStatus: "PENDING",
+      installationDate: "",
+      installationReminderSent: false,
+      rejectedReason: "",
+      assignedTechnician: "",
+      status: "OPEN",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      acceptedBy: "",
+      acceptedByUid: "",
+      acceptedByName: "",
+      acceptedByPhone: "",
+      acceptedAt: 0,
+      solvedAt: 0,
+      billId: ""
+    }));
+
+    // Technician CANNOT approve a quotation or change installationDate
+    await assertFails(helpRefTech.update({
+      quotationStatus: "APPROVED",
+      installationDate: "2026-12-01",
+      updatedAt: Date.now()
+    }));
+
+    // Admin approves Quotation and converts it to INSTALLATION with installationDate
+    await assertSucceeds(helpRefAdmin.update({
+      category: "INSTALLATION",
+      quotationStatus: "APPROVED",
+      installationDate: "2026-12-01",
+      updatedAt: Date.now()
+    }));
+
+    // Technician rejects installation with reason (allowed)
+    await assertSucceeds(helpRefTech.update({
+      status: "REJECTED",
+      rejectedReason: "Customer rescheduled site visit",
+      updatedAt: Date.now()
+    }));
+
+    // Quotation/Installation notifications work
+    await assertSucceeds(
+      ownerDb.collection("workspaces").doc("ws_tse_1").collection("notifications").doc("n_install_1").set({
+        notifId: "n_install_1",
+        category: "INSTALLATION",
+        title: "Installation Scheduled",
+        message: "Suresh Kamat scheduled for 2026-12-01",
+        targetRole: "technician",
+        targetUsername: "",
+        createdBy: "Manoj",
+        createdByUid: "owner_1",
+        createdAt: nowTs()
+      })
+    );
+  });
 });
+
 

@@ -63,9 +63,6 @@ fun InvoiceSheetPreview(
         if (upi.upiId.isNotBlank()) QrGenerator.buildUpiUri(upi.upiId, upi.payeeName, 0.0, draft.invoiceNo)
         else ""
     }
-    val signatureBmp = remember(draft.signatureBase64) {
-        InvoicePdfPrinter.decodeBase64Bitmap(draft.signatureBase64)
-    }
     val authSignatureBmp = remember(company.authorisedSignatureBase64) {
         InvoicePdfPrinter.decodeBase64Bitmap(company.authorisedSignatureBase64)
     }
@@ -471,16 +468,13 @@ fun InvoiceSheetPreview(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Bottom
                 ) {
-                    if (signatureBmp != null) {
-                        Image(
-                            bitmap = signatureBmp.asImageBitmap(),
-                            contentDescription = "Customer Signature",
-                            modifier = Modifier.height(34.dp).fillMaxWidth(),
-                            contentScale = ContentScale.Fit
-                        )
-                    } else {
-                        Spacer(Modifier.height(34.dp))
-                    }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(34.dp)
+                            .border(0.8.dp, sheetBorder)
+                    )
+                    Spacer(Modifier.height(3.dp))
                     HorizontalDivider(color = sheetBorder, thickness = 1.dp)
                     Spacer(Modifier.height(2.dp))
                     Text("Customer Signature", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color.Black, textAlign = TextAlign.Center)

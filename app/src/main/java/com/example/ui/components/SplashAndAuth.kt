@@ -125,6 +125,7 @@ import com.example.R
 import com.example.data.AuthPolicy
 import com.example.data.CloudAuthUser
 import com.example.data.LoginSecurityState
+import com.example.data.TechActivationState
 import com.example.data.UserAccountEntity
 import com.example.ui.PendingPasswordChangeState
 import com.example.ui.theme.AmberWarn
@@ -251,6 +252,9 @@ fun AuthScreen(
     hasAdminVerifyCode: Boolean = false,
     isStaffOnlyApk: Boolean = false,
     prefillInviteCode: String = "",
+    techActivationState: TechActivationState = TechActivationState(),
+    activationBusy: Boolean = false,
+    activationError: String = "",
     onClearError: () -> Unit,
     onSetupAdmin: (username: String, password: String, confirm: String, adminVerifyCode: String) -> Unit,
     onLogin: (username: String, password: String, antiRobotPassed: Boolean, adminVerifyCode: String) -> Unit,
@@ -258,6 +262,8 @@ fun AuthScreen(
     onSignInGoogle: () -> Unit = {},
     onSignInTechnicianEmail: (email: String, password: String) -> Unit = { _, _ -> },
     onJoinInviteCode: (String) -> Unit = {},
+    onVerifyTechActivation: (email: String, passkey: String) -> Unit = { _, _ -> },
+    onClearTechActivation: () -> Unit = {},
     onResetAdminPassword: (
         recoveryPassword: String,
         targetAdminUsername: String?,
@@ -336,8 +342,12 @@ fun AuthScreen(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    val effectiveAuthState: Boolean? = when {
+                        isStaffOnlyApk && techActivationState.verified -> true
+                        else -> isAdminConfigured
+                    }
                     AnimatedContent(
-                        targetState = isAdminConfigured,
+                        targetState = effectiveAuthState,
                         transitionSpec = { fadeIn(tween(240)) togetherWith fadeOut(tween(180)) },
                         label = "authMode"
                     ) { configured ->
@@ -361,12 +371,15 @@ fun AuthScreen(
                                 cloudBusy = cloudBusy,
                                 isStaffOnlyApk = isStaffOnlyApk,
                                 prefillInviteCode = prefillInviteCode,
+                                activationBusy = activationBusy,
+                                activationError = activationError,
                                 onClearError = onClearError,
                                 onSetupAdmin = onSetupAdmin,
                                 onImportBackup = onImportBackup,
                                 onSignInGoogle = onSignInGoogle,
                                 onSignInTechnicianEmail = onSignInTechnicianEmail,
-                                onJoinInviteCode = onJoinInviteCode
+                                onJoinInviteCode = onJoinInviteCode,
+                                onVerifyTechActivation = onVerifyTechActivation
                             )
 
                             true -> TechnicianAdminLoginForm(
@@ -377,11 +390,14 @@ fun AuthScreen(
                                 cloudUser = cloudUser,
                                 cloudBusy = cloudBusy,
                                 hasAdminVerifyCode = hasAdminVerifyCode,
+                                isStaffOnlyApk = isStaffOnlyApk,
+                                techActivationState = techActivationState,
                                 onClearError = onClearError,
                                 onLogin = onLogin,
                                 onSignInGoogle = onSignInGoogle,
                                 onSignInTechnicianEmail = onSignInTechnicianEmail,
                                 onJoinInviteCode = onJoinInviteCode,
+                                onClearTechActivation = onClearTechActivation,
                                 onResetAdminPassword = onResetAdminPassword
                             )
                         }
@@ -488,15 +504,26 @@ private fun FirstTimeAdminSetupForm(
     cloudBusy: Boolean,
     isStaffOnlyApk: Boolean = false,
     prefillInviteCode: String = "",
+    activationBusy: Boolean = false,
+    activationError: String = "",
     onClearError: () -> Unit,
     onSetupAdmin: (String, String, String, String) -> Unit,
     onImportBackup: (String) -> Unit,
     onSignInGoogle: () -> Unit,
     onSignInTechnicianEmail: (String, String) -> Unit,
-    onJoinInviteCode: (String) -> Unit
+    onJoinInviteCode: (String) -> Unit,
+    onVerifyTechActivation: (String, String) -> Unit = { _, _ -> }
 ) {
-    // Mode 0 = Create Admin Account, Mode 1 = Direct Login (Invite), Mode 2 = Sign In (Backup), Mode 3 = Technician Email Login
-    var setupMode by remember(isStaffOnlyApk) { mutableIntStateOf(if (isStaffOnlyApk) 1 else 0) }
+    // Mode 0 = Create Admin, 1 = Direct Login (Invite), 2 = Sign In (Backup), 3 = Technician Email Login, 4 = Passkey Activation
+    var setupMode by remember(isStaffOnlyApk, prefillInviteCode) {
+        mutableIntStateOf(
+            when {
+                isStaffOnlyApk && prefillInviteCode.isNotBlank() -> 1
+                isStaffOnlyApk -> 4
+                else -> 0
+            }
+        )
+    }
     val fixedAdminUsername = AuthPolicy.CANONICAL_ADMIN_USERNAME
     var password by remember { mutableStateOf("") }
     var confirm by remember { mutableStateOf("") }
@@ -600,6 +627,15 @@ private fun FirstTimeAdminSetupForm(
                     colors = chipColors,
                     label = { Text("Create Admin", fontWeight = FontWeight.Bold) },
                     modifier = Modifier.testTag("setup_tab_create")
+                )
+            } else {
+                FilterChip(
+                    selected = setupMode == 4,
+                    onClick = { setupMode = 4; onClearError() },
+                    colors = chipColors,
+                    leadingIcon = { Icon(Icons.Default.Key, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                    label = { Text("Passkey Activate", fontWeight = FontWeight.Bold) },
+                    modifier = Modifier.testTag("setup_tab_activation")
                 )
             }
             FilterChip(
@@ -851,6 +887,12 @@ private fun FirstTimeAdminSetupForm(
                 onSignInTechnicianEmail = onSignInTechnicianEmail
             )
 
+            4 -> TechnicianActivationPasskeySection(
+                activationBusy = activationBusy,
+                activationError = activationError,
+                onVerifyTechActivation = onVerifyTechActivation
+            )
+
             else -> {
                 Surface(
                     color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
@@ -1081,11 +1123,14 @@ private fun TechnicianAdminLoginForm(
     cloudUser: CloudAuthUser?,
     cloudBusy: Boolean,
     hasAdminVerifyCode: Boolean,
+    isStaffOnlyApk: Boolean = false,
+    techActivationState: TechActivationState = TechActivationState(),
     onClearError: () -> Unit,
     onLogin: (String, String, Boolean, String) -> Unit,
     onSignInGoogle: () -> Unit,
     onSignInTechnicianEmail: (String, String) -> Unit,
     onJoinInviteCode: (String) -> Unit,
+    onClearTechActivation: () -> Unit = {},
     onResetAdminPassword: (
         recoveryPassword: String,
         targetAdminUsername: String?,
@@ -1094,19 +1139,41 @@ private fun TechnicianAdminLoginForm(
         onResult: (Boolean, String) -> Unit
     ) -> Unit
 ) {
-    // Enforce single Admin + unique usernames in login dropdown
-    val distinctAccounts = remember(accounts) {
-        val admins = accounts.filter { it.role.equals("admin", ignoreCase = true) }
-        val nonAdmins = accounts.filter { !it.role.equals("admin", ignoreCase = true) }
-        (listOfNotNull(admins.firstOrNull()) + nonAdmins)
-            .distinctBy { it.username.lowercase() }
+    // Enforce single Admin + unique usernames in login dropdown, or strictly email-bound username when verified
+    val distinctAccounts = remember(accounts, techActivationState) {
+        if (techActivationState.verified && techActivationState.username.isNotBlank()) {
+            val matched = accounts.filter {
+                it.username.equals(techActivationState.username, ignoreCase = true)
+            }
+            matched.ifEmpty {
+                listOf(
+                    UserAccountEntity(
+                        username = techActivationState.username,
+                        displayName = techActivationState.name.ifBlank { techActivationState.username },
+                        passwordHash = "",
+                        role = "technician"
+                    )
+                )
+            }
+        } else {
+            val admins = accounts.filter { it.role.equals("admin", ignoreCase = true) }
+            val nonAdmins = accounts.filter { !it.role.equals("admin", ignoreCase = true) }
+            (listOfNotNull(admins.firstOrNull()) + nonAdmins)
+                .distinctBy { it.username.lowercase() }
+        }
     }
 
-    // Pre-select the canonical Admin (@TotalSolutionEnterprises) so any third person immediately sees @TotalSolutionEnterprises + Password prompt
-    var selectedUsername by remember(distinctAccounts) {
-        val defaultAdmin = distinctAccounts.firstOrNull { it.role.equals("admin", ignoreCase = true) }
-            ?: distinctAccounts.firstOrNull()
-        mutableStateOf(defaultAdmin?.username ?: AuthPolicy.CANONICAL_ADMIN_USERNAME)
+    var selectedUsername by remember(distinctAccounts, techActivationState) {
+        val preferred = if (techActivationState.verified && techActivationState.username.isNotBlank()) {
+            distinctAccounts.firstOrNull { it.username.equals(techActivationState.username, ignoreCase = true) }
+        } else {
+            distinctAccounts.firstOrNull { it.role.equals("admin", ignoreCase = true) }
+                ?: distinctAccounts.firstOrNull()
+        }
+        mutableStateOf(
+            preferred?.username
+                ?: techActivationState.username.ifBlank { AuthPolicy.CANONICAL_ADMIN_USERNAME }
+        )
     }
     var dropdownExpanded by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf("") }
@@ -1170,12 +1237,55 @@ private fun TechnicianAdminLoginForm(
 
     fun submitLogin() {
         clearFocusAndHideToolbar(focusManager, textToolbar)
-        onLogin(selectedUsername, password, antiRobotPassed, adminVerifyCode)
+        if (!antiRobotPassed || isLocked || selectedAccount?.passwordHash?.isNotBlank() == true) {
+            onLogin(selectedUsername, password, antiRobotPassed, adminVerifyCode)
+        } else if (techActivationState.verified && techActivationState.email.isNotBlank()) {
+            onSignInTechnicianEmail(techActivationState.email, password)
+        } else {
+            onLogin(selectedUsername, password, antiRobotPassed, adminVerifyCode)
+        }
     }
 
     var useTechEmailMode by remember { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (techActivationState.verified) {
+            Surface(
+                color = GreenPaidBg,
+                border = BorderStroke(1.dp, GreenPaid),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().testTag("tech_activation_verified_badge")
+            ) {
+                Row(
+                    modifier = Modifier.padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Authorized: ${techActivationState.email}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = GreenPaid
+                        )
+                        if (techActivationState.companyName.isNotBlank()) {
+                            Text(
+                                text = techActivationState.companyName,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    TextButton(
+                        onClick = onClearTechActivation,
+                        modifier = Modifier.testTag("clear_activation_button")
+                    ) {
+                        Text("Switch", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1189,12 +1299,14 @@ private fun TechnicianAdminLoginForm(
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
-            TextButton(onClick = { showSwitchInvite = !showSwitchInvite }) {
-                Text(
-                    text = if (cloudUser != null) "Cloud Synced" else "Google Sync",
-                    color = if (cloudUser != null) GreenPaid else TealAccent,
-                    fontWeight = FontWeight.Bold
-                )
+            if (!isStaffOnlyApk) {
+                TextButton(onClick = { showSwitchInvite = !showSwitchInvite }) {
+                    Text(
+                        text = if (cloudUser != null) "Cloud Synced" else "Google Sync",
+                        color = if (cloudUser != null) GreenPaid else TealAccent,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
 
@@ -1221,6 +1333,7 @@ private fun TechnicianAdminLoginForm(
             TechnicianEmailPasswordLoginSection(
                 authError = authError,
                 cloudBusy = cloudBusy,
+                prefillEmail = techActivationState.email,
                 onClearError = onClearError,
                 onSignInTechnicianEmail = onSignInTechnicianEmail
             )
@@ -1586,24 +1699,26 @@ private fun TechnicianAdminLoginForm(
             )
         }
 
-        TextButton(
-            onClick = {
-                clearFocusAndHideToolbar(focusManager, textToolbar)
-                onClearError()
-                recoverySuccessMsg = ""
-                showForgotDialog = true
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("forgot_password_button")
-        ) {
-            Icon(Icons.Default.LockReset, contentDescription = null, modifier = Modifier.size(18.dp), tint = TealAccent)
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = "Forgot Admin Password?",
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.primary
-            )
+        if (!isStaffOnlyApk) {
+            TextButton(
+                onClick = {
+                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                    onClearError()
+                    recoverySuccessMsg = ""
+                    showForgotDialog = true
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("forgot_password_button")
+            ) {
+                Icon(Icons.Default.LockReset, contentDescription = null, modifier = Modifier.size(18.dp), tint = TealAccent)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "Forgot Admin Password?",
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
         }
         }
     }
@@ -1791,13 +1906,119 @@ private fun ForgotAdminPasswordDialog(
 }
 
 @Composable
+private fun TechnicianActivationPasskeySection(
+    activationBusy: Boolean,
+    activationError: String,
+    onVerifyTechActivation: (email: String, passkey: String) -> Unit
+) {
+    var email by remember { mutableStateOf("") }
+    var passkey by remember { mutableStateOf("") }
+    val focusManager = LocalFocusManager.current
+    val textToolbar = LocalTextToolbar.current
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Surface(
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+            border = BorderStroke(1.dp, TealAccent),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "Technician Account Activation",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "Enter your authorized Email and Activation Passkey (TSE-XXXX-XXXX) shared by Admin to unlock Login.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = { Text("Authorized Email") },
+            leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .bringIntoViewOnFocus()
+                .testTag("tech_activation_email_input")
+        )
+
+        OutlinedTextField(
+            value = passkey,
+            onValueChange = { passkey = it },
+            label = { Text("Activation Passkey (e.g. TSE-XXXX-XXXX)") },
+            leadingIcon = { Icon(Icons.Default.Key, contentDescription = null) },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = {
+                clearFocusAndHideToolbar(focusManager, textToolbar)
+                onVerifyTechActivation(email, passkey)
+            }),
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .bringIntoViewOnFocus()
+                .testTag("tech_activation_passkey_input")
+        )
+
+        if (activationError.isNotEmpty()) {
+            Text(
+                text = activationError,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.testTag("tech_activation_error_text")
+            )
+        }
+
+        Button(
+            onClick = {
+                clearFocusAndHideToolbar(focusManager, textToolbar)
+                onVerifyTechActivation(email, passkey)
+            },
+            enabled = !activationBusy,
+            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp)
+                .testTag("verify_activation_button")
+        ) {
+            if (activationBusy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    color = Color.White,
+                    strokeWidth = 2.dp
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+            Text(
+                text = if (activationBusy) "Verifying Passkey..." else "Verify Email & Passkey",
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+        }
+    }
+}
+
+@Composable
 private fun TechnicianEmailPasswordLoginSection(
     authError: String,
     cloudBusy: Boolean,
+    prefillEmail: String = "",
     onClearError: () -> Unit,
     onSignInTechnicianEmail: (email: String, password: String) -> Unit
 ) {
-    var techEmail by remember { mutableStateOf("") }
+    var techEmail by remember(prefillEmail) { mutableStateOf(prefillEmail) }
     var techPassword by remember { mutableStateOf("") }
     var showPass by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current

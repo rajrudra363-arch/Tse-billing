@@ -205,17 +205,22 @@ service cloud.firestore {
         allow get: if isWorkspaceMember(workspaceId) || (isSignedIn() && request.auth.uid == memberUid);
         allow list: if isWorkspaceAdmin(workspaceId);
         allow create: if isSignedIn() && isValidId(memberUid) &&
+          !('password' in request.resource.data) &&
+          !('initialPassword' in request.resource.data) &&
+          !('activationPasskey' in request.resource.data) &&
           request.resource.data.keys().hasAll(['userId', 'email', 'displayName', 'role', 'inviteCode', 'createdAt', 'updatedAt']) &&
           request.resource.data.keys().hasOnly([
             'userId', 'email', 'displayName', 'name', 'username', 'phone',
             'role', 'workspaceId', 'inviteCode', 'mustChangePassword',
-            'authProvider', 'createdByUid', 'passwordChangedAt', 'createdAt', 'updatedAt'
+            'authProvider', 'activationPasskeyHash', 'activationPasskeyCreatedAt', 'activatedAt',
+            'createdByUid', 'passwordChangedAt', 'createdAt', 'updatedAt'
           ]) &&
           request.resource.data.userId == memberUid &&
           request.resource.data.email is string &&
           request.resource.data.displayName is string &&
           request.resource.data.inviteCode is string &&
           (!('mustChangePassword' in request.resource.data) || request.resource.data.mustChangePassword is bool) &&
+          (!('activationPasskeyHash' in request.resource.data) || request.resource.data.activationPasskeyHash is string) &&
           (!('workspaceId' in request.resource.data) || request.resource.data.workspaceId == workspaceId) &&
           request.resource.data.createdAt is timestamp && request.resource.data.createdAt <= request.time &&
           request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time &&
@@ -231,13 +236,17 @@ service cloud.firestore {
               )
             )
           );
-        allow update: if (
+        allow update: if !('password' in request.resource.data) &&
+          !('initialPassword' in request.resource.data) &&
+          !('activationPasskey' in request.resource.data) && (
           (
             isWorkspaceAdmin(workspaceId) &&
             request.resource.data.userId == resource.data.userId &&
             request.resource.data.createdAt == resource.data.createdAt &&
             request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'displayName', 'name', 'username', 'phone', 'email', 'role', 'mustChangePassword', 'updatedAt'
+              'displayName', 'name', 'username', 'phone', 'email', 'role',
+              'mustChangePassword', 'activationPasskeyHash', 'activationPasskeyCreatedAt',
+              'activatedAt', 'updatedAt'
             ]) &&
             request.resource.data.role in ['admin', 'technician', 'super_admin']
           ) || (
@@ -384,7 +393,7 @@ service cloud.firestore {
 
       match /helpRequests/{helpId} {
         allow get, list: if isWorkspaceMember(workspaceId);
-        allow create: if isWorkspaceAdmin(workspaceId) && isValidId(helpId) &&
+        allow create: if isValidId(helpId) &&
           request.resource.data.keys().hasAll([
             'helpId', 'customerName', 'phone', 'address', 'locationUrl',
             'helpDescription', 'status', 'createdAt', 'updatedAt',
@@ -393,18 +402,46 @@ service cloud.firestore {
           ]) &&
           request.resource.data.keys().hasOnly([
             'helpId', 'customerName', 'phone', 'address', 'locationUrl',
-            'helpDescription', 'status', 'createdAt', 'updatedAt',
+            'helpDescription', 'category', 'quotationStatus', 'installationDate',
+            'installationReminderSent', 'rejectedReason', 'assignedTechnician',
+            'status', 'createdAt', 'updatedAt',
             'acceptedBy', 'acceptedByUid', 'acceptedByName', 'acceptedByPhone',
             'acceptedAt', 'solvedAt', 'billId'
           ]) &&
-          request.resource.data.status in ['OPEN', 'ACCEPTED', 'SOLVED', 'NOT_SOLVED', 'RESOLVED'];
-        allow update: if isWorkspaceAdmin(workspaceId) || (
+          (!('category' in request.resource.data) ||
+            request.resource.data.category in ['REGULAR_SERVICE', 'EMERGENCY', 'INSTALLATION', 'QUOTATION']) &&
+          (!('quotationStatus' in request.resource.data) ||
+            request.resource.data.quotationStatus in ['', 'PENDING', 'APPROVED', 'REJECTED']) &&
+          (!('installationDate' in request.resource.data) || request.resource.data.installationDate is string) &&
+          (!('installationReminderSent' in request.resource.data) || request.resource.data.installationReminderSent is bool) &&
+          (!('rejectedReason' in request.resource.data) || request.resource.data.rejectedReason is string) &&
+          (!('assignedTechnician' in request.resource.data) || request.resource.data.assignedTechnician is string) &&
+          (
+            (
+              isWorkspaceAdmin(workspaceId) &&
+              request.resource.data.status in ['OPEN', 'ACCEPTED', 'SOLVED', 'NOT_SOLVED', 'RESOLVED', 'REJECTED']
+            ) || (
+              isTechnicianMember(workspaceId) &&
+              request.resource.data.get('category', '') == 'QUOTATION' &&
+              request.resource.data.get('quotationStatus', '') == 'PENDING' &&
+              request.resource.data.status == 'OPEN'
+            )
+          );
+        allow update: if (
+          isWorkspaceAdmin(workspaceId) &&
+          request.resource.data.status in ['OPEN', 'ACCEPTED', 'SOLVED', 'NOT_SOLVED', 'RESOLVED', 'REJECTED'] &&
+          (!('category' in request.resource.data) ||
+            request.resource.data.category in ['REGULAR_SERVICE', 'EMERGENCY', 'INSTALLATION', 'QUOTATION']) &&
+          (!('quotationStatus' in request.resource.data) ||
+            request.resource.data.quotationStatus in ['', 'PENDING', 'APPROVED', 'REJECTED'])
+        ) || (
           isTechnicianMember(workspaceId) &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'status', 'acceptedBy', 'acceptedByUid', 'acceptedByName',
-            'acceptedByPhone', 'acceptedAt', 'solvedAt', 'billId', 'updatedAt'
+            'acceptedByPhone', 'acceptedAt', 'solvedAt', 'billId', 'rejectedReason', 'updatedAt'
           ]) &&
-          request.resource.data.status in ['ACCEPTED', 'SOLVED', 'NOT_SOLVED'] &&
+          request.resource.data.status in ['ACCEPTED', 'SOLVED', 'NOT_SOLVED', 'REJECTED'] &&
+          (!('rejectedReason' in request.resource.data) || request.resource.data.rejectedReason is string) &&
           (resource.data.acceptedByUid == '' || resource.data.acceptedByUid == request.auth.uid)
         );
         allow delete: if isWorkspaceAdmin(workspaceId);
@@ -472,7 +509,7 @@ service cloud.firestore {
             'expireAt', 'restoredAt', 'restoredBy'
           ]) &&
           request.resource.data.trashId == trashId &&
-          request.resource.data.entityType in ['BILL', 'CUSTOMER', 'PRODUCT', 'EXPENSE', 'HELP_REQUEST'] &&
+          request.resource.data.entityType in ['BILL', 'CUSTOMER', 'PRODUCT', 'EXPENSE', 'HELP', 'HELP_REQUEST', 'SETTLEMENT'] &&
           request.resource.data.entityId is string && request.resource.data.entityId.size() >= 1 &&
           request.resource.data.title is string &&
           request.resource.data.summary is string &&
@@ -533,7 +570,7 @@ service cloud.firestore {
             'targetUsername', 'createdBy', 'createdByUid', 'createdAt'
           ]) &&
           request.resource.data.notifId == notifId &&
-          request.resource.data.category in ['PRODUCT', 'STOCK', 'CUSTOMER', 'BILLING', 'PAYMENT', 'SERVICE_REQUEST', 'SYSTEM'] &&
+          request.resource.data.category in ['PRODUCT', 'STOCK', 'CUSTOMER', 'BILLING', 'PAYMENT', 'SERVICE_REQUEST', 'QUOTATION', 'INSTALLATION', 'SYSTEM'] &&
           request.resource.data.title is string && request.resource.data.title.size() >= 1 && request.resource.data.title.size() <= 160 &&
           request.resource.data.message is string && request.resource.data.message.size() <= 500 &&
           request.resource.data.targetRole in ['all', 'admin', 'technician', 'super_admin'] &&

@@ -696,11 +696,9 @@ object InvoicePdfPrinter {
         canvas.drawLine(col1X, footTop, col1X, row1Bot, thinBorder)
         canvas.drawLine(col2X, footTop, col2X, row1Bot, thinBorder)
 
-        // Left: Customer Scanned Signature
-        val sigBitmap = decodeBase64Bitmap(p.signatureBase64)
-        if (sigBitmap != null) {
-            canvas.drawBitmap(sigBitmap, null, RectF(tableLeft + 14f, footTop + 8f, col1X - 14f, row1Bot - 24f), null)
-        }
+        // Left: Blank Customer Signature Box (for physical hand signing on printed copy)
+        val sigBoxRect = RectF(tableLeft + 10f, footTop + 8f, col1X - 10f, row1Bot - 22f)
+        canvas.drawRect(sigBoxRect, thinBorder)
         canvas.drawLine(tableLeft + 10f, row1Bot - 20f, col1X - 10f, row1Bot - 20f, thinBorder)
         canvas.drawText("Customer Signature", tableLeft + (col1X - tableLeft) / 2f, row1Bot - 8f, smallBold)
 

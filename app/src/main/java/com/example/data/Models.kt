@@ -135,6 +135,30 @@ data class UpiSettings(
     val fallbackQrBase64: String = ""
 )
 
+enum class HelpCategory(val code: String, val label: String) {
+    REGULAR_SERVICE("REGULAR_SERVICE", "Regular Service"),
+    EMERGENCY("EMERGENCY", "Customer Need Help (Emergency)"),
+    INSTALLATION("INSTALLATION", "Installation"),
+    QUOTATION("QUOTATION", "Quotation");
+
+    companion object {
+        fun fromString(raw: String): HelpCategory =
+            entries.firstOrNull {
+                it.code.equals(raw.trim(), ignoreCase = true) ||
+                    it.label.equals(raw.trim(), ignoreCase = true)
+            } ?: REGULAR_SERVICE
+    }
+}
+
+data class TechActivationState(
+    val verified: Boolean = false,
+    val email: String = "",
+    val username: String = "",
+    val name: String = "",
+    val workspaceId: String = "",
+    val companyName: String = ""
+)
+
 data class UserSession(
     val username: String,
     val displayName: String,

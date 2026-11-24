@@ -44,6 +44,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -54,18 +56,23 @@ import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.NightsStay
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SupportAgent
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -74,6 +81,7 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -115,8 +123,10 @@ import com.example.data.AppDatabase
 import com.example.data.BillingRepository
 import com.example.data.BillingTimePolicy
 import com.example.data.CloudSyncRepository
+import com.example.data.CloudWorkspaceNotification
 import com.example.data.CompanySettings
 import com.example.data.DocumentType
+import com.example.data.HelpCategory
 import com.example.data.UserSession
 import com.example.data.VoiceAndNoteSettings
 import com.example.ui.BillingEvent
@@ -259,6 +269,14 @@ fun TseBillingApp(viewModel: BillingViewModel) {
         val auditLogs by viewModel.auditLogs.collectAsStateWithLifecycle()
         val isStaffOnlyApk by viewModel.isStaffOnlyApk.collectAsStateWithLifecycle()
         val prefillInviteCode by viewModel.prefillInviteCode.collectAsStateWithLifecycle()
+        val notifications by viewModel.notifications.collectAsStateWithLifecycle()
+        val unreadNotificationCount by viewModel.unreadNotificationCount.collectAsStateWithLifecycle()
+        val techActivationState by viewModel.techActivationState.collectAsStateWithLifecycle()
+        val activationBusy by viewModel.activationBusy.collectAsStateWithLifecycle()
+        val activationError by viewModel.activationError.collectAsStateWithLifecycle()
+        val lastCreatedTechPasskey by viewModel.lastCreatedTechPasskey.collectAsStateWithLifecycle()
+        val dueInstallationReminders by viewModel.dueInstallationReminders.collectAsStateWithLifecycle()
+        var showNotificationCenter by remember { mutableStateOf(false) }
 
         val lifecycleOwner = LocalLifecycleOwner.current
         DisposableEffect(lifecycleOwner) {
@@ -497,7 +515,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
             }
         }
 
-        val navItems = remember(session) {
+        val navItems = remember(session, isStaffOnlyApk) {
             val s = session
             when {
                 s == null -> emptyList()
@@ -509,7 +527,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     NavItem(MainTab.PRODUCTS, "Products", Icons.Default.Inventory2),
                     NavItem(MainTab.SETTINGS, "Settings", Icons.Default.Settings)
                 )
-                s.isAdmin -> listOf(
+                s.isAdmin && !isStaffOnlyApk -> listOf(
                     NavItem(MainTab.BILL, "New Bill", Icons.Default.Receipt),
                     NavItem(MainTab.SAVED, "Saved", Icons.Default.ReceiptLong),
                     NavItem(MainTab.CUSTOMERS, "Customers", Icons.Default.People),
@@ -569,6 +587,9 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     hasAdminVerifyCode = hasAdminVerifyCode,
                     isStaffOnlyApk = isStaffOnlyApk,
                     prefillInviteCode = prefillInviteCode,
+                    techActivationState = techActivationState,
+                    activationBusy = activationBusy,
+                    activationError = activationError,
                     onClearError = viewModel::clearAuthError,
                     onSetupAdmin = viewModel::setupAdmin,
                     onLogin = { u, p, antiRobotPassed, verifyCode ->
@@ -578,6 +599,8 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     onSignInGoogle = { viewModel.signInWithGoogle(context.findFragmentActivity() ?: context) },
                     onSignInTechnicianEmail = viewModel::loginTechnicianWithEmail,
                     onJoinInviteCode = viewModel::joinWorkspaceWithInviteCode,
+                    onVerifyTechActivation = viewModel::verifyTechnicianActivation,
+                    onClearTechActivation = viewModel::clearTechActivation,
                     onResetAdminPassword = viewModel::resetAdminPassword
                 )
                 SnackbarHost(
@@ -612,8 +635,13 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                 isNightClosed = isNightClosed,
                                 soundEnabled = soundEnabled,
                                 hasAvailableUpdate = availableUpdate != null,
+                                unreadNotifications = unreadNotificationCount,
                                 onToggleSound = viewModel::toggleSound,
                                 onOpenUpdateDialog = { showUpdateDialog = true },
+                                onOpenNotifications = {
+                                    viewModel.markNotificationsRead()
+                                    showNotificationCenter = true
+                                },
                                 onLogout = {
                                     clearFocusAndHideToolbar(focusManager, textToolbar)
                                     viewModel.logout()
@@ -825,6 +853,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         accounts = accounts,
                                         company = company,
                                         user = currentSession,
+                                        dueInstallationReminders = dueInstallationReminders,
                                         onSaveHelpRequest = { id, name, phone, address, locationUrl, desc, status ->
                                             viewModel.saveHelpRequest(
                                                 id = id,
@@ -836,6 +865,23 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                                 status = status
                                             )
                                         },
+                                        onSaveHelpRequestWithCategory = { id, name, phone, address, locationUrl, desc, status, category, onDone ->
+                                            viewModel.saveHelpRequest(
+                                                id = id,
+                                                customerName = name,
+                                                phone = phone,
+                                                address = address,
+                                                locationUrl = locationUrl,
+                                                helpDescription = desc,
+                                                status = status,
+                                                category = category,
+                                                onSaved = { onDone() }
+                                            )
+                                        },
+                                        onApproveQuotation = viewModel::approveQuotationWithInstallationDate,
+                                        onRejectQuotation = viewModel::rejectQuotation,
+                                        onRejectHelpRequest = viewModel::rejectHelpRequest,
+                                        onDismissInstallationReminder = viewModel::dismissInstallationReminder,
                                         onAcceptRequest = viewModel::acceptHelpRequest,
                                         onMarkSolved = { viewModel.markHelpSolved(it) },
                                         onMarkNotSolved = { viewModel.markHelpNotSolved(it) },
@@ -862,43 +908,52 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         expenses = expenses
                                     )
 
-                                    MainTab.ADMIN -> AdminPanelScreen(
-                                        upiSettings = upi,
-                                        accounts = accounts,
-                                        technicianPerformance = technicianPerformance,
-                                        voiceAndNoteSettings = voiceAndNote,
-                                        systemVoiceOptions = viewModel.availableSystemVoices(),
-                                        cloudUser = cloudUser,
-                                        cloudWorkspaceInfo = cloudWorkspaceInfo,
-                                        cloudBusy = cloudBusy,
-                                        cloudTechBusy = cloudTechBusy,
-                                        availableUpdate = availableUpdate,
-                                        expenses = expenses,
-                                        trashItems = trashItems,
-                                        auditLogs = auditLogs,
-                                        onSaveUpi = viewModel::saveUpiSettings,
-                                        onClearUpi = viewModel::clearUpiId,
-                                        onAddTechnician = viewModel::addTechnician,
-                                        onCreateCloudTechnician = viewModel::createCloudTechnicianAccount,
-                                        onUpdateTechnician = viewModel::updateTechnician,
-                                        onRemoveTechnician = viewModel::removeTechnician,
-                                        onAddSuperAdmin = viewModel::addSuperAdmin,
-                                        onRemoveSuperAdmin = viewModel::removeSuperAdmin,
-                                        onRecordCashSettlement = viewModel::recordTechnicianCashSettlement,
-                                        onSaveVoiceAndNoteSettings = viewModel::saveVoiceAndNoteSettings,
-                                        onTestVoice = viewModel::testVoiceAnnouncement,
-                                        onSignInGoogle = { viewModel.signInWithGoogle(context.findFragmentActivity() ?: context) },
-                                        onEnsureCloudWorkspace = viewModel::ensureAdminCloudWorkspace,
-                                        onShareApkWhatsApp = { targetRole -> viewModel.shareApkViaWhatsApp(context, targetRole) },
-                                        onUpdateAdminVerifyCode = viewModel::updateAdminVerifyCode,
-                                        onUpdateAdminCredentials = viewModel::updateAdminCredentials,
-                                        onSaveExpense = { title, cat, amt, note, onDone ->
-                                            viewModel.saveExpense(title, cat, amt, note, onSuccess = onDone)
-                                        },
-                                        onDeleteExpense = viewModel::deleteExpense,
-                                        onRestoreTrash = viewModel::restoreTrashItem,
-                                        onPurgeExpiredTrash = viewModel::purgeExpiredTrashIfReady
-                                    )
+                                    MainTab.ADMIN -> if (currentSession.isAdmin && !isStaffOnlyApk) {
+                                        AdminPanelScreen(
+                                            upiSettings = upi,
+                                            accounts = accounts,
+                                            technicianPerformance = technicianPerformance,
+                                            voiceAndNoteSettings = voiceAndNote,
+                                            systemVoiceOptions = viewModel.availableSystemVoices(),
+                                            cloudUser = cloudUser,
+                                            cloudWorkspaceInfo = cloudWorkspaceInfo,
+                                            cloudBusy = cloudBusy,
+                                            cloudTechBusy = cloudTechBusy,
+                                            availableUpdate = availableUpdate,
+                                            expenses = expenses,
+                                            trashItems = trashItems,
+                                            auditLogs = auditLogs,
+                                            lastCreatedTechPasskey = lastCreatedTechPasskey,
+                                            onSaveUpi = viewModel::saveUpiSettings,
+                                            onClearUpi = viewModel::clearUpiId,
+                                            onAddTechnician = viewModel::addTechnician,
+                                            onCreateCloudTechnician = viewModel::createCloudTechnicianAccount,
+                                            onUpdateTechnician = viewModel::updateTechnician,
+                                            onRemoveTechnician = viewModel::removeTechnician,
+                                            onAddSuperAdmin = viewModel::addSuperAdmin,
+                                            onRemoveSuperAdmin = viewModel::removeSuperAdmin,
+                                            onRecordCashSettlement = viewModel::recordTechnicianCashSettlement,
+                                            onSaveVoiceAndNoteSettings = viewModel::saveVoiceAndNoteSettings,
+                                            onTestVoice = viewModel::testVoiceAnnouncement,
+                                            onSignInGoogle = { viewModel.signInWithGoogle(context.findFragmentActivity() ?: context) },
+                                            onEnsureCloudWorkspace = viewModel::ensureAdminCloudWorkspace,
+                                            onShareApkWhatsApp = { targetRole -> viewModel.shareApkViaWhatsApp(context, targetRole) },
+                                            onUpdateAdminVerifyCode = viewModel::updateAdminVerifyCode,
+                                            onUpdateAdminCredentials = viewModel::updateAdminCredentials,
+                                            onSaveExpense = { title, cat, amt, note, onDone ->
+                                                viewModel.saveExpense(title, cat, amt, note, onSuccess = onDone)
+                                            },
+                                            onDeleteExpense = viewModel::deleteExpense,
+                                            onRestoreTrash = viewModel::restoreTrashItem,
+                                            onPurgeExpiredTrash = viewModel::purgeExpiredTrashIfReady,
+                                            onDismissCreatedTechPasskey = viewModel::dismissCreatedTechPasskey,
+                                            onSendTeamNotification = viewModel::sendCustomNotification
+                                        )
+                                    } else {
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            Text("Admin access required", style = MaterialTheme.typography.titleMedium)
+                                        }
+                                    }
 
                                     MainTab.SETTINGS -> SettingsScreen(
                                         settings = company,
@@ -1007,6 +1062,17 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                 )
             }
 
+            if (showNotificationCenter && session != null) {
+                NotificationCenterDialog(
+                    notifications = notifications,
+                    currentUser = session!!,
+                    onSendNotification = { category, title, message, targetRole, onDone ->
+                        viewModel.sendCustomNotification(category, title, message, targetRole, onDone)
+                    },
+                    onDismiss = { showNotificationCenter = false }
+                )
+            }
+
             // Non-blocking Animated Splash Overlay
             AnimatedVisibility(
                 visible = splashVisible,
@@ -1022,9 +1088,134 @@ fun TseBillingApp(viewModel: BillingViewModel) {
     }
 }
 
+@Composable
+private fun NotificationCenterDialog(
+    notifications: List<CloudWorkspaceNotification>,
+    currentUser: UserSession,
+    onSendNotification: (category: String, title: String, message: String, targetRole: String, onDone: () -> Unit) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var msgTitle by remember { mutableStateOf("") }
+    var msgBody by remember { mutableStateOf("") }
+    val fmt = remember { SimpleDateFormat("dd MMM, hh:mm a", Locale.getDefault()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.testTag("notification_center_dialog"),
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Notifications, contentDescription = null, tint = TealAccent)
+                Text("Team Notifications (${notifications.size})", fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = if (currentUser.isAdmin) "Send Team Alert" else "Send Message to Admin",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        OutlinedTextField(
+                            value = msgTitle,
+                            onValueChange = { msgTitle = it },
+                            label = { Text("Title") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth().testTag("notif_center_title_input")
+                        )
+                        OutlinedTextField(
+                            value = msgBody,
+                            onValueChange = { msgBody = it },
+                            label = { Text("Message") },
+                            minLines = 2,
+                            modifier = Modifier.fillMaxWidth().testTag("notif_center_message_input")
+                        )
+                        Button(
+                            onClick = {
+                                val targetRole = if (currentUser.isAdmin) "all" else "admin"
+                                onSendNotification("GENERAL", msgTitle, msgBody, targetRole) {
+                                    msgTitle = ""
+                                    msgBody = ""
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
+                            modifier = Modifier.fillMaxWidth().height(48.dp).testTag("send_notif_dialog_button")
+                        ) {
+                            Icon(Icons.Default.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Send", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+
+                if (notifications.isEmpty()) {
+                    Text(
+                        text = "No notifications yet. Product, Stock, Bill, Payment, Service & Quotation alerts appear here in real time.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(260.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(notifications, key = { it.id }) { notif ->
+                            Surface(
+                                color = MaterialTheme.colorScheme.surface,
+                                shape = RoundedCornerShape(10.dp),
+                                tonalElevation = 1.dp,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = notif.category,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Black,
+                                            color = TealAccent
+                                        )
+                                        Text(
+                                            text = fmt.format(Date(notif.createdAt)),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Text(notif.title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                                    Text(notif.message, style = MaterialTheme.typography.bodySmall)
+                                    if (notif.createdBy.isNotBlank()) {
+                                        Text(
+                                            text = "By ${notif.createdBy}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TseTopBar(
+fun TseTopBar(
     company: CompanySettings,
     session: UserSession,
     voiceAndNote: VoiceAndNoteSettings,
@@ -1032,8 +1223,10 @@ private fun TseTopBar(
     isNightClosed: Boolean,
     soundEnabled: Boolean,
     hasAvailableUpdate: Boolean,
+    unreadNotifications: Int = 0,
     onToggleSound: () -> Unit,
     onOpenUpdateDialog: () -> Unit,
+    onOpenNotifications: () -> Unit = {},
     onLogout: () -> Unit
 ) {
     Column(
@@ -1101,6 +1294,27 @@ private fun TseTopBar(
                             imageVector = Icons.Default.SystemUpdate,
                             contentDescription = "Update available",
                             tint = AmberWarn
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onOpenNotifications,
+                    modifier = Modifier.size(48.dp).testTag("notification_bell_button")
+                ) {
+                    BadgedBox(
+                        badge = {
+                            if (unreadNotifications > 0) {
+                                Badge(modifier = Modifier.testTag("notification_unread_badge")) {
+                                    Text(if (unreadNotifications > 99) "99+" else unreadNotifications.toString())
+                                }
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Notifications,
+                            contentDescription = "Open team notifications",
+                            tint = GoldSoft
                         )
                     }
                 }

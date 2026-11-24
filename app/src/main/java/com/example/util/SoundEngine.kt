@@ -21,7 +21,8 @@ enum class SoundCue {
     ADD,
     SAVE,
     DELETE,
-    ERROR
+    ERROR,
+    NOTIFICATION
 }
 
 class SoundEngine(context: Context) {
@@ -121,6 +122,10 @@ class SoundEngine(context: Context) {
                 SoundCue.ERROR -> {
                     playTone(230.0, 110, 0.28)
                     playTone(175.0, 140, 0.28)
+                }
+                SoundCue.NOTIFICATION -> {
+                    playTone(880.0, 80, 0.25)
+                    playTone(1174.66, 120, 0.28)
                 }
             }
         }

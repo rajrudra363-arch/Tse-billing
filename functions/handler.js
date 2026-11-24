@@ -1,7 +1,11 @@
 "use strict";
 
+const crypto = require("node:crypto");
+
 const DATABASE_ID = "ai-studio-android-tsebilli-812e5e23-5be6-4359-ba54-48c3c2747cb2";
 const PRIMARY_ADMIN_EMAIL = "rajrudra363@gmail.com";
+const PASSKEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const TRASH_RETENTION_MS = 24 * 60 * 60 * 1000;
 
 function isValidEmail(email) {
   if (typeof email !== "string") return false;
@@ -52,6 +56,31 @@ function isValidFirestoreId(id) {
   return typeof id === "string" && id.length >= 1 && id.length <= 128 && !/[\/\\]/.test(id);
 }
 
+function generateActivationPasskey() {
+  const bytes = crypto.randomBytes(8);
+  let chars = "";
+  for (let i = 0; i < 8; i++) {
+    chars += PASSKEY_ALPHABET[bytes[i] % PASSKEY_ALPHABET.length];
+  }
+  return `TSE-${chars.slice(0, 4)}-${chars.slice(4, 8)}`;
+}
+
+function normalizePasskey(raw) {
+  return String(raw || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function hashActivationPasskey(raw) {
+  const normalized = normalizePasskey(raw);
+  if (!normalized) return "";
+  return crypto.createHash("sha256").update(normalized).digest("hex");
+}
+
+function timingSafeHashEqual(hexA, hexB) {
+  if (typeof hexA !== "string" || typeof hexB !== "string") return false;
+  if (hexA.length !== hexB.length || hexA.length === 0) return false;
+  return crypto.timingSafeEqual(Buffer.from(hexA, "utf8"), Buffer.from(hexB, "utf8"));
+}
+
 /**
  * Verifies that the caller is an authenticated, authorized Admin of the target workspace
  * and never a technician or super_admin.
@@ -79,7 +108,7 @@ async function assertAuthorizedWorkspaceAdmin({ authCtx, db, workspaceId, HttpsE
   const memberRole = memberSnap.exists ? String((memberSnap.data() || {}).role || "").toLowerCase() : "";
 
   if (memberRole === "technician" || memberRole === "super_admin") {
-    throw new HttpsError("permission-denied", "Technicians and Super Admins cannot create accounts.");
+    throw new HttpsError("permission-denied", "Technicians and Super Admins cannot perform Admin operations.");
   }
 
   const adminMarkerSnap = await db.collection("admins").doc(callerUid).get();
@@ -89,7 +118,7 @@ async function assertAuthorizedWorkspaceAdmin({ authCtx, db, workspaceId, HttpsE
   const isAdminMember = memberRole === "admin";
 
   if (!isOwner && !isPrimaryAdminEmail && !isAdminMarker && !isAdminMember) {
-    throw new HttpsError("permission-denied", "Only a verified workspace Admin can create technicians.");
+    throw new HttpsError("permission-denied", "Only a verified workspace Admin can perform this operation.");
   }
 
   return { wsRef, wsData, callerUid, callerEmail };
@@ -97,7 +126,8 @@ async function assertAuthorizedWorkspaceAdmin({ authCtx, db, workspaceId, HttpsE
 
 /**
  * Pure dependency-injected callable handler for creating a Technician Firebase Auth
- * account via Admin SDK and recording non-secret metadata in Cloud Firestore.
+ * account via Admin SDK, issuing a one-time Activation Passkey (only SHA-256 hash saved),
+ * and recording non-secret metadata in Cloud Firestore.
  */
 async function createTechnicianAccountHandler(request, deps) {
   const { auth, db, FieldValue, HttpsError } = deps;
@@ -109,7 +139,6 @@ async function createTechnicianAccountHandler(request, deps) {
   const initialPassword = typeof data.initialPassword === "string" ? data.initialPassword : "";
   const phone = typeof data.phone === "string" ? data.phone.trim().slice(0, 32) : "";
 
-  // Reject any attempt to escalate role through payload tampering.
   if (data.role !== undefined && String(data.role).trim().toLowerCase() !== "technician") {
     throw new HttpsError(
       "permission-denied",
@@ -151,6 +180,9 @@ async function createTechnicianAccountHandler(request, deps) {
     username = `${username.slice(0, 24)}_${suffix}`;
   }
 
+  const activationPasskey = generateActivationPasskey();
+  const activationPasskeyHash = hashActivationPasskey(activationPasskey);
+
   let userRecord;
   try {
     userRecord = await auth.createUser({
@@ -176,7 +208,6 @@ async function createTechnicianAccountHandler(request, deps) {
 
   const techUid = userRecord.uid;
   try {
-    // Enforce technician-only custom claims on Firebase Auth token (defense in depth).
     if (typeof auth.setCustomUserClaims === "function") {
       await auth.setCustomUserClaims(techUid, {
         role: "technician",
@@ -187,14 +218,12 @@ async function createTechnicianAccountHandler(request, deps) {
     const nowTs = FieldValue.serverTimestamp();
     const batch = db.batch();
 
-    // Update workspace memberUids so Technician discovers workspace immediately after login.
     batch.update(wsRef, {
       memberUids: FieldValue.arrayUnion(techUid),
       updatedAt: nowTs
     });
 
-    // Save non-secret member record in /workspaces/{workspaceId}/members/{techUid}.
-    // NEVER store any password or password hash derived from initialPassword.
+    // Never store plaintext password or plaintext activation passkey in Firestore.
     batch.set(wsRef.collection("members").doc(techUid), {
       userId: techUid,
       email,
@@ -207,13 +236,14 @@ async function createTechnicianAccountHandler(request, deps) {
       inviteCode: String(wsData.techShareCode || ""),
       mustChangePassword: true,
       authProvider: "password",
+      activationPasskeyHash,
+      activationPasskeyCreatedAt: nowTs,
+      activatedAt: null,
       createdByUid: callerUid,
       createdAt: nowTs,
       updatedAt: nowTs
     });
 
-    // Sync lightweight account profile into accounts/{username} for technician folders & dropdowns.
-    // passwordHash holds a static non-secret sentinel marker satisfying existing >= 16-char rules.
     batch.set(accountsCol.doc(username), {
       username,
       displayName: name,
@@ -226,7 +256,6 @@ async function createTechnicianAccountHandler(request, deps) {
 
     await batch.commit();
   } catch (dbErr) {
-    // Roll back Auth user cleanly if Firestore persistence fails so no orphan Auth account remains.
     try {
       await auth.deleteUser(techUid);
     } catch (_) {
@@ -242,7 +271,155 @@ async function createTechnicianAccountHandler(request, deps) {
     username,
     role: "technician",
     workspaceId,
-    mustChangePassword: true
+    mustChangePassword: true,
+    activationPasskey
+  };
+}
+
+/**
+ * Verifies a Technician's authorized email + Admin-issued Activation Passkey on first launch
+ * before showing Login screen, returning ONLY the username/workspace bound to that exact email.
+ */
+async function verifyTechnicianActivationHandler(request, deps) {
+  const { auth, db, FieldValue, HttpsError } = deps;
+  const data = (request && request.data) || {};
+
+  const email = typeof data.email === "string" ? data.email.trim().toLowerCase() : "";
+  const activationPasskey = typeof data.activationPasskey === "string" ? data.activationPasskey : "";
+  const workspaceIdHint = typeof data.workspaceId === "string" ? data.workspaceId.trim() : "";
+
+  if (!isValidEmail(email)) {
+    throw new HttpsError("invalid-argument", "Enter a valid authorized Technician email.");
+  }
+  if (email === PRIMARY_ADMIN_EMAIL) {
+    throw new HttpsError("permission-denied", "Admin accounts cannot use Technician Passkey activation.");
+  }
+  const suppliedHash = hashActivationPasskey(activationPasskey);
+  if (suppliedHash.length < 16) {
+    throw new HttpsError("invalid-argument", "Enter the valid Activation Passkey provided by Admin.");
+  }
+
+  let userRecord;
+  try {
+    userRecord = await auth.getUserByEmail(email);
+  } catch (err) {
+    throw new HttpsError(
+      "permission-denied",
+      "Email is not authorized or Activation Passkey is incorrect."
+    );
+  }
+
+  const techUid = userRecord.uid;
+  let wsSnap = null;
+  if (workspaceIdHint && isValidFirestoreId(workspaceIdHint)) {
+    const candidate = await db.collection("workspaces").doc(workspaceIdHint).get();
+    if (candidate.exists) wsSnap = candidate;
+  }
+  if (!wsSnap) {
+    const wsQuery = await db.collection("workspaces")
+      .where("memberUids", "array-contains", techUid)
+      .limit(1)
+      .get();
+    wsSnap = (wsQuery.docs && wsQuery.docs[0]) || null;
+  }
+
+  if (!wsSnap || !wsSnap.exists) {
+    throw new HttpsError(
+      "permission-denied",
+      "No active workspace is assigned to this email."
+    );
+  }
+
+  const wsId = wsSnap.id || (wsSnap.data() || {}).workspaceId;
+  const wsData = wsSnap.data() || {};
+  const memberRef = db.collection("workspaces").doc(wsId).collection("members").doc(techUid);
+  const memberSnap = await memberRef.get();
+  if (!memberSnap.exists) {
+    throw new HttpsError("permission-denied", "Technician membership record not found.");
+  }
+
+  const memberData = memberSnap.data() || {};
+  if (String(memberData.role || "").toLowerCase() !== "technician") {
+    throw new HttpsError("permission-denied", "Activation Passkey verification is restricted to Technician accounts.");
+  }
+
+  const storedHash = String(memberData.activationPasskeyHash || "");
+  if (!timingSafeHashEqual(storedHash, suppliedHash)) {
+    throw new HttpsError(
+      "permission-denied",
+      "Email is not authorized or Activation Passkey is incorrect."
+    );
+  }
+
+  if (!memberData.activatedAt) {
+    const nowTs = FieldValue.serverTimestamp();
+    await memberRef.update({
+      activatedAt: nowTs,
+      updatedAt: nowTs
+    });
+  }
+
+  const name = String(memberData.name || memberData.displayName || "Technician");
+  const username = String(memberData.username || deriveSafeUsername("", email, name));
+
+  return {
+    valid: true,
+    workspaceId: wsId,
+    email,
+    username,
+    name,
+    companyName: String(wsData.companyName || "TOTAL SOLUTION ENTERPRISES"),
+    mustChangePassword: Boolean(memberData.mustChangePassword)
+  };
+}
+
+/**
+ * Lets an authorized Admin regenerate a fresh Activation Passkey for an existing Technician.
+ */
+async function regenerateTechnicianPasskeyHandler(request, deps) {
+  const { db, FieldValue, HttpsError } = deps;
+  const data = (request && request.data) || {};
+
+  const workspaceId = typeof data.workspaceId === "string" ? data.workspaceId.trim() : "";
+  const technicianUid = typeof data.technicianUid === "string" ? data.technicianUid.trim() : "";
+
+  if (!isValidFirestoreId(technicianUid)) {
+    throw new HttpsError("invalid-argument", "Invalid technicianUid.");
+  }
+
+  const { wsRef } = await assertAuthorizedWorkspaceAdmin({
+    authCtx: request.auth,
+    db,
+    workspaceId,
+    HttpsError
+  });
+
+  const memberRef = wsRef.collection("members").doc(technicianUid);
+  const memberSnap = await memberRef.get();
+  if (!memberSnap.exists) {
+    throw new HttpsError("not-found", "Technician member record not found.");
+  }
+  const memberData = memberSnap.data() || {};
+  if (String(memberData.role || "").toLowerCase() !== "technician") {
+    throw new HttpsError("permission-denied", "Activation Passkeys can only be regenerated for Technicians.");
+  }
+
+  const activationPasskey = generateActivationPasskey();
+  const activationPasskeyHash = hashActivationPasskey(activationPasskey);
+  const nowTs = FieldValue.serverTimestamp();
+
+  await memberRef.update({
+    activationPasskeyHash,
+    activationPasskeyCreatedAt: nowTs,
+    activatedAt: null,
+    updatedAt: nowTs
+  });
+
+  return {
+    technicianUid,
+    email: String(memberData.email || ""),
+    username: String(memberData.username || ""),
+    activationPasskey
   };
 }
 
@@ -283,12 +460,116 @@ async function completeTechnicianPasswordChangeHandler(request, deps) {
   };
 }
 
+function toEpochMillis(val) {
+  if (val == null) return 0;
+  if (typeof val === "number" && Number.isFinite(val)) return val;
+  if (typeof val.toMillis === "function") return val.toMillis();
+  if (val instanceof Date) return val.getTime();
+  return 0;
+}
+
+/**
+ * Server-authoritative 24-hour trash expiration purge using Firestore server clock.
+ */
+async function purgeWorkspaceExpiredTrash(db, Timestamp, wsId) {
+  const nowTs = Timestamp.now();
+  const serverNowMillis = nowTs.toMillis();
+  const wsRef = db.collection("workspaces").doc(wsId);
+  const trashSnap = await wsRef.collection("trash").where("status", "==", "TRASHED").get();
+  const docs = trashSnap.docs || [];
+
+  const expiredDocs = [];
+  for (const docSnap of docs) {
+    const item = docSnap.data() || {};
+    const deletedMillis = toEpochMillis(item.deletedAt) || Number(item.deletedAtMillis || 0);
+    const expireMillis = toEpochMillis(item.expireAt) || (deletedMillis > 0 ? deletedMillis + TRASH_RETENTION_MS : 0);
+    const expiredByExpireAt = expireMillis > 0 && serverNowMillis >= expireMillis;
+    const expiredByDeletedAt = deletedMillis > 0 && (serverNowMillis - deletedMillis) >= TRASH_RETENTION_MS;
+    if (expiredByExpireAt || expiredByDeletedAt) {
+      expiredDocs.push({ docSnap, item });
+    }
+  }
+
+  if (expiredDocs.length === 0) {
+    return { purgedCount: 0, serverTimeMillis: serverNowMillis };
+  }
+
+  const batch = db.batch();
+  for (let i = 0; i < expiredDocs.length; i++) {
+    const { docSnap, item } = expiredDocs[i];
+    batch.delete(docSnap.ref);
+    const logId = `log_purge_${serverNowMillis}_${i}`;
+    batch.set(wsRef.collection("auditLogs").doc(logId), {
+      logId,
+      action: "AUTO_PURGE_24H",
+      entityType: String(item.entityType || "RECORD"),
+      entityId: String(item.entityId || docSnap.id),
+      title: String(item.title || "Expired Record"),
+      actorUsername: "ServerScheduler",
+      actorRole: "system",
+      details: "Permanently purged on server after 24h retention window",
+      createdAt: serverNowMillis,
+      serverCreatedAt: nowTs
+    });
+  }
+  await batch.commit();
+
+  return { purgedCount: expiredDocs.length, serverTimeMillis: serverNowMillis };
+}
+
+async function purgeExpiredTrashCallableHandler(request, deps) {
+  const { db, Timestamp, HttpsError } = deps;
+  const data = (request && request.data) || {};
+  const workspaceId = typeof data.workspaceId === "string" ? data.workspaceId.trim() : "";
+
+  await assertAuthorizedWorkspaceAdmin({
+    authCtx: request.auth,
+    db,
+    workspaceId,
+    HttpsError
+  });
+
+  const { purgedCount, serverTimeMillis } = await purgeWorkspaceExpiredTrash(db, Timestamp, workspaceId);
+  return { workspaceId, purgedCount, serverTimeMillis };
+}
+
+async function scheduledPurgeExpiredTrashHandler(deps) {
+  const { db, Timestamp } = deps;
+  const wsSnap = await db.collection("workspaces").get();
+  const docs = wsSnap.docs || [];
+  let totalPurged = 0;
+  let lastServerTime = Timestamp.now().toMillis();
+
+  for (const wsDoc of docs) {
+    const wsId = wsDoc.id || (wsDoc.data() || {}).workspaceId;
+    if (!wsId) continue;
+    const res = await purgeWorkspaceExpiredTrash(db, Timestamp, wsId);
+    totalPurged += res.purgedCount;
+    lastServerTime = res.serverTimeMillis;
+  }
+
+  return {
+    workspacesChecked: docs.length,
+    purgedCount: totalPurged,
+    serverTimeMillis: lastServerTime
+  };
+}
+
 module.exports = {
   DATABASE_ID,
   PRIMARY_ADMIN_EMAIL,
+  TRASH_RETENTION_MS,
   isValidEmail,
   validateStrongPassword,
   deriveSafeUsername,
+  generateActivationPasskey,
+  normalizePasskey,
+  hashActivationPasskey,
   createTechnicianAccountHandler,
-  completeTechnicianPasswordChangeHandler
+  verifyTechnicianActivationHandler,
+  regenerateTechnicianPasskeyHandler,
+  completeTechnicianPasswordChangeHandler,
+  purgeWorkspaceExpiredTrash,
+  purgeExpiredTrashCallableHandler,
+  scheduledPurgeExpiredTrashHandler
 };

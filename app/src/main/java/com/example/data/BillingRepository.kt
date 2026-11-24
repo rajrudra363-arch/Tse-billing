@@ -263,6 +263,42 @@ class BillingRepository(
         )
     }
 
+    val techActivationState: Flow<TechActivationState> = configMap.map { m ->
+        val email = m[KEY_TECH_VERIFIED_EMAIL].orEmpty().trim().lowercase(Locale.US)
+        TechActivationState(
+            verified = email.isNotBlank() && m[KEY_TECH_VERIFIED_USERNAME].orEmpty().isNotBlank(),
+            email = email,
+            username = m[KEY_TECH_VERIFIED_USERNAME].orEmpty().trim(),
+            name = m[KEY_TECH_VERIFIED_NAME].orEmpty().trim(),
+            workspaceId = m[KEY_TECH_VERIFIED_WORKSPACE_ID].orEmpty().trim(),
+            companyName = m[KEY_TECH_VERIFIED_COMPANY].orEmpty().trim()
+        )
+    }
+
+    suspend fun saveTechActivationState(state: TechActivationState) {
+        configDao.setAll(
+            listOf(
+                AppConfigEntity(KEY_TECH_VERIFIED_EMAIL, state.email.trim().lowercase(Locale.US)),
+                AppConfigEntity(KEY_TECH_VERIFIED_USERNAME, state.username.trim()),
+                AppConfigEntity(KEY_TECH_VERIFIED_NAME, state.name.trim()),
+                AppConfigEntity(KEY_TECH_VERIFIED_WORKSPACE_ID, state.workspaceId.trim()),
+                AppConfigEntity(KEY_TECH_VERIFIED_COMPANY, state.companyName.trim())
+            )
+        )
+    }
+
+    suspend fun clearTechActivationState() {
+        configDao.setAll(
+            listOf(
+                AppConfigEntity(KEY_TECH_VERIFIED_EMAIL, ""),
+                AppConfigEntity(KEY_TECH_VERIFIED_USERNAME, ""),
+                AppConfigEntity(KEY_TECH_VERIFIED_NAME, ""),
+                AppConfigEntity(KEY_TECH_VERIFIED_WORKSPACE_ID, ""),
+                AppConfigEntity(KEY_TECH_VERIFIED_COMPANY, "")
+            )
+        )
+    }
+
     private fun normalizeAccountList(raw: List<UserAccountEntity>): List<UserAccountEntity> {
         var adminSeen = false
         return buildList {
@@ -761,8 +797,82 @@ class BillingRepository(
         return Result.success(Unit)
     }
 
-    suspend fun saveBill(bill: BillEntity, customerLocationUrl: String = "") {
+    private fun formatStockValue(qty: Double): String =
+        if (qty % 1.0 == 0.0) qty.toInt().toString() else String.format(Locale.US, "%.2f", qty)
+
+    suspend fun validateStockForBill(
+        items: List<InvoiceItem>,
+        existingBillId: String,
+        docType: DocumentType
+    ): Result<Map<String, Double>> {
+        if (docType != DocumentType.BILL) {
+            return Result.success(emptyMap())
+        }
+        val requestedByName = linkedMapOf<String, Double>()
+        items.forEach { item ->
+            val key = item.description.trim().lowercase(Locale.ROOT)
+            if (key.isNotEmpty() && item.qty > 0.0) {
+                requestedByName[key] = (requestedByName[key] ?: 0.0) + item.qty
+            }
+        }
+        val existingBill = if (existingBillId.isBlank()) {
+            null
+        } else if (_volatileCloudActive.value) {
+            _volatileBills.value.firstOrNull { it.id == existingBillId }
+        } else {
+            billDao.findById(existingBillId)
+        }
+        val oldByName = billedQtyByProductName(existingBill)
+        val allKeys = requestedByName.keys + oldByName.keys
+        if (allKeys.isEmpty()) {
+            return Result.success(emptyMap())
+        }
+
+        val currentProducts = if (_volatileCloudActive.value) {
+            _volatileProducts.value
+        } else {
+            productDao.getAll()
+        }
+        val byLowerName = currentProducts.associateBy { it.name.trim().lowercase(Locale.ROOT) }
+        val docDeltas = linkedMapOf<String, Double>()
+
+        for (key in allKeys) {
+            val product = byLowerName[key] ?: continue
+            val tracked = if (_volatileCloudActive.value) {
+                product.stockQty > 0.0 || product.minStockAlert > 0.0
+            } else {
+                isStockTrackedFor(product)
+            }
+            if (!tracked) continue
+
+            val newQty = requestedByName[key] ?: 0.0
+            val oldQty = oldByName[key] ?: 0.0
+            val deltaNeeded = newQty - oldQty
+            if (deltaNeeded > 1e-6 && product.stockQty + 1e-6 < deltaNeeded) {
+                val effectiveAvail = product.stockQty + oldQty
+                return Result.failure(
+                    IllegalStateException(
+                        "Insufficient stock for ${product.name}! Available: ${formatStockValue(effectiveAvail)} ${product.unit}"
+                    )
+                )
+            }
+            if (product.id > 0L && kotlin.math.abs(deltaNeeded) > 1e-6) {
+                docDeltas["p_${product.id}"] = deltaNeeded
+            }
+        }
+        return Result.success(docDeltas)
+    }
+
+    suspend fun saveBill(bill: BillEntity, customerLocationUrl: String = ""): Result<Unit> {
         val wsId = getActiveWorkspaceId()
+        val docType = DocumentType.fromString(bill.documentType)
+        val parsedItems = InvoiceItemJson.fromJson(bill.itemsJson)
+        val stockValidation = validateStockForBill(parsedItems, bill.id, docType)
+        if (stockValidation.isFailure) {
+            return Result.failure(stockValidation.exceptionOrNull()!!)
+        }
+        val docDeltas = stockValidation.getOrDefault(emptyMap())
+
         if (_volatileCloudActive.value) {
             // Technician / non-Admin cloud device: NEVER write company/customer/bill data to Room SQLite!
             val existing = _volatileBills.value.firstOrNull { it.id == bill.id }
@@ -771,10 +881,15 @@ class BillingRepository(
             } else {
                 bill
             }
-            adjustVolatileStockForBillChange(existing, safeBill, wsId)
-            if (wsId.isNotBlank()) {
+            if (wsId.isNotBlank() && cloudSync != null && docType == DocumentType.BILL && docDeltas.isNotEmpty()) {
+                val txRes = cloudSync.commitBillWithAtomicStockTransaction(wsId, safeBill, docDeltas)
+                if (txRes.isFailure) {
+                    return txRes
+                }
+            } else if (wsId.isNotBlank()) {
                 cloudSync?.pushBill(wsId, safeBill)
             }
+            adjustVolatileStockForBillChange(existing, safeBill, wsId, pushToCloud = docDeltas.isEmpty())
             _volatileBills.value = (listOf(safeBill) + _volatileBills.value.filterNot { it.id == safeBill.id })
                 .sortedByDescending { it.updatedAt }
 
@@ -812,7 +927,7 @@ class BillingRepository(
             if (safeBill.helpRequestId > 0L) {
                 linkBillToHelpRequest(safeBill.helpRequestId, safeBill.id)
             }
-            return
+            return Result.success(Unit)
         }
 
         val existing = billDao.findById(bill.id)
@@ -824,9 +939,17 @@ class BillingRepository(
         } else {
             bill
         }
+        var atomicCloudDone = false
+        if (wsId.isNotBlank() && cloudSync != null && docType == DocumentType.BILL && docDeltas.isNotEmpty()) {
+            val txRes = cloudSync.commitBillWithAtomicStockTransaction(wsId, safeBill, docDeltas)
+            if (txRes.isFailure) {
+                return txRes
+            }
+            atomicCloudDone = true
+        }
         val modifiedProducts = adjustLocalStockForBillChange(existing, safeBill)
         billDao.upsert(safeBill)
-        if (wsId.isNotBlank()) {
+        if (wsId.isNotBlank() && !atomicCloudDone) {
             cloudSync?.pushBill(wsId, safeBill)
             modifiedProducts.forEach { cloudSync?.pushProduct(wsId, it) }
         }
@@ -862,6 +985,7 @@ class BillingRepository(
         if (safeBill.helpRequestId > 0L) {
             linkBillToHelpRequest(safeBill.helpRequestId, safeBill.id)
         }
+        return Result.success(Unit)
     }
 
     private fun billedQtyByProductName(bill: BillEntity?): Map<String, Double> {
@@ -915,7 +1039,12 @@ class BillingRepository(
         return updatedList
     }
 
-    private suspend fun adjustVolatileStockForBillChange(oldBill: BillEntity?, newBill: BillEntity?, wsId: String) {
+    private suspend fun adjustVolatileStockForBillChange(
+        oldBill: BillEntity?,
+        newBill: BillEntity?,
+        wsId: String,
+        pushToCloud: Boolean = true
+    ) {
         val oldMap = billedQtyByProductName(oldBill)
         val newMap = billedQtyByProductName(newBill)
         val keys = oldMap.keys + newMap.keys
@@ -935,7 +1064,7 @@ class BillingRepository(
                 val updatedProduct = product.copy(stockQty = updatedQty)
                 currentProducts[idx] = updatedProduct
                 changed = true
-                if (wsId.isNotBlank()) {
+                if (pushToCloud && wsId.isNotBlank()) {
                     cloudSync?.pushProductStockAdjustment(wsId, updatedProduct)
                 }
             }
@@ -1176,9 +1305,13 @@ class BillingRepository(
         address: String,
         locationUrl: String,
         helpDescription: String,
-        status: String = "OPEN"
+        status: String = "OPEN",
+        category: String = HelpCategory.REGULAR_SERVICE.code,
+        quotationStatus: String = "",
+        installationDate: String = "",
+        assignedTechnician: String = ""
     ): CustomerHelpEntity {
-        val existingCustomers = customerDao.getAll()
+        val existingCustomers = if (_volatileCloudActive.value) _volatileCustomers.value else customerDao.getAll()
         val matched = findMatchingCustomersByPhone(existingCustomers, phone).firstOrNull()
         val resolvedName = customerName.trim().ifBlank { matched?.name ?: "" }
         val resolvedPhone = if (matched != null) {
@@ -1193,7 +1326,53 @@ class BillingRepository(
         }
         val resolvedLocation = locationUrl.trim().ifBlank { matched?.locationUrl ?: "" }
         val now = System.currentTimeMillis()
-        val existingHelp = if (id > 0L) helpDao.findById(id) else null
+        val existingHelp = if (id > 0L) {
+            if (_volatileCloudActive.value) _volatileHelpRequests.value.firstOrNull { it.id == id }
+            else helpDao.findById(id)
+        } else {
+            null
+        }
+        val normalizedCat = HelpCategory.fromString(category).code
+        val resolvedQuotStatus = quotationStatus.ifBlank {
+            existingHelp?.quotationStatus ?: if (normalizedCat == HelpCategory.QUOTATION.code) "PENDING" else ""
+        }
+        val resolvedInstallDate = installationDate.trim().ifBlank { existingHelp?.installationDate ?: "" }
+        val resolvedAssignedTech = assignedTechnician.trim().ifBlank { existingHelp?.assignedTechnician ?: "" }
+
+        if (_volatileCloudActive.value) {
+            val volatileId = if (id > 0L) id else now
+            val saved = CustomerHelpEntity(
+                id = volatileId,
+                customerName = resolvedName,
+                phone = resolvedPhone,
+                address = resolvedAddress,
+                locationUrl = resolvedLocation,
+                helpDescription = helpDescription.trim(),
+                status = status.ifBlank { "OPEN" },
+                createdAt = existingHelp?.createdAt ?: now,
+                updatedAt = now,
+                acceptedBy = existingHelp?.acceptedBy ?: "",
+                acceptedByName = existingHelp?.acceptedByName ?: "",
+                acceptedByPhone = existingHelp?.acceptedByPhone ?: "",
+                acceptedAt = existingHelp?.acceptedAt ?: 0L,
+                solvedAt = existingHelp?.solvedAt ?: 0L,
+                billId = existingHelp?.billId ?: "",
+                category = normalizedCat,
+                quotationStatus = resolvedQuotStatus,
+                installationDate = resolvedInstallDate,
+                installationReminderSent = existingHelp?.installationReminderSent ?: false,
+                rejectedReason = existingHelp?.rejectedReason ?: "",
+                assignedTechnician = resolvedAssignedTech
+            )
+            _volatileHelpRequests.value = (listOf(saved) + _volatileHelpRequests.value.filterNot { it.id == saved.id })
+                .sortedByDescending { it.createdAt }
+            val wsId = getActiveWorkspaceId()
+            if (wsId.isNotBlank()) {
+                cloudSync?.pushHelpRequest(wsId, saved, isTechnicianStatusUpdate = false)
+            }
+            return saved
+        }
+
         val entity = CustomerHelpEntity(
             id = id,
             customerName = resolvedName,
@@ -1209,7 +1388,13 @@ class BillingRepository(
             acceptedByPhone = existingHelp?.acceptedByPhone ?: "",
             acceptedAt = existingHelp?.acceptedAt ?: 0L,
             solvedAt = existingHelp?.solvedAt ?: 0L,
-            billId = existingHelp?.billId ?: ""
+            billId = existingHelp?.billId ?: "",
+            category = normalizedCat,
+            quotationStatus = resolvedQuotStatus,
+            installationDate = resolvedInstallDate,
+            installationReminderSent = existingHelp?.installationReminderSent ?: false,
+            rejectedReason = existingHelp?.rejectedReason ?: "",
+            assignedTechnician = resolvedAssignedTech
         )
         val rowId = helpDao.upsert(entity)
         val saved = if (entity.id > 0L) entity else entity.copy(id = rowId)
@@ -1218,6 +1403,124 @@ class BillingRepository(
             cloudSync?.pushHelpRequest(wsId, saved, isTechnicianStatusUpdate = false)
         }
         return saved
+    }
+
+    suspend fun approveQuotationWithInstallationDate(
+        requestId: Long,
+        installationDate: String,
+        assignedTechnician: String = "",
+        nowMillis: Long = System.currentTimeMillis()
+    ): Result<CustomerHelpEntity> {
+        val cleanDate = installationDate.trim()
+        if (!Regex("\\d{4}-\\d{2}-\\d{2}").matches(cleanDate)) {
+            return Result.failure(IllegalArgumentException("Enter valid Installation Date (yyyy-MM-dd)."))
+        }
+        val current = if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value.firstOrNull { it.id == requestId }
+        } else {
+            helpDao.findById(requestId)
+        } ?: return Result.failure(IllegalStateException("Quotation request not found."))
+
+        val updated = current.copy(
+            category = HelpCategory.INSTALLATION.code,
+            quotationStatus = "APPROVED",
+            installationDate = cleanDate,
+            installationReminderSent = false,
+            assignedTechnician = assignedTechnician.trim().ifBlank { current.assignedTechnician },
+            status = "OPEN",
+            updatedAt = nowMillis
+        )
+        if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value = _volatileHelpRequests.value.map { if (it.id == updated.id) updated else it }
+        } else {
+            helpDao.upsert(updated)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = false)
+        }
+        return Result.success(updated)
+    }
+
+    suspend fun rejectQuotation(
+        requestId: Long,
+        reason: String = "",
+        nowMillis: Long = System.currentTimeMillis()
+    ): Result<CustomerHelpEntity> {
+        val current = if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value.firstOrNull { it.id == requestId }
+        } else {
+            helpDao.findById(requestId)
+        } ?: return Result.failure(IllegalStateException("Quotation request not found."))
+
+        val updated = current.copy(
+            quotationStatus = "REJECTED",
+            status = "REJECTED",
+            rejectedReason = reason.trim(),
+            updatedAt = nowMillis
+        )
+        if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value = _volatileHelpRequests.value.map { if (it.id == updated.id) updated else it }
+        } else {
+            helpDao.upsert(updated)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = false)
+        }
+        return Result.success(updated)
+    }
+
+    suspend fun rejectHelpRequest(
+        requestId: Long,
+        actorUsername: String,
+        isAdmin: Boolean,
+        reason: String = "",
+        nowMillis: Long = System.currentTimeMillis()
+    ): Result<CustomerHelpEntity> {
+        val current = if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value.firstOrNull { it.id == requestId }
+        } else {
+            helpDao.findById(requestId)
+        } ?: return Result.failure(IllegalStateException("Request not found."))
+
+        val updated = current.copy(
+            status = "REJECTED",
+            rejectedReason = reason.trim().ifBlank { "Rejected by ${actorUsername.ifBlank { "Technician" }}" },
+            updatedAt = nowMillis
+        )
+        if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value = _volatileHelpRequests.value.map { if (it.id == updated.id) updated else it }
+        } else {
+            helpDao.upsert(updated)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = !isAdmin)
+        }
+        return Result.success(updated)
+    }
+
+    suspend fun markInstallationReminderSent(requestId: Long) {
+        val current = if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value.firstOrNull { it.id == requestId }
+        } else {
+            helpDao.findById(requestId)
+        } ?: return
+        if (current.installationReminderSent) return
+        val updated = current.copy(
+            installationReminderSent = true,
+            updatedAt = System.currentTimeMillis()
+        )
+        if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value = _volatileHelpRequests.value.map { if (it.id == updated.id) updated else it }
+        } else {
+            helpDao.upsert(updated)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank() && !_volatileCloudActive.value) {
+            cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = false)
+        }
     }
 
     suspend fun acceptHelpRequest(
@@ -1704,9 +2007,12 @@ class BillingRepository(
 
     suspend fun purgeExpiredTrash(nowMillis: Long = System.currentTimeMillis()): Int {
         if (_volatileCloudActive.value) return 0
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.purgeExpiredTrashOnServer(wsId)
+        }
         val expired = trashDao.getAll().filter { it.status == "TRASHED" && nowMillis >= it.expireAt }
         if (expired.isEmpty()) return 0
-        val wsId = getActiveWorkspaceId()
         val auditEntries = mutableListOf<AuditLogEntity>()
         db.withTransaction {
             expired.forEach { item ->
@@ -2601,6 +2907,12 @@ class BillingRepository(
         put("acceptedAt", h.acceptedAt)
         put("solvedAt", h.solvedAt)
         put("billId", h.billId)
+        put("category", h.category)
+        put("quotationStatus", h.quotationStatus)
+        put("installationDate", h.installationDate)
+        put("installationReminderSent", h.installationReminderSent)
+        put("rejectedReason", h.rejectedReason)
+        put("assignedTechnician", h.assignedTechnician)
     }
 
     private fun helpFromJson(h: JSONObject): CustomerHelpEntity = CustomerHelpEntity(
@@ -2618,7 +2930,13 @@ class BillingRepository(
         acceptedByPhone = h.optString("acceptedByPhone", ""),
         acceptedAt = h.optLong("acceptedAt", 0L),
         solvedAt = h.optLong("solvedAt", 0L),
-        billId = h.optString("billId", "")
+        billId = h.optString("billId", ""),
+        category = HelpCategory.fromString(h.optString("category", "REGULAR_SERVICE")).code,
+        quotationStatus = h.optString("quotationStatus", ""),
+        installationDate = h.optString("installationDate", ""),
+        installationReminderSent = h.optBoolean("installationReminderSent", false),
+        rejectedReason = h.optString("rejectedReason", ""),
+        assignedTechnician = h.optString("assignedTechnician", "")
     )
 
     private fun settlementToJson(s: TechnicianSettlementEntity): JSONObject = JSONObject().apply {
@@ -2761,6 +3079,11 @@ class BillingRepository(
         const val KEY_ADMIN_FAILED_ATTEMPTS = "admin_login_failed_attempts"
         const val KEY_ADMIN_LOCK_UNTIL_MS = "admin_login_lock_until_ms"
         const val KEY_PERMISSIONS_PROMPTED = "permissions_prompted_v1"
+        const val KEY_TECH_VERIFIED_EMAIL = "tech_verified_email_v1"
+        const val KEY_TECH_VERIFIED_USERNAME = "tech_verified_username_v1"
+        const val KEY_TECH_VERIFIED_NAME = "tech_verified_name_v1"
+        const val KEY_TECH_VERIFIED_WORKSPACE_ID = "tech_verified_workspace_id_v1"
+        const val KEY_TECH_VERIFIED_COMPANY = "tech_verified_company_v1"
 
         const val DEFAULT_ADMIN_RECOVERY_PASSWORD = "Manoj2007"
         const val DEFAULT_COMPANY_NAME = "TOTAL SOLUTION ENTERPRISES"

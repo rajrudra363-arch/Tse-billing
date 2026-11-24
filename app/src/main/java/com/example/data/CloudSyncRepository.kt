@@ -69,7 +69,8 @@ data class CloudTechCreationResult(
     val username: String,
     val role: String,
     val workspaceId: String,
-    val mustChangePassword: Boolean
+    val mustChangePassword: Boolean,
+    val activationPasskey: String = ""
 )
 
 data class CloudTechSignInResult(
@@ -458,6 +459,7 @@ class CloudSyncRepository(private val context: Context) {
             val createdRole = BillingRepository.normalizeRole(data["role"]?.toString().orEmpty())
             val createdWsId = data["workspaceId"]?.toString().orEmpty().ifBlank { workspaceId }
             val mustChange = (data["mustChangePassword"] as? Boolean) ?: true
+            val passkey = data["activationPasskey"]?.toString().orEmpty()
 
             if (photoBase64.isNotBlank()) {
                 pushAccount(
@@ -481,7 +483,8 @@ class CloudSyncRepository(private val context: Context) {
                     username = createdUsername,
                     role = createdRole,
                     workspaceId = createdWsId,
-                    mustChangePassword = mustChange
+                    mustChangePassword = mustChange,
+                    activationPasskey = passkey
                 )
             )
         } catch (e: CancellationException) {
@@ -510,6 +513,120 @@ class CloudSyncRepository(private val context: Context) {
                     e
                 )
             )
+        }
+    }
+
+    suspend fun verifyTechnicianActivationViaCloud(
+        email: String,
+        activationPasskey: String,
+        workspaceIdHint: String = ""
+    ): Result<TechActivationState> = withContext(Dispatchers.IO) {
+        val cleanEmail = email.trim().lowercase(Locale.US)
+        if (!AuthPolicy.isValidEmail(cleanEmail)) {
+            return@withContext Result.failure(IllegalArgumentException("Enter a valid authorized Technician email."))
+        }
+        val cleanPasskey = activationPasskey.trim().uppercase(Locale.US)
+        if (cleanPasskey.length < 6) {
+            return@withContext Result.failure(IllegalArgumentException("Enter the Activation Passkey provided by Admin."))
+        }
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        try {
+            val payload = hashMapOf<String, Any>(
+                "email" to cleanEmail,
+                "activationPasskey" to cleanPasskey,
+                "workspaceId" to workspaceIdHint.trim()
+            )
+            val result = functions
+                .getHttpsCallable("verifyTechnicianActivation")
+                .call(payload)
+                .await()
+            @Suppress("UNCHECKED_CAST")
+            val data = result.getData() as? Map<String, Any?>
+                ?: return@withContext Result.failure(IllegalStateException("Unexpected verification response."))
+            val valid = (data["valid"] as? Boolean) ?: false
+            if (!valid) {
+                return@withContext Result.failure(IllegalStateException("Email or Activation Passkey is incorrect."))
+            }
+            val verifiedEmail = data["email"]?.toString().orEmpty().ifBlank { cleanEmail }
+            val verifiedUsername = data["username"]?.toString().orEmpty()
+            val verifiedName = data["name"]?.toString().orEmpty().ifBlank { "Technician" }
+            val verifiedWsId = data["workspaceId"]?.toString().orEmpty()
+            val companyName = data["companyName"]?.toString().orEmpty().ifBlank { BillingRepository.DEFAULT_COMPANY_NAME }
+            Result.success(
+                TechActivationState(
+                    verified = true,
+                    email = verifiedEmail,
+                    username = verifiedUsername,
+                    name = verifiedName,
+                    workspaceId = verifiedWsId,
+                    companyName = companyName
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: FirebaseFunctionsException) {
+            val friendly = when (e.code) {
+                FirebaseFunctionsException.Code.PERMISSION_DENIED ->
+                    e.message ?: "Email is not authorized or Activation Passkey is incorrect."
+                FirebaseFunctionsException.Code.INVALID_ARGUMENT ->
+                    e.message ?: "Enter valid Email and Activation Passkey."
+                FirebaseFunctionsException.Code.NOT_FOUND ->
+                    "Activation service not deployed yet. Ask Admin to deploy Cloud Functions."
+                else -> e.message ?: "Unable to verify Activation Passkey."
+            }
+            Log.e(TAG, "verifyTechnicianActivation error (${e.code}): $friendly", e)
+            Result.failure(IllegalStateException(friendly, e))
+        } catch (e: Exception) {
+            Log.e(TAG, "verifyTechnicianActivation failed", e)
+            Result.failure(IllegalStateException(e.message ?: "Unable to reach server for Passkey verification.", e))
+        }
+    }
+
+    suspend fun regenerateTechnicianPasskeyViaCloud(
+        workspaceId: String,
+        technicianUid: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        if (workspaceId.isBlank() || technicianUid.isBlank()) {
+            return@withContext Result.failure(IllegalArgumentException("Workspace or Technician ID missing."))
+        }
+        try {
+            val res = functions.getHttpsCallable("regenerateTechnicianPasskey")
+                .call(hashMapOf("workspaceId" to workspaceId, "technicianUid" to technicianUid))
+                .await()
+            @Suppress("UNCHECKED_CAST")
+            val data = res.getData() as? Map<String, Any?>
+            val key = data?.get("activationPasskey")?.toString().orEmpty()
+            if (key.isBlank()) {
+                Result.failure(IllegalStateException("Server did not return a new Activation Passkey."))
+            } else {
+                Result.success(key)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Failed to regenerate passkey.", e))
+        }
+    }
+
+    suspend fun purgeExpiredTrashOnServer(workspaceId: String): Result<Int> = withContext(Dispatchers.IO) {
+        if (workspaceId.isBlank() || getAuth()?.currentUser == null) return@withContext Result.success(0)
+        val functions = getFunctions() ?: return@withContext Result.success(0)
+        try {
+            val res = functions.getHttpsCallable("purgeExpiredTrash")
+                .call(hashMapOf("workspaceId" to workspaceId))
+                .await()
+            @Suppress("UNCHECKED_CAST")
+            val data = res.getData() as? Map<String, Any?>
+            val count = (data?.get("purgedCount") as? Number)?.toInt() ?: 0
+            Result.success(count)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Server trash purge skipped/failed: ${e.message}")
+            Result.failure(e)
         }
     }
 
@@ -1234,6 +1351,102 @@ class CloudSyncRepository(private val context: Context) {
             }
         }
 
+    suspend fun commitBillWithAtomicStockTransaction(
+        workspaceId: String,
+        bill: BillEntity,
+        productDeltas: Map<String, Double>
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val uid = getAuth()?.currentUser?.uid
+        val db = getFirestore()
+        if (workspaceId.isBlank() || uid.isNullOrBlank() || db == null) {
+            return@withContext Result.success(Unit)
+        }
+        val docId = bill.id.ifBlank { "b_${System.currentTimeMillis()}" }
+        val wsRef = db.collection("workspaces").document(workspaceId)
+        val billRef = wsRef.collection("bills").document(docId)
+        try {
+            db.runTransaction { tx ->
+                val existingBillSnap = tx.get(billRef)
+                val preservedCreatorUid = existingBillSnap.getString("createdByUid")
+                    ?.takeIf { it.isNotBlank() } ?: uid
+
+                val prodSnapshots = productDeltas.keys.map { prodDocId ->
+                    val prodRef = wsRef.collection("products").document(prodDocId)
+                    prodDocId to (prodRef to tx.get(prodRef))
+                }.toMap()
+
+                for ((prodDocId, deltaNeeded) in productDeltas) {
+                    if (deltaNeeded <= 0.0) continue
+                    val (_, prodSnap) = prodSnapshots[prodDocId] ?: continue
+                    if (!prodSnap.exists()) continue
+                    val currentStock = (prodSnap.get("stockQty") as? Number)?.toDouble() ?: 0.0
+                    val prodName = prodSnap.getString("name").orEmpty().ifBlank { prodDocId }
+                    if (currentStock + 1e-6 < deltaNeeded) {
+                        throw IllegalStateException(
+                            "Insufficient stock for $prodName. Available: ${
+                                if (currentStock % 1.0 == 0.0) currentStock.toInt().toString()
+                                else String.format(Locale.US, "%.2f", currentStock)
+                            }"
+                        )
+                    }
+                }
+
+                for ((prodDocId, deltaChange) in productDeltas) {
+                    if (kotlin.math.abs(deltaChange) <= 1e-6) continue
+                    val (prodRef, prodSnap) = prodSnapshots[prodDocId] ?: continue
+                    if (!prodSnap.exists()) continue
+                    val currentStock = (prodSnap.get("stockQty") as? Number)?.toDouble() ?: 0.0
+                    val newStock = (currentStock - deltaChange).coerceAtLeast(0.0)
+                    tx.update(
+                        prodRef,
+                        mapOf(
+                            "stockQty" to newStock,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                }
+
+                val billData = hashMapOf<String, Any>(
+                    "billId" to docId,
+                    "invoiceNo" to bill.invoiceNo.ifBlank { "TSE-001" },
+                    "date" to bill.date,
+                    "customerName" to bill.customerName,
+                    "customerDetails" to bill.customerDetails,
+                    "itemsJson" to bill.itemsJson,
+                    "subtotal" to bill.subtotal.coerceAtLeast(0.0),
+                    "discount" to bill.discount.coerceAtLeast(0.0),
+                    "grandTotal" to bill.grandTotal.coerceAtLeast(0.0),
+                    "paidAmount" to bill.paidAmount.coerceAtLeast(0.0),
+                    "dueAmount" to bill.dueAmount.coerceAtLeast(0.0),
+                    "paymentMode" to bill.paymentMode,
+                    "signatureBase64" to sanitizeBase64(bill.signatureBase64),
+                    "customQrText" to bill.customQrText,
+                    "createdBy" to bill.createdBy.ifBlank { "Technician" },
+                    "createdByUid" to preservedCreatorUid,
+                    "extraChargeType" to bill.extraChargeType,
+                    "extraChargeAmount" to bill.extraChargeAmount.coerceAtLeast(0.0),
+                    "secondaryChargeType" to bill.secondaryChargeType,
+                    "secondaryChargeAmount" to bill.secondaryChargeAmount.coerceAtLeast(0.0),
+                    "staffRating" to bill.staffRating.coerceIn(0, 5),
+                    "staffReviewNote" to bill.staffReviewNote,
+                    "documentType" to if (bill.documentType.equals("QUOTATION", ignoreCase = true)) "QUOTATION" else "BILL",
+                    "helpBill" to bill.isHelpBill,
+                    "helpRequestId" to bill.helpRequestId.coerceAtLeast(0L),
+                    "quotationNote" to bill.quotationNote,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+                tx.set(billRef, billData)
+                null
+            }.await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, "workspaces/$workspaceId/bills/$docId")
+            Result.failure(e)
+        }
+    }
+
     suspend fun deleteBill(workspaceId: String, billId: String): Result<Unit> =
         withContext(Dispatchers.IO) {
             val db = getFirestore() ?: return@withContext Result.success(Unit)
@@ -1258,6 +1471,11 @@ class CloudSyncRepository(private val context: Context) {
             if (workspaceId.isBlank() || uid.isNullOrBlank() || db == null) return@withContext Result.success(Unit)
             val docId = req.id.toString()
             val ref = db.collection("workspaces").document(workspaceId).collection("helpRequests").document(docId)
+            val safeCategory = HelpCategory.fromString(req.category).code
+            val safeQuotStatus = when (req.quotationStatus.uppercase(Locale.US)) {
+                "PENDING", "APPROVED", "REJECTED", "" -> req.quotationStatus.uppercase(Locale.US)
+                else -> ""
+            }
             try {
                 if (isTechnicianStatusUpdate) {
                     val existing = runCatching { withTimeoutOrNull(1000L) { ref.get().await() } }.getOrNull()
@@ -1272,6 +1490,7 @@ class CloudSyncRepository(private val context: Context) {
                         "acceptedAt" to req.acceptedAt,
                         "solvedAt" to req.solvedAt,
                         "billId" to req.billId,
+                        "rejectedReason" to req.rejectedReason,
                         "updatedAt" to req.updatedAt
                     )
                     ref.update(partial).awaitOfflineSafe()
@@ -1283,6 +1502,12 @@ class CloudSyncRepository(private val context: Context) {
                         "address" to req.address,
                         "locationUrl" to req.locationUrl,
                         "helpDescription" to req.helpDescription,
+                        "category" to safeCategory,
+                        "quotationStatus" to safeQuotStatus,
+                        "installationDate" to req.installationDate,
+                        "installationReminderSent" to req.installationReminderSent,
+                        "rejectedReason" to req.rejectedReason,
+                        "assignedTechnician" to req.assignedTechnician,
                         "status" to req.status,
                         "createdAt" to req.createdAt,
                         "updatedAt" to req.updatedAt,
@@ -1519,7 +1744,7 @@ class CloudSyncRepository(private val context: Context) {
         val safeTitle = title.trim().take(160)
         if (safeTitle.isBlank()) return@withContext Result.success(Unit)
         val safeCategory = when (category.uppercase(Locale.US)) {
-            "PRODUCT", "STOCK", "CUSTOMER", "BILLING", "PAYMENT", "SERVICE_REQUEST", "SYSTEM" ->
+            "PRODUCT", "STOCK", "CUSTOMER", "BILLING", "PAYMENT", "SERVICE_REQUEST", "QUOTATION", "INSTALLATION", "SYSTEM" ->
                 category.uppercase(Locale.US)
             else -> "SYSTEM"
         }
@@ -1694,7 +1919,13 @@ class CloudSyncRepository(private val context: Context) {
             acceptedByPhone = doc.getString("acceptedByPhone").orEmpty(),
             acceptedAt = (doc.get("acceptedAt") as? Number)?.toLong() ?: 0L,
             solvedAt = (doc.get("solvedAt") as? Number)?.toLong() ?: 0L,
-            billId = doc.getString("billId").orEmpty()
+            billId = doc.getString("billId").orEmpty(),
+            category = HelpCategory.fromString(doc.getString("category").orEmpty()).code,
+            quotationStatus = doc.getString("quotationStatus").orEmpty(),
+            installationDate = doc.getString("installationDate").orEmpty(),
+            installationReminderSent = doc.getBoolean("installationReminderSent") ?: false,
+            rejectedReason = doc.getString("rejectedReason").orEmpty(),
+            assignedTechnician = doc.getString("assignedTechnician").orEmpty()
         )
     }
 

@@ -17,6 +17,7 @@ import com.example.data.BillingTimePolicy
 import com.example.data.ChargeType
 import com.example.data.CloudAuthUser
 import com.example.data.CloudSyncRepository
+import com.example.data.CloudTechCreationResult
 import com.example.data.CloudWorkspaceInfo
 import com.example.data.CloudWorkspaceNotification
 import com.example.data.CompanySettings
@@ -25,11 +26,13 @@ import com.example.data.CustomerHelpEntity
 import com.example.data.DocumentType
 import com.example.data.ExpenseEntity
 import com.example.data.GoogleAuthHelper
+import com.example.data.HelpCategory
 import com.example.data.InvoiceItem
 import com.example.data.InvoiceItemJson
 import com.example.data.LoginSecurityState
 import com.example.data.PaymentMode
 import com.example.data.ProductEntity
+import com.example.data.TechActivationState
 import com.example.data.TechnicianSettlementEntity
 import com.example.data.TrashItemEntity
 import com.example.data.UpiSettings
@@ -245,10 +248,25 @@ class BillingViewModel(
     private val _cloudStatusMessage = MutableStateFlow("")
     val cloudStatusMessage: StateFlow<String> = _cloudStatusMessage.asStateFlow()
 
+    private val _notifications = MutableStateFlow<List<CloudWorkspaceNotification>>(emptyList())
+    val notifications: StateFlow<List<CloudWorkspaceNotification>> = _notifications.asStateFlow()
+
+    private val _lastReadNotifAt = MutableStateFlow(0L)
+
+    private val _activationBusy = MutableStateFlow(false)
+    val activationBusy: StateFlow<Boolean> = _activationBusy.asStateFlow()
+
+    private val _activationError = MutableStateFlow("")
+    val activationError: StateFlow<String> = _activationError.asStateFlow()
+
+    private val _lastCreatedTechPasskey = MutableStateFlow<CloudTechCreationResult?>(null)
+    val lastCreatedTechPasskey: StateFlow<CloudTechCreationResult?> = _lastCreatedTechPasskey.asStateFlow()
+
     private val seenRemoteBillIds = mutableSetOf<String>()
     private var initialRemoteBillsLoaded = false
     private val seenRemoteNotifIds = mutableSetOf<String>()
     private var initialRemoteNotifsLoaded = false
+    private val seenDueInstallReminderIds = mutableSetOf<Long>()
 
     private val _events = MutableSharedFlow<BillingEvent>(extraBufferCapacity = 16)
     val events: SharedFlow<BillingEvent> = _events.asSharedFlow()
@@ -354,7 +372,60 @@ class BillingViewModel(
             user == null -> emptyList()
             user.isAdmin || user.isSuperAdmin -> all
             else -> all.filter { req ->
-                req.acceptedBy.isBlank() || req.acceptedBy.equals(user.username, ignoreCase = true)
+                req.acceptedBy.isBlank() ||
+                    req.acceptedBy.equals(user.username, ignoreCase = true) ||
+                    req.assignedTechnician.equals(user.username, ignoreCase = true)
+            }
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    val techActivationState: StateFlow<TechActivationState> = repository.techActivationState
+        .stateIn(viewModelScope, SharingStarted.Eagerly, TechActivationState())
+
+    private val trackedProductNames: StateFlow<Set<String>> = repository.configMap
+        .map { m ->
+            m.entries
+                .filter { it.key.startsWith(BillingRepository.KEY_STOCK_TRACKED_PREFIX) && it.value == "1" }
+                .map { it.key.removePrefix(BillingRepository.KEY_STOCK_TRACKED_PREFIX) }
+                .toSet()
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    val unreadNotificationCount: StateFlow<Int> = combine(
+        _notifications,
+        _lastReadNotifAt,
+        session,
+        _cloudUser
+    ) { allNotifs, readAt, activeUser, cUser ->
+        val activeUid = cUser?.uid.orEmpty()
+        val roleForUser = when {
+            activeUser == null -> ""
+            activeUser.isAdmin -> "admin"
+            activeUser.isSuperAdmin -> "super_admin"
+            else -> "technician"
+        }
+        allNotifs.count { notif ->
+            val roleMatches = roleForUser.isBlank() || notif.targetRole == "all" || notif.targetRole.equals(roleForUser, ignoreCase = true)
+            val userMatches = notif.targetUsername.isBlank() ||
+                (activeUser != null && notif.targetUsername.equals(activeUser.username, ignoreCase = true))
+            val notSelf = activeUid.isBlank() || notif.createdByUid != activeUid
+            roleMatches && userMatches && notSelf && notif.createdAt > readAt
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    val dueInstallationReminders: StateFlow<List<CustomerHelpEntity>> = combine(helpRequests, session) { all, user ->
+        if (user == null || !user.isAdmin) {
+            emptyList()
+        } else {
+            val today = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+            all.filter { req ->
+                req.quotationStatus.equals("APPROVED", ignoreCase = true) &&
+                    req.installationDate.isNotBlank() &&
+                    req.installationDate <= today &&
+                    !req.installationReminderSent &&
+                    req.status != "SOLVED" &&
+                    req.status != "RESOLVED" &&
+                    req.status != "REJECTED"
             }
         }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -453,6 +524,24 @@ class BillingViewModel(
         viewModelScope.launch {
             delay(1150)
             _splashVisible.value = false
+        }
+        viewModelScope.launch {
+            dueInstallationReminders.collect { dueList ->
+                val fresh = dueList.filter { it.id !in seenDueInstallReminderIds }
+                if (fresh.isNotEmpty()) {
+                    fresh.forEach { req ->
+                        seenDueInstallReminderIds += req.id
+                        soundEngine.play(SoundCue.NOTIFICATION)
+                        emitToast("Installation Due Today: ${req.customerName.ifBlank { req.phone }} (${req.installationDate})")
+                        pushCloudNotification(
+                            category = "INSTALLATION",
+                            title = "Installation Scheduled: ${req.customerName.ifBlank { req.phone }}",
+                            message = "Due ${req.installationDate} — ${req.helpDescription.take(80)}",
+                            targetRole = "admin"
+                        )
+                    }
+                }
+            }
         }
         checkForAppUpdates(manual = false)
         initCloudSessionOnLaunch()
@@ -584,8 +673,10 @@ class BillingViewModel(
     }
 
     private fun handleRemoteNotifications(list: List<CloudWorkspaceNotification>) {
+        val sorted = list.sortedByDescending { it.createdAt }
+        _notifications.value = sorted
         if (!initialRemoteNotifsLoaded) {
-            seenRemoteNotifIds.addAll(list.map { it.id })
+            seenRemoteNotifIds.addAll(sorted.map { it.id })
             initialRemoteNotifsLoaded = true
             return
         }
@@ -597,15 +688,20 @@ class BillingViewModel(
             activeUser.isSuperAdmin -> "super_admin"
             else -> "technician"
         }
-        val newlyArrived = list.filter { it.id !in seenRemoteNotifIds }
-        seenRemoteNotifIds.addAll(list.map { it.id })
+        val newlyArrived = sorted.filter { it.id !in seenRemoteNotifIds }
+        seenRemoteNotifIds.addAll(sorted.map { it.id })
 
+        var playedSound = false
         newlyArrived.forEach { notif ->
             if (activeUid.isNotBlank() && notif.createdByUid == activeUid) return@forEach
             val roleMatches = notif.targetRole == "all" || notif.targetRole.equals(roleForUser, ignoreCase = true)
             val userMatches = notif.targetUsername.isBlank() ||
                 (activeUser != null && notif.targetUsername.equals(activeUser.username, ignoreCase = true))
             if (roleMatches && userMatches && activeUser != null) {
+                if (!playedSound) {
+                    soundEngine.play(SoundCue.NOTIFICATION)
+                    playedSound = true
+                }
                 emitToast("${notif.title}: ${notif.message}")
                 _events.tryEmit(
                     BillingEvent.NotifySyncAlert(
@@ -616,6 +712,100 @@ class BillingViewModel(
                 )
             }
         }
+    }
+
+    fun markNotificationsRead() {
+        _lastReadNotifAt.value = System.currentTimeMillis()
+    }
+
+    fun sendCustomNotification(
+        category: String,
+        title: String,
+        message: String,
+        targetRole: String = "all",
+        onDone: () -> Unit = {}
+    ) {
+        val cleanTitle = title.trim()
+        val cleanMsg = message.trim()
+        if (cleanTitle.isEmpty()) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Enter a notification title", isError = true)
+            return
+        }
+        if (cleanMsg.isEmpty()) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Enter a notification message", isError = true)
+            return
+        }
+        val sync = cloudSync
+        val wsId = cloudWorkspaceInfo.value.workspaceId
+        if (sync == null || wsId.isBlank()) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Cloud Sync must be active to send team notifications.", isError = true)
+            return
+        }
+        pushCloudNotification(
+            category = category,
+            title = cleanTitle,
+            message = cleanMsg,
+            targetRole = targetRole
+        )
+        soundEngine.play(SoundCue.SAVE)
+        emitToast("Notification sent to team")
+        onDone()
+    }
+
+    fun verifyTechnicianActivation(email: String, passkey: String) {
+        val sync = cloudSync ?: run {
+            _activationError.value = "Cloud service not initialized."
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
+        val cleanEmail = email.trim().lowercase(Locale.US)
+        if (!AuthPolicy.isValidEmail(cleanEmail)) {
+            _activationError.value = "Enter your authorized Technician email address."
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
+        if (passkey.trim().length < 6) {
+            _activationError.value = "Enter the Activation Passkey provided by Admin."
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
+        viewModelScope.launch {
+            _activationBusy.value = true
+            _activationError.value = ""
+            val wsHint = repository.getActiveWorkspaceId()
+            val res = sync.verifyTechnicianActivationViaCloud(cleanEmail, passkey, wsHint)
+            _activationBusy.value = false
+            if (res.isSuccess) {
+                val state = res.getOrNull()!!
+                repository.saveTechActivationState(state)
+                if (state.workspaceId.isNotBlank()) {
+                    repository.enableVolatileCloudMode("technician", state.workspaceId)
+                }
+                _activationError.value = ""
+                soundEngine.play(SoundCue.SAVE)
+                emitToast("Activation verified for @${state.username}. Enter password & CAPTCHA to sign in.")
+            } else {
+                val msg = res.exceptionOrNull()?.message ?: "Activation Passkey verification failed."
+                _activationError.value = msg
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(msg, isError = true)
+            }
+        }
+    }
+
+    fun clearTechActivation() {
+        viewModelScope.launch {
+            repository.clearTechActivationState()
+            _activationError.value = ""
+            soundEngine.play(SoundCue.CLICK)
+        }
+    }
+
+    fun dismissCreatedTechPasskey() {
+        _lastCreatedTechPasskey.value = null
     }
 
     private fun pushCloudNotification(
@@ -808,17 +998,34 @@ class BillingViewModel(
             return
         }
         viewModelScope.launch {
-            _cloudBusy.value = true
-            _authError.value = ""
-            val res = sync.signInTechnicianWithEmail(cleanEmail, password)
-            if (res.isFailure) {
-                _cloudBusy.value = false
-                val msg = res.exceptionOrNull()?.message ?: "Technician login failed."
+            val nowMillis = System.currentTimeMillis()
+            val secState = repository.getLoginSecurityState()
+            if (secState.isLocked(nowMillis)) {
+                val remText = formatLockRemaining(secState.remainingLockMillis(nowMillis))
+                val msg = "Too many wrong password attempts (5/5). Login locked for $remText."
                 _authError.value = msg
                 soundEngine.play(SoundCue.ERROR)
                 emitToast(msg, isError = true)
                 return@launch
             }
+            _cloudBusy.value = true
+            _authError.value = ""
+            val res = sync.signInTechnicianWithEmail(cleanEmail, password)
+            if (res.isFailure) {
+                _cloudBusy.value = false
+                val updated = repository.recordLoginFailure(nowMillis)
+                val baseMsg = res.exceptionOrNull()?.message ?: "Technician login failed."
+                val msg = if (updated.isLocked(nowMillis)) {
+                    "Wrong password entered 5 times. Login locked for 2 hours (02:00:00)."
+                } else {
+                    "$baseMsg (${updated.failedAttempts}/${LoginSecurityState.MAX_ATTEMPTS} failed)"
+                }
+                _authError.value = msg
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(msg, isError = true)
+                return@launch
+            }
+            repository.resetLoginSecurityState()
             val info = res.getOrNull()!!
             _cloudUser.value = CloudAuthUser(
                 uid = info.uid,
@@ -1608,6 +1815,44 @@ class BillingViewModel(
         )
     }
 
+    private fun checkDraftStockErrorSync(draft: BillDraft): String? {
+        if (draft.documentType != DocumentType.BILL) return null
+        val requestedByName = linkedMapOf<String, Double>()
+        draft.items.forEach { item ->
+            val key = item.description.trim().lowercase(Locale.ROOT)
+            if (key.isNotEmpty() && item.qty > 0.0) {
+                requestedByName[key] = (requestedByName[key] ?: 0.0) + item.qty
+            }
+        }
+        if (requestedByName.isEmpty()) return null
+
+        val existingBill = draft.editingId?.let { editId -> bills.value.firstOrNull { it.id == editId } }
+        val oldByName = linkedMapOf<String, Double>()
+        if (existingBill != null && DocumentType.fromString(existingBill.documentType) == DocumentType.BILL) {
+            InvoiceItemJson.fromJson(existingBill.itemsJson).forEach { item ->
+                val key = item.description.trim().lowercase(Locale.ROOT)
+                if (key.isNotEmpty() && item.qty > 0.0) {
+                    oldByName[key] = (oldByName[key] ?: 0.0) + item.qty
+                }
+            }
+        }
+
+        val byLowerName = products.value.associateBy { it.name.trim().lowercase(Locale.ROOT) }
+        val trackedSet = trackedProductNames.value
+        for ((key, newQty) in requestedByName) {
+            val product = byLowerName[key] ?: continue
+            val isTracked = product.stockQty > 0.0 || product.minStockAlert > 0.0 || key in trackedSet
+            if (!isTracked) continue
+            val oldQty = oldByName[key] ?: 0.0
+            val deltaNeeded = newQty - oldQty
+            if (deltaNeeded > 1e-6 && product.stockQty + 1e-6 < deltaNeeded) {
+                val effectiveAvail = product.stockQty + oldQty
+                return "Insufficient stock for ${product.name}! Available: ${formatInputNum(effectiveAvail)} ${product.unit}"
+            }
+        }
+        return null
+    }
+
     /* ===== Summary & Device-Authenticated Bill Generation ===== */
     fun openSummaryModal(nowMillis: Long = System.currentTimeMillis()) {
         val user = _session.value ?: return
@@ -1633,6 +1878,12 @@ class BillingViewModel(
         if (!hasItems) {
             soundEngine.play(SoundCue.ERROR)
             emitToast("Please add at least one product or service charge first", isError = true)
+            return
+        }
+        checkDraftStockErrorSync(draft)?.let { stockErr ->
+            _summaryError.value = stockErr
+            soundEngine.play(SoundCue.ERROR)
+            emitToast(stockErr, isError = true)
             return
         }
         _summaryError.value = ""
@@ -1678,6 +1929,12 @@ class BillingViewModel(
             soundEngine.play(SoundCue.ERROR)
             return
         }
+        checkDraftStockErrorSync(draft)?.let { stockErr ->
+            _summaryError.value = stockErr
+            soundEngine.play(SoundCue.ERROR)
+            emitToast(stockErr, isError = true)
+            return
+        }
         _summaryError.value = ""
         val docLabel = if (draft.documentType == DocumentType.QUOTATION) "Quotation" else "Bill"
         _events.tryEmit(
@@ -1695,6 +1952,12 @@ class BillingViewModel(
         if (draft.openedFromSaved && !currentUser.isAdmin) {
             soundEngine.play(SoundCue.ERROR)
             emitToast("Only Admin can modify saved bills", isError = true)
+            return
+        }
+        checkDraftStockErrorSync(draft)?.let { stockErr ->
+            _summaryError.value = stockErr
+            soundEngine.play(SoundCue.ERROR)
+            emitToast(stockErr, isError = true)
             return
         }
 
@@ -1740,7 +2003,15 @@ class BillingViewModel(
         )
 
         viewModelScope.launch {
-            repository.saveBill(entity, draft.customerLocationUrl)
+            val saveRes = repository.saveBill(entity, draft.customerLocationUrl)
+            if (saveRes.isFailure) {
+                val msg = saveRes.exceptionOrNull()?.message ?: "Failed to save bill due to stock or network conflict."
+                _summaryError.value = msg
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(msg, isError = true)
+                return@launch
+            }
+            _summaryError.value = ""
             _billDraft.update { it.copy(editingId = billId, createdBy = billCreator, summaryOpen = false) }
             soundEngine.play(SoundCue.SAVE)
 
@@ -2385,7 +2656,7 @@ class BillingViewModel(
         }
     }
 
-    /* ===== Customer Help / Technician Service Desk ===== */
+    /* ===== Customer Help / Technician Service Desk / Quotations & Installations ===== */
     fun saveHelpRequest(
         id: Long = 0L,
         customerName: String,
@@ -2394,17 +2665,21 @@ class BillingViewModel(
         locationUrl: String,
         helpDescription: String,
         status: String = "OPEN",
+        category: String = HelpCategory.REGULAR_SERVICE.code,
         onSaved: ((CustomerHelpEntity) -> Unit)? = null
     ) {
-        val current = _session.value
-        if (current == null || !current.isAdmin) {
-            soundEngine.play(SoundCue.ERROR)
-            emitToast("Admin access only — Technicians cannot create or edit Help Requests", isError = true)
-            return
+        val current = _session.value ?: return
+        val cat = HelpCategory.fromString(category)
+        if (!current.isAdmin) {
+            if (!(current.isTechnician && cat == HelpCategory.QUOTATION && id == 0L)) {
+                soundEngine.play(SoundCue.ERROR)
+                emitToast("Admin access only — Technicians can submit Quotation requests only", isError = true)
+                return
+            }
         }
         if (helpDescription.isBlank()) {
             soundEngine.play(SoundCue.ERROR)
-            emitToast("Please enter customer help issue description", isError = true)
+            emitToast("Please enter customer help / requirement description", isError = true)
             return
         }
         if (customerName.isBlank() && phone.isBlank()) {
@@ -2412,6 +2687,7 @@ class BillingViewModel(
             emitToast("Please enter customer name or mobile number", isError = true)
             return
         }
+        val quotStatus = if (cat == HelpCategory.QUOTATION) "PENDING" else ""
         viewModelScope.launch {
             val saved = repository.saveHelpRequest(
                 id = id,
@@ -2420,17 +2696,117 @@ class BillingViewModel(
                 address = address,
                 locationUrl = locationUrl,
                 helpDescription = helpDescription,
-                status = status
+                status = status,
+                category = cat.code,
+                quotationStatus = quotStatus
             )
             soundEngine.play(SoundCue.SAVE)
-            emitToast(if (id > 0L) "Help request updated" else "Help request saved for Technicians")
+            val toastMsg = when {
+                cat == HelpCategory.QUOTATION -> "Quotation request submitted for Admin approval"
+                id > 0L -> "Service request updated"
+                else -> "${cat.label} request saved for Technicians"
+            }
+            emitToast(toastMsg)
             pushCloudNotification(
-                category = "SERVICE_REQUEST",
-                title = if (id > 0L) "Service Request Updated" else "New Service Request",
+                category = if (cat == HelpCategory.QUOTATION) "QUOTATION" else "SERVICE_REQUEST",
+                title = if (cat == HelpCategory.QUOTATION) "New Quotation Request" else if (id > 0L) "Service Request Updated" else "New ${cat.label}",
                 message = "${customerName.ifBlank { phone }} — ${helpDescription.trim().take(80)}",
-                targetRole = "technician"
+                targetRole = if (cat == HelpCategory.QUOTATION && !current.isAdmin) "admin" else "technician"
             )
             onSaved?.invoke(saved)
+        }
+    }
+
+    fun approveQuotationWithInstallationDate(
+        requestId: Long,
+        installationDate: String,
+        assignedTechnician: String = "",
+        onDone: () -> Unit = {}
+    ) {
+        val current = _session.value
+        if (current == null || !current.isAdmin) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Admin access only", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            val res = repository.approveQuotationWithInstallationDate(requestId, installationDate, assignedTechnician)
+            if (res.isSuccess) {
+                val updated = res.getOrNull()!!
+                soundEngine.play(SoundCue.SAVE)
+                emitToast("Quotation Approved! Installation scheduled for ${updated.installationDate}")
+                pushCloudNotification(
+                    category = "INSTALLATION",
+                    title = "Installation Scheduled (${updated.installationDate})",
+                    message = "${updated.customerName.ifBlank { updated.phone }} approved — ready for technician acceptance",
+                    targetRole = "technician",
+                    targetUsername = updated.assignedTechnician
+                )
+                onDone()
+            } else {
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(res.exceptionOrNull()?.message ?: "Could not approve quotation", isError = true)
+            }
+        }
+    }
+
+    fun rejectQuotation(requestId: Long, reason: String = "", onDone: () -> Unit = {}) {
+        val current = _session.value
+        if (current == null || !current.isAdmin) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Admin access only", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            val res = repository.rejectQuotation(requestId, reason)
+            if (res.isSuccess) {
+                val updated = res.getOrNull()!!
+                soundEngine.play(SoundCue.DELETE)
+                emitToast("Quotation rejected")
+                pushCloudNotification(
+                    category = "QUOTATION",
+                    title = "Quotation Rejected",
+                    message = "${updated.customerName.ifBlank { "#$requestId" }}${if (reason.isNotBlank()) " — ${reason.trim()}" else ""}",
+                    targetRole = "technician"
+                )
+                onDone()
+            } else {
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(res.exceptionOrNull()?.message ?: "Could not reject quotation", isError = true)
+            }
+        }
+    }
+
+    fun rejectHelpRequest(requestId: Long, reason: String = "", onDone: () -> Unit = {}) {
+        val user = _session.value ?: return
+        if (user.isSuperAdmin) {
+            emitToast("Super Admin is view-only", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            val res = repository.rejectHelpRequest(requestId, user.username, user.isAdmin, reason)
+            if (res.isSuccess) {
+                val req = res.getOrNull()
+                soundEngine.play(SoundCue.DELETE)
+                emitToast("Request rejected")
+                pushCloudNotification(
+                    category = if (req?.category == HelpCategory.INSTALLATION.code) "INSTALLATION" else "SERVICE_REQUEST",
+                    title = "Job Rejected by @${user.username}",
+                    message = "${req?.customerName.orEmpty().ifBlank { "#$requestId" }}${if (reason.isNotBlank()) ": ${reason.trim()}" else ""}",
+                    targetRole = "admin"
+                )
+                onDone()
+            } else {
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(res.exceptionOrNull()?.message ?: "Could not reject request", isError = true)
+            }
+        }
+    }
+
+    fun dismissInstallationReminder(requestId: Long) {
+        viewModelScope.launch {
+            repository.markInstallationReminderSent(requestId)
+            soundEngine.play(SoundCue.CLICK)
         }
     }
 
@@ -2447,7 +2823,7 @@ class BillingViewModel(
                 soundEngine.play(SoundCue.SAVE)
                 emitToast("Request accepted by @${user.username}. Solved/Not Solved unlocks in 15 min.")
                 pushCloudNotification(
-                    category = "SERVICE_REQUEST",
+                    category = if (req?.category == HelpCategory.INSTALLATION.code) "INSTALLATION" else "SERVICE_REQUEST",
                     title = "Service Accepted by @${user.username}",
                     message = "${req?.customerName.orEmpty().ifBlank { req?.phone.orEmpty() }} is now in progress",
                     targetRole = "admin"
@@ -2525,6 +2901,11 @@ class BillingViewModel(
             .filter { it.isNotBlank() }
             .joinToString("\n")
         soundEngine.play(SoundCue.CLICK)
+        val defaultCharge = if (request.category == HelpCategory.INSTALLATION.code) {
+            ChargeType.INSTALLATION
+        } else {
+            ChargeType.CUSTOMER_CARE_AND_SUPPORT
+        }
         _billDraft.value = BillDraft(
             documentType = DocumentType.BILL,
             isHelpBill = true,
@@ -2534,7 +2915,7 @@ class BillingViewModel(
             customerLocationUrl = request.locationUrl,
             invoiceNo = repository.computeNextInvoiceNo(bills.value),
             date = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date()),
-            extraChargeType = ChargeType.CUSTOMER_CARE_AND_SUPPORT,
+            extraChargeType = defaultCharge,
             extraChargeAmountText = "0"
         )
         _activeTab.value = MainTab.BILL
@@ -2695,9 +3076,12 @@ class BillingViewModel(
                             )
                         )
                     )
+                    if (created.activationPasskey.isNotBlank()) {
+                        _lastCreatedTechPasskey.value = created
+                    }
                     soundEngine.play(SoundCue.SAVE)
                     emitToast(
-                        "Firebase Technician created: ${created.email} (@${created.username}). Must change password on first login."
+                        "Firebase Technician created: ${created.email} (@${created.username}). Share Activation Passkey securely."
                     )
                     onSuccess()
                 } else {

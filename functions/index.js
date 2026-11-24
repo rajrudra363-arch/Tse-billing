@@ -2,12 +2,17 @@
 
 const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
-const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestore");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const {
   DATABASE_ID,
   createTechnicianAccountHandler,
-  completeTechnicianPasswordChangeHandler
+  verifyTechnicianActivationHandler,
+  regenerateTechnicianPasskeyHandler,
+  completeTechnicianPasswordChangeHandler,
+  purgeExpiredTrashCallableHandler,
+  scheduledPurgeExpiredTrashHandler
 } = require("./handler");
 
 initializeApp();
@@ -30,6 +35,35 @@ exports.createTechnicianAccount = onCall(
   }
 );
 
+exports.verifyTechnicianActivation = onCall(
+  {
+    region: "asia-south1",
+    cors: true
+  },
+  async (request) => {
+    return verifyTechnicianActivationHandler(request, {
+      auth,
+      db,
+      FieldValue,
+      HttpsError
+    });
+  }
+);
+
+exports.regenerateTechnicianPasskey = onCall(
+  {
+    region: "asia-south1",
+    cors: true
+  },
+  async (request) => {
+    return regenerateTechnicianPasskeyHandler(request, {
+      db,
+      FieldValue,
+      HttpsError
+    });
+  }
+);
+
 exports.completeTechnicianPasswordChange = onCall(
   {
     region: "asia-south1",
@@ -40,6 +74,33 @@ exports.completeTechnicianPasswordChange = onCall(
       db,
       FieldValue,
       HttpsError
+    });
+  }
+);
+
+exports.purgeExpiredTrash = onCall(
+  {
+    region: "asia-south1",
+    cors: true
+  },
+  async (request) => {
+    return purgeExpiredTrashCallableHandler(request, {
+      db,
+      Timestamp,
+      HttpsError
+    });
+  }
+);
+
+exports.scheduledPurgeExpiredTrash = onSchedule(
+  {
+    schedule: "every 60 minutes",
+    region: "asia-south1"
+  },
+  async () => {
+    return scheduledPurgeExpiredTrashHandler({
+      db,
+      Timestamp
     });
   }
 );

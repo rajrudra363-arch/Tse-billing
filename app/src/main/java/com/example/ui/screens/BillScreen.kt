@@ -122,7 +122,6 @@ import com.example.data.ProductEntity
 import com.example.data.UpiSettings
 import com.example.data.UserSession
 import com.example.ui.BillDraft
-import com.example.ui.components.CameraSignatureBox
 import com.example.ui.components.ProvideSafeTextToolbar
 import com.example.ui.components.QrCodeImage
 import com.example.ui.components.bringIntoViewOnFocus
@@ -685,6 +684,7 @@ fun BillScreen(
                 index = index,
                 item = item,
                 products = products,
+                documentType = draft.documentType,
                 isAdmin = isAdmin,
                 isLastRow = (index == draft.items.lastIndex),
                 canAddMore = draft.items.size < 15,
@@ -855,7 +855,7 @@ fun BillScreen(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                        Text("Step 3: Payment Mode, Customer Info QR & Signature", style = MaterialTheme.typography.titleMedium)
+                        Text("Step 3: Payment Mode & Customer Info QR", style = MaterialTheme.typography.titleMedium)
 
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("Select Payment Mode", style = MaterialTheme.typography.labelMedium)
@@ -917,10 +917,25 @@ fun BillScreen(
 
                         HorizontalDivider()
 
-                        CameraSignatureBox(
-                            signatureBase64 = draft.signatureBase64,
-                            onSignatureChanged = onSignatureChanged
-                        )
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth().testTag("blank_signature_notice")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(Icons.Default.Description, contentDescription = null, tint = TealAccent, modifier = Modifier.size(18.dp))
+                                Text(
+                                    text = "Print / PDF renders an empty Customer Signature box for physical customer signing.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -933,6 +948,22 @@ fun BillScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (summaryError.isNotBlank() && !draft.summaryOpen) {
+                        Surface(
+                            color = RedDueBg,
+                            border = BorderStroke(1.dp, RedDue),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth().testTag("bill_screen_stock_error")
+                        ) {
+                            Text(
+                                text = summaryError,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = RedDueDark,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1015,6 +1046,7 @@ private fun InvoiceItemEditorCard(
     index: Int,
     item: InvoiceItem,
     products: List<ProductEntity>,
+    documentType: DocumentType = DocumentType.BILL,
     isAdmin: Boolean,
     isLastRow: Boolean,
     canAddMore: Boolean,
@@ -1026,6 +1058,14 @@ private fun InvoiceItemEditorCard(
     onUpdate: (String?, Double?, String?, Double?) -> Unit,
     onDelete: () -> Unit
 ) {
+    val matchedProduct = remember(products, item.description) {
+        val cleanDesc = item.description.trim()
+        if (cleanDesc.isEmpty()) null
+        else products.firstOrNull { it.name.trim().equals(cleanDesc, ignoreCase = true) }
+    }
+    val isStockTracked = matchedProduct != null && (matchedProduct.stockQty > 0.0 || matchedProduct.minStockAlert > 0.0)
+    val availStock = matchedProduct?.stockQty ?: 0.0
+    val exceedsStock = documentType == DocumentType.BILL && isStockTracked && item.qty > availStock + 1e-6
     var folderMenuOpen by remember { mutableStateOf(false) }
     var productMenuOpen by remember { mutableStateOf(false) }
     val itemFocusManager = LocalFocusManager.current
@@ -1182,9 +1222,14 @@ private fun InvoiceItemEditorCard(
                     modifier = Modifier.widthIn(max = 320.dp)
                 ) {
                     folderFilteredProducts.forEach { prod ->
+                        val hasStock = prod.stockQty > 0.0 || prod.minStockAlert > 0.0
+                        val stockLabel = if (hasStock) {
+                            val sTxt = if (prod.stockQty % 1.0 == 0.0) prod.stockQty.toInt().toString() else String.format(Locale.US, "%.1f", prod.stockQty)
+                            " · Stock: $sTxt"
+                        } else ""
                         DropdownMenuItem(
                             text = {
-                                Text("${prod.name} (${prod.unit} · ₹${String.format(Locale.US, "%.0f", prod.defaultRate)})")
+                                Text("${prod.name} (${prod.unit} · ₹${String.format(Locale.US, "%.0f", prod.defaultRate)}$stockLabel)")
                             },
                             onClick = {
                                 onSelectProduct(prod)
@@ -1249,6 +1294,7 @@ private fun InvoiceItemEditorCard(
                         onUpdate(null, it.toDoubleOrNull() ?: 0.0, null, null)
                     },
                     label = { Text("Qty") },
+                    isError = exceedsStock,
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Decimal,
                         imeAction = if (isAdmin) ImeAction.Next else ImeAction.Done
@@ -1305,6 +1351,28 @@ private fun InvoiceItemEditorCard(
                         }
                         .testTag("item_rate_input_$index")
                 )
+            }
+
+            if (isStockTracked && matchedProduct != null) {
+                val stockStr = if (availStock % 1.0 == 0.0) availStock.toInt().toString() else String.format(Locale.US, "%.1f", availStock)
+                Surface(
+                    color = if (exceedsStock) RedDueBg else GreenPaidBg,
+                    border = BorderStroke(1.dp, if (exceedsStock) RedDue else GreenPaid),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("item_stock_badge_$index")
+                ) {
+                    Text(
+                        text = if (exceedsStock) {
+                            "Insufficient stock for ${matchedProduct.name}! Available: $stockStr ${matchedProduct.unit}"
+                        } else {
+                            "Available Stock: $stockStr ${matchedProduct.unit}"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (exceedsStock) RedDueDark else GreenPaid,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
             }
 
             if (isLastRow && canAddMore && (item.description.isNotBlank() || item.rate > 0.0)) {

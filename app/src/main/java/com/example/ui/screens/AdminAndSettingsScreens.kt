@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Draw
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonAdd
@@ -63,6 +65,7 @@ import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.RestoreFromTrash
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Star
@@ -76,6 +79,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -100,10 +104,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -115,6 +122,7 @@ import com.example.BuildConfig
 import com.example.data.AuditLogEntity
 import com.example.data.AuthPolicy
 import com.example.data.CloudAuthUser
+import com.example.data.CloudTechCreationResult
 import com.example.data.CloudWorkspaceInfo
 import com.example.data.CompanySettings
 import com.example.data.ExpenseEntity
@@ -191,7 +199,10 @@ fun AdminPanelScreen(
     onSaveExpense: (title: String, category: String, amountText: String, note: String, onSuccess: () -> Unit) -> Unit = { _, _, _, _, _ -> },
     onDeleteExpense: (String) -> Unit = {},
     onRestoreTrash: (String) -> Unit = {},
-    onPurgeExpiredTrash: () -> Unit = {}
+    onPurgeExpiredTrash: () -> Unit = {},
+    lastCreatedTechPasskey: CloudTechCreationResult? = null,
+    onDismissCreatedTechPasskey: () -> Unit = {},
+    onSendTeamNotification: (category: String, title: String, message: String, targetRole: String, onDone: () -> Unit) -> Unit = { _, _, _, _, _ -> }
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -430,6 +441,71 @@ fun AdminPanelScreen(
                             Spacer(Modifier.width(6.dp))
                             Text("Share Super Admin APK", fontWeight = FontWeight.Bold, color = Color.White)
                         }
+                    }
+                }
+            }
+        }
+
+        // 0b. Team Notification Broadcast (Admin -> Technicians / All)
+        item {
+            var notifCategory by remember { mutableStateOf("GENERAL") }
+            var notifTargetRole by remember { mutableStateOf("all") }
+            var notifTitle by remember { mutableStateOf("") }
+            var notifMessage by remember { mutableStateOf("") }
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.testTag("admin_send_notification_card")
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.Notifications, contentDescription = null, tint = TealAccent)
+                        Text("Send Real-Time Team Notification", style = MaterialTheme.typography.titleMedium)
+                    }
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("all" to "All Team", "technician" to "Technicians", "super_admin" to "Super Admin").forEach { (rCode, rLabel) ->
+                            FilterChip(
+                                selected = notifTargetRole == rCode,
+                                onClick = { notifTargetRole = rCode },
+                                label = { Text(rLabel) }
+                            )
+                        }
+                        listOf("GENERAL" to "General", "STOCK" to "Stock", "SERVICE_REQUEST" to "Service").forEach { (cCode, cLabel) ->
+                            FilterChip(
+                                selected = notifCategory == cCode,
+                                onClick = { notifCategory = cCode },
+                                label = { Text(cLabel) }
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = notifTitle,
+                        onValueChange = { notifTitle = it },
+                        label = { Text("Notification Title") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("admin_notif_title_input")
+                    )
+                    OutlinedTextField(
+                        value = notifMessage,
+                        onValueChange = { notifMessage = it },
+                        label = { Text("Message to Team") },
+                        minLines = 2,
+                        modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("admin_notif_message_input")
+                    )
+                    Button(
+                        onClick = {
+                            clearFocusAndHideToolbar(focusManager, textToolbar)
+                            onSendTeamNotification(notifCategory, notifTitle, notifMessage, notifTargetRole) {
+                                notifTitle = ""
+                                notifMessage = ""
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
+                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("admin_send_notif_button")
+                    ) {
+                        Icon(Icons.Default.Send, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Send Alert Notification", fontWeight = FontWeight.Bold, color = Color.White)
                     }
                 }
             }
@@ -1553,6 +1629,96 @@ fun AdminPanelScreen(
             onSave = { newUsername, newName, newPhone, newPassword, newPhoto ->
                 onUpdateTechnician(techToEdit.username, newUsername, newName, newPhone, newPassword, newPhoto) {
                     editingTech = null
+                }
+            }
+        )
+    }
+
+    val createdPasskeyInfo = lastCreatedTechPasskey
+    if (createdPasskeyInfo != null) {
+        val clipboard = LocalClipboardManager.current
+        val shareText = buildString {
+            appendLine("TSE Billing Technician Account Ready")
+            appendLine("Name: ${createdPasskeyInfo.name}")
+            appendLine("Email: ${createdPasskeyInfo.email}")
+            appendLine("Username: @${createdPasskeyInfo.username}")
+            appendLine("Activation Passkey: ${createdPasskeyInfo.activationPasskey}")
+            append("Open the Technician APK, enter your Email & Activation Passkey, then log in and change your password on first login.")
+        }
+        AlertDialog(
+            onDismissRequest = onDismissCreatedTechPasskey,
+            modifier = Modifier.testTag("tech_passkey_dialog"),
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Key, contentDescription = null, tint = GoldAccent)
+                    Text("Technician Activation Passkey", fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Share this one-time Activation Passkey with ${createdPasskeyInfo.name}. Required when opening the Technician APK for the first time:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Surface(
+                        color = GreenPaidBg,
+                        border = BorderStroke(1.5.dp, GreenPaid),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Email: ${createdPasskeyInfo.email}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            Text("Username: @${createdPasskeyInfo.username}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = createdPasskeyInfo.activationPasskey.ifBlank { "Generated" },
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Black,
+                                color = NavyDeep,
+                                modifier = Modifier.testTag("tech_passkey_value")
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = {
+                                clipboard.setText(AnnotatedString(shareText))
+                                Toast.makeText(context, "Passkey copied!", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.weight(1f).testTag("copy_tech_passkey_button")
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Copy")
+                        }
+                        Button(
+                            onClick = {
+                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_TEXT, shareText)
+                                    setPackage("com.whatsapp")
+                                }
+                                runCatching { context.startActivity(intent) }.onFailure {
+                                    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, shareText)
+                                    }, "Share Technician Passkey"))
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+                            modifier = Modifier.weight(1f).testTag("share_tech_passkey_whatsapp_button")
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("WhatsApp", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = onDismissCreatedTechPasskey) {
+                    Text("Done")
                 }
             }
         )

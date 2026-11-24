@@ -86,7 +86,13 @@ data class CustomerHelpEntity(
     val acceptedByPhone: String = "",
     val acceptedAt: Long = 0L,
     val solvedAt: Long = 0L,
-    val billId: String = ""
+    val billId: String = "",
+    val category: String = "REGULAR_SERVICE",
+    val quotationStatus: String = "",
+    val installationDate: String = "",
+    val installationReminderSent: Boolean = false,
+    val rejectedReason: String = "",
+    val assignedTechnician: String = ""
 )
 
 @Entity(tableName = "technician_settlements")

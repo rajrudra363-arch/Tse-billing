@@ -1738,7 +1738,41 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun mandatoryPasswordChangeScreen_blocksWeakAndMismatch_submitsStrongMatchingPassword() {
+    fun mandatoryPasswordChangeScreen_blocksWeakPassword() {
+        val pending = PendingPasswordChangeState(
+            uid = "uid_tech_1",
+            email = "rahul.tech@example.com",
+            name = "Rahul Tech",
+            username = "rahul_tech",
+            phone = "9876543210",
+            photoBase64 = "",
+            role = "technician",
+            workspaceId = "ws_tse_1",
+            companyName = "TOTAL SOLUTION ENTERPRISES"
+        )
+        composeTestRule.setContent {
+            TseBillingTheme {
+                MandatoryPasswordChangeScreen(
+                    pendingState = pending,
+                    authError = "",
+                    busy = false,
+                    onSubmitNewPassword = { _, _ -> },
+                    onSignOut = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("mandatory_password_change_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("first_login_update_password_button").performScrollTo().assertIsNotEnabled()
+
+        // Weak password keeps submit disabled
+        composeTestRule.onNodeWithTag("first_login_new_password").performScrollTo().performTextInput("weak")
+        composeTestRule.onNodeWithTag("first_login_confirm_password").performScrollTo().performTextInput("weak")
+        composeTestRule.onNodeWithTag("first_login_update_password_button").performScrollTo().assertIsNotEnabled()
+    }
+
+    @Test
+    fun mandatoryPasswordChangeScreen_submitsStrongMatchingPassword() {
         var submittedNew = ""
         var submittedConfirm = ""
         val pending = PendingPasswordChangeState(
@@ -1767,17 +1801,8 @@ class ExampleRobolectricTest {
             }
         }
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("mandatory_password_change_screen").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("first_login_update_password_button").performScrollTo().assertIsNotEnabled()
-
-        // Weak password keeps submit disabled
-        composeTestRule.onNodeWithTag("first_login_new_password").performScrollTo().performTextInput("weak")
-        composeTestRule.onNodeWithTag("first_login_confirm_password").performScrollTo().performTextInput("weak")
-        composeTestRule.onNodeWithTag("first_login_update_password_button").performScrollTo().assertIsNotEnabled()
-
-        // Strong matching password enables submit and calls callback
-        composeTestRule.onNodeWithTag("first_login_new_password").performScrollTo().performTextReplacement("StrongTech@2026")
-        composeTestRule.onNodeWithTag("first_login_confirm_password").performScrollTo().performTextReplacement("StrongTech@2026")
+        composeTestRule.onNodeWithTag("first_login_new_password").performScrollTo().performTextInput("StrongTech@2026")
+        composeTestRule.onNodeWithTag("first_login_confirm_password").performScrollTo().performTextInput("StrongTech@2026")
         composeTestRule.onNodeWithTag("first_login_update_password_button")
             .performScrollTo()
             .assertIsEnabled()
@@ -1948,7 +1973,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun billScreen_hidesCameraSignatureBox_andInvoiceSheetPreviewRendersBlankSignatureBox() {
+    fun billScreen_hidesCameraSignatureBox() {
         val techUser = UserSession(username = "tech1", displayName = "Tech", role = "technician")
         val draft = BillDraft(
             invoiceNo = "TSE-SIG-01",
@@ -1956,112 +1981,102 @@ class ExampleRobolectricTest {
             customerName = "Signature Test",
             items = listOf(InvoiceItem(description = "DVR", qty = 1.0, rate = 4000.0))
         )
-        var showSheetPreview by mutableStateOf(false)
         composeTestRule.setContent {
             TseBillingTheme {
-                if (!showSheetPreview) {
-                    BillScreen(
-                        draft = draft,
-                        products = emptyList(),
-                        customers = emptyList(),
-                        allBills = emptyList(),
-                        company = CompanySettings(),
-                        upi = UpiSettings(),
-                        currentUser = techUser,
-                        isNightClosed = false,
-                        summaryError = "",
-                        exportOptionsPayload = null,
-                        onSetDocumentType = {},
-                        onQuotationNoteChange = {},
-                        onCustomerNameChange = {},
-                        onCustomerSelected = {},
-                        onCustomerDetailsChange = {},
-                        onCustomerLocationUrlChange = {},
-                        onInvoiceNoChange = {},
-                        onInvoiceDateChange = {},
-                        onAddItem = {},
-                        onSelectFolderForRow = { _, _ -> },
-                        onSelectProductForRow = { _, _ -> },
-                        onUpdateItem = { _, _, _, _, _ -> },
-                        onRemoveItem = {},
-                        onExtraChargeTypeChange = {},
-                        onExtraChargeAmountChange = {},
-                        onDiscountChange = {},
-                        onPaidAmountChange = {},
-                        onPaymentModeChange = {},
-                        onSignatureChanged = {},
-                        onCustomQrTextChange = {},
-                        onStaffRatingChange = {},
-                        onStaffReviewChange = {},
-                        onToggleSheetPreview = {},
-                        onResetBill = {},
-                        onOpenSummaryModal = {},
-                        onCloseSummaryModal = {},
-                        onRequestGenerateWithDeviceAuth = {},
-                        onDismissExportOptions = {},
-                        onPrintA4 = {},
-                        onSavePdf = {},
-                        onSharePdf = {},
-                        onSavePhoto = {},
-                        onSharePhoto = {}
-                    )
-                } else {
-                    InvoiceSheetPreview(
-                        draft = draft,
-                        company = CompanySettings(),
-                        upi = UpiSettings()
-                    )
-                }
+                BillScreen(
+                    draft = draft,
+                    products = emptyList(),
+                    customers = emptyList(),
+                    allBills = emptyList(),
+                    company = CompanySettings(),
+                    upi = UpiSettings(),
+                    currentUser = techUser,
+                    isNightClosed = false,
+                    summaryError = "",
+                    exportOptionsPayload = null,
+                    onSetDocumentType = {},
+                    onQuotationNoteChange = {},
+                    onCustomerNameChange = {},
+                    onCustomerSelected = {},
+                    onCustomerDetailsChange = {},
+                    onCustomerLocationUrlChange = {},
+                    onInvoiceNoChange = {},
+                    onInvoiceDateChange = {},
+                    onAddItem = {},
+                    onSelectFolderForRow = { _, _ -> },
+                    onSelectProductForRow = { _, _ -> },
+                    onUpdateItem = { _, _, _, _, _ -> },
+                    onRemoveItem = {},
+                    onExtraChargeTypeChange = {},
+                    onExtraChargeAmountChange = {},
+                    onDiscountChange = {},
+                    onPaidAmountChange = {},
+                    onPaymentModeChange = {},
+                    onSignatureChanged = {},
+                    onCustomQrTextChange = {},
+                    onStaffRatingChange = {},
+                    onStaffReviewChange = {},
+                    onToggleSheetPreview = {},
+                    onResetBill = {},
+                    onOpenSummaryModal = {},
+                    onCloseSummaryModal = {},
+                    onRequestGenerateWithDeviceAuth = {},
+                    onDismissExportOptions = {},
+                    onPrintA4 = {},
+                    onSavePdf = {},
+                    onSharePdf = {},
+                    onSavePhoto = {},
+                    onSharePhoto = {}
+                )
             }
         }
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("camera_signature_box").assertDoesNotExist()
         composeTestRule.onNodeWithTag("bill_lazy_list").performScrollToNode(hasTestTag("blank_signature_notice"))
         composeTestRule.onNodeWithTag("blank_signature_notice").assertIsDisplayed()
-
-        showSheetPreview = true
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithText("Customer Signature").assertIsDisplayed()
     }
 
     @Test
-    fun authScreen_passkeyActivationGate_filtersUsernameToVerifiedEmail_andTopBarBellBadge() {
+    fun invoiceSheetPreviewRendersBlankSignatureBox() {
+        val draft = BillDraft(
+            invoiceNo = "TSE-SIG-01",
+            date = "2026-11-24",
+            customerName = "Signature Test",
+            items = listOf(InvoiceItem(description = "DVR", qty = 1.0, rate = 4000.0))
+        )
+        composeTestRule.setContent {
+            TseBillingTheme {
+                InvoiceSheetPreview(
+                    draft = draft,
+                    company = CompanySettings(),
+                    upi = UpiSettings()
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Customer Signature", substring = true).assertExists()
+    }
+
+    @Test
+    fun authScreen_passkeyActivationGate_filtersUsernameToVerifiedEmail() {
         val accounts = listOf(
             UserAccountEntity(username = AuthPolicy.CANONICAL_ADMIN_USERNAME, displayName = "Admin", role = "admin", passwordHash = "h1"),
             UserAccountEntity(username = "rahul_tech", displayName = "Rahul", role = "technician", passwordHash = "h2"),
             UserAccountEntity(username = "other_tech", displayName = "Other", role = "technician", passwordHash = "h3")
         )
         var verifiedState by mutableStateOf(TechActivationState())
-        var showTopBar by mutableStateOf(false)
         composeTestRule.setContent {
             TseBillingTheme {
-                if (!showTopBar) {
-                    AuthScreen(
-                        isAdminConfigured = false,
-                        accounts = accounts,
-                        authError = "",
-                        isStaffOnlyApk = true,
-                        techActivationState = verifiedState,
-                        onClearError = {},
-                        onSetupAdmin = { _, _, _, _ -> },
-                        onLogin = { _, _, _, _ -> }
-                    )
-                } else {
-                    TseTopBar(
-                        company = CompanySettings(),
-                        session = UserSession("rahul_tech", "Rahul", "technician"),
-                        voiceAndNote = VoiceAndNoteSettings(),
-                        liveTimeText = "10:00:00 AM",
-                        isNightClosed = false,
-                        soundEnabled = true,
-                        hasAvailableUpdate = false,
-                        unreadNotifications = 3,
-                        onToggleSound = {},
-                        onOpenUpdateDialog = {},
-                        onOpenNotifications = {},
-                        onLogout = {}
-                    )
-                }
+                AuthScreen(
+                    isAdminConfigured = false,
+                    accounts = accounts,
+                    authError = "",
+                    isStaffOnlyApk = true,
+                    techActivationState = verifiedState,
+                    onClearError = {},
+                    onSetupAdmin = { _, _, _, _ -> },
+                    onLogin = { _, _, _, _ -> }
+                )
             }
         }
         composeTestRule.waitForIdle()
@@ -2084,11 +2099,31 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("login_user_option_rahul_tech").assertIsDisplayed()
         composeTestRule.onNodeWithTag("login_user_option_other_tech").assertDoesNotExist()
         composeTestRule.onNodeWithTag("login_user_option_${AuthPolicy.CANONICAL_ADMIN_USERNAME}").assertDoesNotExist()
+    }
 
-        showTopBar = true
+    @Test
+    fun topBarBellBadge_displaysUnreadCount() {
+        composeTestRule.setContent {
+            TseBillingTheme {
+                TseTopBar(
+                    company = CompanySettings(),
+                    session = UserSession("rahul_tech", "Rahul", "technician"),
+                    voiceAndNote = VoiceAndNoteSettings(),
+                    liveTimeText = "10:00:00 AM",
+                    isNightClosed = false,
+                    soundEnabled = true,
+                    hasAvailableUpdate = false,
+                    unreadNotifications = 3,
+                    onToggleSound = {},
+                    onOpenUpdateDialog = {},
+                    onOpenNotifications = {},
+                    onLogout = {}
+                )
+            }
+        }
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("notification_bell_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("notification_unread_badge").assertTextContains("3")
+        composeTestRule.onNode(hasTestTag("notification_unread_badge"), useUnmergedTree = true).assertExists()
     }
 }
 

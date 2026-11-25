@@ -834,6 +834,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
 
                                     MainTab.CUSTOMERS -> CustomersScreen(
                                         customers = customers,
+                                        bills = bills,
                                         user = currentSession,
                                         searchQuery = customerSearch,
                                         onSearchChange = viewModel::updateCustomerSearch,
@@ -846,7 +847,9 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                                 id = id
                                             )
                                         },
-                                        onDeleteCustomer = viewModel::deleteCustomer
+                                        onDeleteCustomer = viewModel::deleteCustomer,
+                                        onDeleteBill = viewModel::deleteBill,
+                                        onOpenBill = viewModel::openBillForEdit
                                     )
 
                                     MainTab.HELP -> CustomerHelpScreen(

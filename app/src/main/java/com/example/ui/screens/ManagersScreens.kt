@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -37,7 +38,9 @@ import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -71,8 +74,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.example.data.BillEntity
 import com.example.data.BillingRepository
 import com.example.data.CustomerEntity
+import com.example.data.DocumentType
 import com.example.data.ProductEntity
 import com.example.data.UserSession
 import com.example.ui.components.ProvideSafeTextToolbar
@@ -105,9 +110,12 @@ fun CustomersScreen(
     customers: List<CustomerEntity>,
     user: UserSession,
     searchQuery: String = "",
+    bills: List<BillEntity> = emptyList(),
     onSearchChange: ((String) -> Unit)? = null,
     onSaveCustomer: (id: Long, name: String, phone: String, address: String, locationUrl: String) -> Unit,
-    onDeleteCustomer: (Long) -> Unit
+    onDeleteCustomer: (Long) -> Unit,
+    onDeleteBill: ((String) -> Unit)? = null,
+    onOpenBill: ((BillEntity) -> Unit)? = null
 ) {
     val canManageCustomers = user.isAdmin && !user.isSuperAdmin
     val context = LocalContext.current
@@ -119,6 +127,9 @@ fun CustomersScreen(
     val filteredCustomers = remember(customers, activeQuery) {
         BillingRepository.filterCustomers(customers, activeQuery)
     }
+
+    var selectedCustomerForBills by remember { mutableStateOf<CustomerEntity?>(null) }
+    var billToDeleteConfirm by remember { mutableStateOf<BillEntity?>(null) }
 
     var editingId by remember { mutableStateOf(0L) }
     var name by remember { mutableStateOf("") }
@@ -366,6 +377,19 @@ fun CustomersScreen(
                 val displayAddress = cust.address.ifBlank { cust.details }
                 val mapTarget = cust.locationUrl.ifBlank { displayAddress }
 
+                val custBills = remember(bills, cust) {
+                    val custNameLower = cust.name.trim().lowercase(Locale.ROOT)
+                    val custPhoneDigits = cust.phone.filter { it.isDigit() }
+                    val last5 = if (custPhoneDigits.length >= 5) custPhoneDigits.takeLast(5) else ""
+                    bills.filter { b ->
+                        val bNameLower = b.customerName.trim().lowercase(Locale.ROOT)
+                        val bDetails = b.customerDetails
+                        val nameMatches = custNameLower.isNotBlank() && (bNameLower.contains(custNameLower) || custNameLower.contains(bNameLower))
+                        val phoneMatches = last5.isNotBlank() && bDetails.contains(last5)
+                        nameMatches || phoneMatches
+                    }
+                }
+
                 Card(
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -402,6 +426,22 @@ fun CustomersScreen(
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.primary
                                     )
+                                }
+                                if (custBills.isNotEmpty()) {
+                                    val totalBilled = custBills.sumOf { it.grandTotal }
+                                    val totalDue = custBills.sumOf { it.dueAmount }
+                                    Surface(
+                                        color = if (totalDue > 0.009) RedDueBg else GreenPaidBg,
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Text(
+                                            text = "${custBills.size} Bill(s) · ₹${String.format(Locale.US, "%.0f", totalBilled)}" + if (totalDue > 0.009) " (Due ₹${String.format(Locale.US, "%.0f", totalDue)})" else " (Clear)",
+                                            color = if (totalDue > 0.009) RedDueDark else GreenPaid,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
                                 }
                             }
                             if (canManageCustomers) {
@@ -463,6 +503,26 @@ fun CustomersScreen(
                                     Text(if (cust.locationUrl.isNotBlank()) "View Saved Location on Maps" else "Search Address on Maps")
                                 }
                             }
+
+                            if (canManageCustomers && onDeleteBill != null) {
+                                OutlinedButton(
+                                    onClick = {
+                                        clearFocusAndHideToolbar(focusManager, textToolbar)
+                                        selectedCustomerForBills = cust
+                                    },
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = if (custBills.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                    ),
+                                    modifier = Modifier.testTag("manage_customer_bills_${cust.id}")
+                                ) {
+                                    Icon(Icons.Default.ReceiptLong, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        text = if (custBills.isNotEmpty()) "Customer Bills (${custBills.size}) / Delete" else "Customer Bills (0)",
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -470,6 +530,187 @@ fun CustomersScreen(
         }
 
         item { Spacer(Modifier.height(16.dp)) }
+    }
+
+    val activeCustForBills = selectedCustomerForBills
+    if (activeCustForBills != null) {
+        val custBills = remember(bills, activeCustForBills) {
+            val custNameLower = activeCustForBills.name.trim().lowercase(Locale.ROOT)
+            val custPhoneDigits = activeCustForBills.phone.filter { it.isDigit() }
+            val last5 = if (custPhoneDigits.length >= 5) custPhoneDigits.takeLast(5) else ""
+            bills.filter { b ->
+                val bNameLower = b.customerName.trim().lowercase(Locale.ROOT)
+                val bDetails = b.customerDetails
+                val nameMatches = custNameLower.isNotBlank() && (bNameLower.contains(custNameLower) || custNameLower.contains(bNameLower))
+                val phoneMatches = last5.isNotBlank() && bDetails.contains(last5)
+                nameMatches || phoneMatches
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { selectedCustomerForBills = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.ReceiptLong, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Text("Customer Bills (${activeCustForBills.name})")
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (activeCustForBills.phone.isNotBlank()) {
+                        Text("Mobile: ${activeCustForBills.phone}", style = MaterialTheme.typography.bodySmall, color = TealAccent)
+                    }
+
+                    if (custBills.isEmpty()) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text("No saved bills found for this customer.", style = MaterialTheme.typography.bodyMedium)
+                                Text("Any new bill created with this customer's name or mobile will appear here.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    } else {
+                        val totalBilled = custBills.sumOf { it.grandTotal }
+                        val totalDue = custBills.sumOf { it.dueAmount }
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(8.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Total: ₹${String.format(Locale.US, "%.0f", totalBilled)}", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    text = if (totalDue > 0.009) "Due: ₹${String.format(Locale.US, "%.0f", totalDue)}" else "Status: Fully Paid",
+                                    color = if (totalDue > 0.009) RedDue else GreenPaid,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+
+                        custBills.forEach { bill ->
+                            val isQuotation = DocumentType.fromString(bill.documentType) == DocumentType.QUOTATION
+                            val hasDue = !isQuotation && bill.dueAmount > 0.009
+                            Card(
+                                shape = RoundedCornerShape(10.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (hasDue) RedDueBg else MaterialTheme.colorScheme.surfaceVariant
+                                ),
+                                border = BorderStroke(1.dp, if (hasDue) RedDue.copy(alpha = 0.5f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+                            ) {
+                                Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "${bill.invoiceNo} · ${bill.date}",
+                                            fontWeight = FontWeight.Bold,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        Text(
+                                            text = "₹${String.format(Locale.US, "%.2f", bill.grandTotal)}",
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (hasDue) RedDueDark else GreenPaid
+                                        )
+                                    }
+                                    if (bill.createdBy.isNotBlank()) {
+                                        Text(
+                                            text = "Technician: @${bill.createdBy}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    if (hasDue) {
+                                        Text(
+                                            text = "Due Balance: ₹${String.format(Locale.US, "%.2f", bill.dueAmount)}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = RedDueDark,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.End,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (onOpenBill != null) {
+                                            TextButton(onClick = {
+                                                selectedCustomerForBills = null
+                                                onOpenBill(bill)
+                                            }) {
+                                                Text("Open")
+                                            }
+                                        }
+                                        if (canManageCustomers && onDeleteBill != null) {
+                                            Button(
+                                                onClick = { billToDeleteConfirm = bill },
+                                                colors = ButtonDefaults.buttonColors(containerColor = RedDue, contentColor = Color.White),
+                                                modifier = Modifier.testTag("delete_cust_bill_${bill.invoiceNo}")
+                                            ) {
+                                                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                                                Spacer(Modifier.width(4.dp))
+                                                Text("Delete Bill", color = Color.White, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { selectedCustomerForBills = null }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
+    val billToDelete = billToDeleteConfirm
+    if (billToDelete != null) {
+        AlertDialog(
+            onDismissRequest = { billToDeleteConfirm = null },
+            title = { Text("Delete Customer Bill (${billToDelete.invoiceNo})?") },
+            text = {
+                Text(
+                    "Are you sure you want to delete Invoice ${billToDelete.invoiceNo} for ${billToDelete.customerName} (₹${String.format(Locale.US, "%.2f", billToDelete.grandTotal)})?\n\nThis bill will be moved to Trash (recoverable for 24 hours). Only Admin can delete customer bills."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val idToDelete = billToDelete.id
+                        billToDeleteConfirm = null
+                        onDeleteBill?.invoke(idToDelete)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = RedDue, contentColor = Color.White)
+                ) {
+                    Text("Delete Bill", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { billToDeleteConfirm = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 

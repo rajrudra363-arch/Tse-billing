@@ -523,6 +523,7 @@ private fun SavedDocCard(
         targetValue = if (hasDue) MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.72f) else MaterialTheme.colorScheme.surface,
         label = "billCardBg"
     )
+    var showDeleteConfirm by remember { mutableStateOf(false) }
     Card(
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = cardBg),
@@ -840,21 +841,19 @@ private fun SavedDocCard(
                         Text("Open / Edit", fontWeight = FontWeight.Bold, color = Color.White)
                     }
 
-                    if (bill.staffRating == 0) {
-                        Button(
-                            onClick = onDeleteBill,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = RedDue,
-                                contentColor = Color.White,
-                                disabledContainerColor = Color(0xFF334155),
-                                disabledContentColor = Color(0xFFF1F5F9)
-                            ),
-                            modifier = Modifier.testTag("delete_saved_${bill.invoiceNo}")
-                        ) {
-                            Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(4.dp))
-                            Text("Delete", fontWeight = FontWeight.Bold, color = Color.White)
-                        }
+                    Button(
+                        onClick = { showDeleteConfirm = true },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = RedDue,
+                            contentColor = Color.White,
+                            disabledContainerColor = Color(0xFF334155),
+                            disabledContentColor = Color(0xFFF1F5F9)
+                        ),
+                        modifier = Modifier.testTag("delete_saved_${bill.invoiceNo}")
+                    ) {
+                        Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Delete", fontWeight = FontWeight.Bold, color = Color.White)
                     }
                 } else {
                     Text(
@@ -866,6 +865,34 @@ private fun SavedDocCard(
                 }
             }
         }
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete Customer Bill (${bill.invoiceNo})?") },
+            text = {
+                Text(
+                    "Are you sure you want to delete Invoice ${bill.invoiceNo} for ${bill.customerName.ifBlank { "Walk-in Customer" }} (Total: ₹${String.format(Locale.US, "%.2f", bill.grandTotal)})?\n\nThis customer bill will be moved to Trash (recoverable for 24 hours). Only Admin can delete customer bills."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteConfirm = false
+                        onDeleteBill()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = RedDue, contentColor = Color.White)
+                ) {
+                    Text("Delete Bill", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 

@@ -1408,7 +1408,7 @@ class ExampleRobolectricTest {
         helper.close()
 
         val migratedDb = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9)
+            .addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10)
             .allowMainThreadQueries()
             .build()
         try {
@@ -2461,6 +2461,49 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithText("Cloud Active (rajrudra363@gmail.com)").assertIsDisplayed()
         composeTestRule.onNodeWithText("Technician Invite Code: TSE-T-TEST1234").assertIsDisplayed()
         composeTestRule.onNodeWithText("Super Admin Invite Code: TSE-S-TEST5678").assertIsDisplayed()
+    }
+
+    @Test
+    fun adminCanDeleteCustomerBill_andRestoresStock_andMovesToTrash() = runTest {
+        val now = System.currentTimeMillis()
+        val bill = BillEntity(
+            id = "b_cust_del_1",
+            invoiceNo = "TSE-999",
+            date = "2026-11-25",
+            customerName = "Ramesh Kumar",
+            customerDetails = "Panaji\n9876543210",
+            itemsJson = "[]",
+            subtotal = 3500.0,
+            discount = 0.0,
+            grandTotal = 3500.0,
+            paidAmount = 3500.0,
+            dueAmount = 0.0,
+            paymentMode = PaymentMode.ONLINE.label,
+            signatureBase64 = "",
+            customQrText = "",
+            createdBy = "tech_rahul",
+            staffRating = 5,
+            staffReviewNote = "Great installation"
+        )
+        repo.saveBill(bill)
+        assertNotNull(repo.getBillById("b_cust_del_1"))
+
+        // Admin force delete customer bill succeeds even if rated
+        val deleted = repo.deleteBill(
+            id = "b_cust_del_1",
+            actorUsername = "Admin",
+            actorRole = "admin",
+            forceAdmin = true,
+            nowMillis = now
+        )
+        assertTrue(deleted)
+        assertNull(repo.getBillById("b_cust_del_1"))
+
+        // Verified in Trash
+        val list: List<TrashItemEntity> = repo.trashItems.first()
+        val trashedBill = list.firstOrNull { it.entityId == "b_cust_del_1" }
+        assertNotNull(trashedBill)
+        assertEquals("Admin", trashedBill?.deletedBy)
     }
 }
 

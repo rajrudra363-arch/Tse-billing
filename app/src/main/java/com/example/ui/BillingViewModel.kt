@@ -2277,7 +2277,7 @@ class BillingViewModel(
         )
     }
 
-    fun deleteBill(id: String) {
+    fun deleteBill(id: String, forceAdmin: Boolean = true) {
         val currentUser = _session.value ?: return
         if (!currentUser.isAdmin) {
             soundEngine.play(SoundCue.ERROR)
@@ -2285,17 +2285,48 @@ class BillingViewModel(
             return
         }
         viewModelScope.launch {
-            val deleted = repository.deleteBill(id, currentUser.username, currentUser.role)
+            val deleted = repository.deleteBill(
+                id = id,
+                actorUsername = currentUser.username,
+                actorRole = currentUser.role,
+                forceAdmin = forceAdmin
+            )
             if (!deleted) {
                 soundEngine.play(SoundCue.ERROR)
-                emitToast("Star rating is locked — rated bills cannot be deleted", isError = true)
+                emitToast("Could not delete bill", isError = true)
                 return@launch
             }
             if (_billDraft.value.editingId == id) {
                 _billDraft.update { it.copy(editingId = null) }
             }
             soundEngine.play(SoundCue.DELETE)
-            emitToast("Moved to Trash (recoverable for 24h)")
+            emitToast("Customer bill moved to Trash (recoverable for 24h)")
+        }
+    }
+
+    fun deleteCustomerBills(billIds: List<String>) {
+        val currentUser = _session.value ?: return
+        if (!currentUser.isAdmin) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Only Admin can delete saved bills", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            var count = 0
+            for (id in billIds) {
+                val ok = repository.deleteBill(
+                    id = id,
+                    actorUsername = currentUser.username,
+                    actorRole = currentUser.role,
+                    forceAdmin = true
+                )
+                if (ok) count++
+                if (_billDraft.value.editingId == id) {
+                    _billDraft.update { it.copy(editingId = null) }
+                }
+            }
+            soundEngine.play(SoundCue.DELETE)
+            emitToast("$count customer bill(s) deleted by Admin")
         }
     }
 

@@ -1078,10 +1078,11 @@ class BillingRepository(
         id: String,
         actorUsername: String = "Admin",
         actorRole: String = "admin",
+        forceAdmin: Boolean = false,
         nowMillis: Long = System.currentTimeMillis()
     ): Boolean {
         val existing = billDao.findById(id) ?: return true
-        if (existing.staffRating in 1..5) {
+        if (existing.staffRating in 1..5 && !forceAdmin) {
             return false
         }
         val trashItem = TrashItemEntity(

@@ -14,6 +14,11 @@ const {
   purgeExpiredTrashCallableHandler,
   scheduledPurgeExpiredTrashHandler
 } = require("./handler");
+const {
+  handlePaymentWebhookHandler,
+  initiateUpiPaymentHandler
+} = require("./handler-payment");
+const { onRequest } = require("firebase-functions/v2/https");
 
 initializeApp();
 
@@ -104,3 +109,39 @@ exports.scheduledPurgeExpiredTrash = onSchedule(
     });
   }
 );
+
+exports.paymentWebhook = onRequest(
+  {
+    region: "asia-south1",
+    cors: true
+  },
+  async (req, res) => {
+    try {
+      const result = await handlePaymentWebhookHandler(req, {
+        db,
+        FieldValue,
+        Timestamp,
+        HttpsError
+      });
+      res.status(200).json(result);
+    } catch (err) {
+      console.error("Payment webhook error:", err);
+      res.status(500).json({ error: err.message || "Webhook processing failed" });
+    }
+  }
+);
+
+exports.initiateUpiPayment = onCall(
+  {
+    region: "asia-south1",
+    cors: true
+  },
+  async (request) => {
+    return initiateUpiPaymentHandler(request, {
+      db,
+      Timestamp,
+      HttpsError
+    });
+  }
+);
+

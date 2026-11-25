@@ -18,9 +18,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TechnicianSettlementEntity::class,
         ExpenseEntity::class,
         TrashItemEntity::class,
-        AuditLogEntity::class
+        AuditLogEntity::class,
+        UpiTransactionEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -34,6 +35,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun expenseDao(): ExpenseDao
     abstract fun trashItemDao(): TrashItemDao
     abstract fun auditLogDao(): AuditLogDao
+    abstract fun upiTransactionDao(): UpiTransactionDao
 
     companion object {
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -201,6 +203,30 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `upi_transactions` (
+                        `paymentId` TEXT NOT NULL PRIMARY KEY,
+                        `billId` TEXT NOT NULL,
+                        `invoiceNo` TEXT NOT NULL,
+                        `orderId` TEXT NOT NULL,
+                        `amount` REAL NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `paymentGateway` TEXT NOT NULL,
+                        `gatewaySignature` TEXT NOT NULL,
+                        `qrCodeUrl` TEXT NOT NULL,
+                        `customerEmail` TEXT NOT NULL,
+                        `customerPhone` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -218,7 +244,8 @@ abstract class AppDatabase : RoomDatabase() {
                     MIGRATION_5_6,
                     MIGRATION_6_7,
                     MIGRATION_7_8,
-                    MIGRATION_8_9
+                    MIGRATION_8_9,
+                    MIGRATION_9_10
                 ).build().also { INSTANCE = it }
             }
         }

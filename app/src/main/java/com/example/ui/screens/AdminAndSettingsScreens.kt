@@ -406,6 +406,42 @@ fun AdminPanelScreen(
                         ) {
                             Text("Activate Admin Cloud Workspace", fontWeight = FontWeight.Bold, color = Color.White)
                         }
+                        if (cloudAuthError.isNotBlank()) {
+                            val clipboard = LocalClipboardManager.current
+                            Surface(
+                                color = RedDueBg,
+                                border = BorderStroke(1.dp, RedDue),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth().testTag("admin_cloud_auth_error_banner")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.Top,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = cloudAuthError,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = RedDueDark,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    IconButton(
+                                        onClick = {
+                                            clipboard.setText(AnnotatedString(cloudAuthError))
+                                            Toast.makeText(context, "Error copied", Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.ContentCopy,
+                                            contentDescription = "Copy error",
+                                            tint = RedDueDark,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     } else {
                         Surface(
                             color = GreenPaidBg,

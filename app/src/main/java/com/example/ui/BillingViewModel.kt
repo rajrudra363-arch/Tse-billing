@@ -873,16 +873,30 @@ class BillingViewModel(
             _cloudUser.value = authUser
             val sync = cloudSync
             if (sync != null) {
-                val discovered = sync.discoverWorkspaceForSignedInUser().getOrNull()
+                val discoveredRes = sync.discoverWorkspaceForSignedInUser()
+                if (discoveredRes.isFailure) {
+                    val msg = discoveredRes.exceptionOrNull()?.message ?: "Could not check Cloud Workspace."
+                    _authError.value = msg
+                    emitToast(msg, isError = true)
+                    _cloudBusy.value = false
+                    return@launch
+                }
+                val discovered = discoveredRes.getOrNull()
                 if (discovered != null) {
-                    val snap = sync.fetchFullWorkspaceSnapshot(discovered.workspaceId, discovered.deviceRole).getOrNull()
-                    if (snap != null) {
+                    val snapRes = sync.fetchFullWorkspaceSnapshot(discovered.workspaceId, discovered.deviceRole)
+                    if (snapRes.isSuccess) {
+                        val snap = snapRes.getOrNull()!!
                         seenRemoteBillIds.clear()
                         seenRemoteBillIds.addAll(snap.bills.map { it.id })
                         initialRemoteBillsLoaded = true
                         repository.applyCloudSnapshot(snap)
                         startCloudRealtimeSync(snap.workspace)
+                        _cloudStatusMessage.value = "Cloud Connected (${snap.workspace.deviceRole.uppercase(Locale.US)})"
                         emitToast("Cloud synced as ${authUser.email}")
+                    } else {
+                        val msg = snapRes.exceptionOrNull()?.message ?: "Could not load Cloud Workspace data."
+                        _authError.value = msg
+                        emitToast(msg, isError = true)
                     }
                 } else if (repository.isAdminConfigured.first()) {
                     ensureAdminCloudWorkspaceInternal(pushLocal = true)
@@ -966,6 +980,7 @@ class BillingViewModel(
             emitToast("Cloud Sync Active! Technician & Super Admin codes ready.")
         } else {
             val msg = res.exceptionOrNull()?.message ?: "Could not initialize Cloud Workspace."
+            _authError.value = msg
             emitToast(msg, isError = true)
         }
     }

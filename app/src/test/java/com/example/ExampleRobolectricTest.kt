@@ -2125,5 +2125,218 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("notification_bell_button").assertIsDisplayed()
         composeTestRule.onNode(hasTestTag("notification_unread_badge"), useUnmergedTree = true).assertExists()
     }
-}
 
+    @Test
+    fun productsScreen_showsComboFolderAndTechnicianSearchWithRelatedPriceAndStock() {
+        val catalog = listOf(
+            ProductEntity(id = 1L, name = "2MP HD Dome Camera", unit = "Nos", defaultRate = 1200.0, folder = "CCTV Cameras", stockQty = 14.0),
+            ProductEntity(id = 2L, name = "3+1 CCTV Cable", unit = "Mtr", defaultRate = 18.0, folder = "Cables & Accessories", stockQty = 200.0),
+            ProductEntity(id = 3L, name = "4 Ch Full Combo Setup", unit = "Set", defaultRate = 11500.0, folder = "Combo", stockQty = 3.0)
+        )
+        val relatedWire = BillingRepository.filterProducts(catalog, "wire")
+        assertTrue(relatedWire.any { it.name == "3+1 CCTV Cable" })
+
+        val techUser = UserSession(username = "rahul_tech", displayName = "Rahul", role = "technician")
+        composeTestRule.setContent {
+            TseBillingTheme {
+                ProductsScreen(
+                    products = catalog,
+                    user = techUser,
+                    onAddProduct = { _, _, _, _ -> },
+                    onUpdateProduct = { _, _, _, _, _ -> },
+                    onDeleteProduct = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("product_folder_chip_Combo").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("product_search_input").performTextInput("wire")
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("products_lazy_list").performScrollToIndex(3)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("3+1 CCTV Cable").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Stock: 200 Mtr", substring = true).performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText("Rate: ₹18.00", substring = true).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test
+    fun billScreen_replacesFolderWithSearchProduct_tickAutoFillsProductAndPrice() {
+        val catalog = listOf(
+            ProductEntity(id = 10L, name = "4 Ch Full Combo Setup", unit = "Set", defaultRate = 12500.0, folder = "Combo", stockQty = 5.0),
+            ProductEntity(id = 11L, name = "5MP Bullet Camera", unit = "Nos", defaultRate = 1850.0, folder = "CCTV Cameras", stockQty = 12.0)
+        )
+        var draftState by mutableStateOf(
+            BillDraft(
+                documentType = DocumentType.QUOTATION,
+                items = listOf(InvoiceItem(localId = 101L))
+            )
+        )
+        val techUser = UserSession(username = "rahul_tech", displayName = "Rahul", role = "technician")
+
+        composeTestRule.setContent {
+            TseBillingTheme {
+                BillScreen(
+                    draft = draftState,
+                    products = catalog,
+                    customers = emptyList(),
+                    allBills = emptyList(),
+                    company = CompanySettings(),
+                    upi = UpiSettings(),
+                    currentUser = techUser,
+                    isNightClosed = false,
+                    summaryError = "",
+                    exportOptionsPayload = null,
+                    onSetDocumentType = {},
+                    onQuotationNoteChange = {},
+                    onCustomerNameChange = {},
+                    onCustomerSelected = {},
+                    onCustomerDetailsChange = {},
+                    onCustomerLocationUrlChange = {},
+                    onInvoiceNoChange = {},
+                    onInvoiceDateChange = {},
+                    onAddItem = {},
+                    onSelectFolderForRow = { _, _ -> },
+                    onSelectProductForRow = { idx, prod ->
+                        val updated = draftState.items.toMutableList()
+                        updated[idx] = updated[idx].copy(
+                            folder = prod.folder,
+                            description = prod.name,
+                            unit = prod.unit,
+                            rate = prod.defaultRate
+                        )
+                        draftState = draftState.copy(items = updated)
+                    },
+                    onUpdateItem = { _, _, _, _, _ -> },
+                    onRemoveItem = {},
+                    onExtraChargeTypeChange = {},
+                    onExtraChargeAmountChange = {},
+                    onDiscountChange = {},
+                    onPaidAmountChange = {},
+                    onPaymentModeChange = {},
+                    onSignatureChanged = {},
+                    onCustomQrTextChange = {},
+                    onStaffRatingChange = {},
+                    onStaffReviewChange = {},
+                    onToggleSheetPreview = {},
+                    onResetBill = {},
+                    onOpenSummaryModal = {},
+                    onCloseSummaryModal = {},
+                    onRequestGenerateWithDeviceAuth = {},
+                    onDismissExportOptions = {},
+                    onPrintA4 = {},
+                    onSavePdf = {},
+                    onSharePdf = {},
+                    onSavePhoto = {},
+                    onSharePhoto = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("item_folder_btn_0").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("bill_lazy_list").performScrollToNode(hasTestTag("bill_quick_combo_10"))
+        composeTestRule.onNodeWithTag("bill_quick_combo_10").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bill_lazy_list").performScrollToNode(hasTestTag("item_product_search_0"))
+        composeTestRule.onNodeWithTag("item_product_search_0").performTextInput("bullet")
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("bill_lazy_list").performScrollToNode(hasTestTag("item_search_tick_0_11"))
+        composeTestRule.onNodeWithTag("item_search_tick_0_11").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals("5MP Bullet Camera", draftState.items[0].description)
+        assertEquals(1850.0, draftState.items[0].rate, 0.01)
+        composeTestRule.onNodeWithTag("item_selected_product_pill_0").assertIsDisplayed()
+    }
+
+    @Test
+    fun invoicePrintAndPreview_showsSubTotalDiscountGrandTotalPaidAmountAndDueBalance() {
+        val payload = InvoicePrintPayload(
+            company = CompanySettings(),
+            upi = UpiSettings(),
+            invoiceNo = "TSE-SUMMARY-01",
+            date = "2026-11-25",
+            customerName = "Summary Customer",
+            customerDetails = "Goa",
+            items = listOf(InvoiceItem(description = "4 Ch Combo", qty = 1.0, unit = "Set", rate = 10000.0)),
+            subtotal = 10000.0,
+            discount = 500.0,
+            grandTotal = 9500.0,
+            paidAmount = 6000.0,
+            dueAmount = 3500.0,
+            paymentMode = PaymentMode.ONLINE,
+            signatureBase64 = "",
+            customQrText = ""
+        )
+        val rows = InvoicePdfPrinter.buildSummaryRows(payload)
+        assertEquals(listOf("SUB TOTAL", "DISCOUNT", "GRAND TOTAL", "PAID AMOUNT", "DUE BALANCE"), rows.map { it.label })
+        assertEquals(listOf(10000.0, 500.0, 9500.0, 6000.0, 3500.0), rows.map { it.amount })
+
+        val bmp = InvoicePdfPrinter.renderInvoiceBitmap(payload, scale = 1.0f)
+        assertEquals(InvoicePdfPrinter.A4_WIDTH_PT, bmp.width)
+        assertEquals(InvoicePdfPrinter.A4_HEIGHT_PT, bmp.height)
+
+        val draft = BillDraft(
+            invoiceNo = "TSE-SUMMARY-01",
+            date = "2026-11-25",
+            customerName = "Summary Customer",
+            items = listOf(InvoiceItem(description = "4 Ch Combo", qty = 1.0, unit = "Set", rate = 10000.0)),
+            discountText = "500",
+            paidAmountText = "6000"
+        )
+        composeTestRule.setContent {
+            TseBillingTheme {
+                InvoiceSheetPreview(
+                    draft = draft,
+                    company = CompanySettings(),
+                    upi = UpiSettings()
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("SUB TOTAL").assertExists()
+        composeTestRule.onNodeWithText("DISCOUNT").assertExists()
+        composeTestRule.onNodeWithText("GRAND TOTAL").assertExists()
+        composeTestRule.onNodeWithText("PAID AMOUNT").assertExists()
+        composeTestRule.onNodeWithText("DUE BALANCE").assertExists()
+    }
+
+    @Test
+    fun configureAppCheck_persistsDebugTokenFromIntentSynchronously() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val testToken = "11111111-2222-3333-4444-555555555555"
+        val intent = android.content.Intent().apply {
+            putExtra("FIREBASE_APPCHECK_DEBUG_TOKEN", testToken)
+        }
+        com.example.util.configureAppCheck(context, intent)
+        val stored = com.example.util.getLocalAppCheckDebugToken(context)
+        assertEquals(testToken, stored)
+    }
+
+    @Test
+    fun adminPanelScreen_showsCloudAuthErrorBannerWhenSignInFails() {
+        composeTestRule.setContent {
+            TseBillingTheme {
+                AdminPanelScreen(
+                    upiSettings = UpiSettings(),
+                    accounts = emptyList(),
+                    technicianPerformance = emptyList(),
+                    voiceAndNoteSettings = VoiceAndNoteSettings(),
+                    systemVoiceOptions = emptyList(),
+                    cloudAuthError = "Firebase App Check rejected sign-in. Debug Token: abc-123",
+                    onSaveUpi = { _, _ -> },
+                    onClearUpi = {},
+                    onAddTechnician = { _, _, _, _, _, _ -> },
+                    onUpdateTechnician = { _, _, _, _, _, _, _ -> },
+                    onRemoveTechnician = {},
+                    onAddSuperAdmin = { _, _, _, _, _ -> },
+                    onRemoveSuperAdmin = {},
+                    onRecordCashSettlement = { _, _, _, _ -> },
+                    onSaveVoiceAndNoteSettings = {},
+                    onTestVoice = { _, _ -> }
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("admin_cloud_auth_error_banner").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Firebase App Check rejected sign-in. Debug Token: abc-123").assertIsDisplayed()
+    }
+}

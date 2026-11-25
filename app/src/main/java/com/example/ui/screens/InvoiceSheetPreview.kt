@@ -322,6 +322,8 @@ fun InvoiceSheetPreview(
                 }
                 VerticalDivider(color = sheetBorder, thickness = 1.2.dp)
                 Column(modifier = Modifier.weight(0.95f)) {
+                    SummaryLine("SUB TOTAL", draft.subtotal)
+                    SummaryLine("DISCOUNT", draft.discount)
                     SummaryLine("QUOTATION TOTAL", draft.grandTotal, bg = headerFill, bold = true, isLast = true)
                 }
             }
@@ -447,10 +449,20 @@ fun InvoiceSheetPreview(
 
                 VerticalDivider(color = sheetBorder, thickness = 1.2.dp)
 
+                val hasDue = draft.dueAmount > 0.009
                 Column(modifier = Modifier.weight(0.95f)) {
                     SummaryLine("SUB TOTAL", draft.subtotal)
-                    SummaryLine("ADVANCE / PAID", draft.paidAmount)
-                    SummaryLine("GRAND TOTAL", draft.grandTotal, bg = headerFill, bold = true, isLast = true)
+                    SummaryLine("DISCOUNT", draft.discount)
+                    SummaryLine("GRAND TOTAL", draft.grandTotal, bg = headerFill, bold = true)
+                    SummaryLine("PAID AMOUNT", draft.paidAmount)
+                    SummaryLine(
+                        label = "DUE BALANCE",
+                        value = draft.dueAmount,
+                        bg = if (hasDue) Color(0xFFFEF2F2) else Color(0xFFECFDF5),
+                        textColor = if (hasDue) Color(0xFF991B1B) else Color(0xFF065F46),
+                        bold = true,
+                        isLast = true
+                    )
                 }
             }
 

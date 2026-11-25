@@ -72,9 +72,11 @@ object WhatsAppHelper {
                 appendLine("*${payload.company.companyName}*")
                 appendLine("${payload.documentType.label} No: *${payload.invoiceNo}*")
                 appendLine("Customer: ${payload.customerName.ifBlank { "Customer" }}")
+                appendLine("Sub Total: ₹${String.format(Locale.US, "%.2f", payload.subtotal)}")
+                appendLine("Discount: ₹${String.format(Locale.US, "%.2f", payload.discount)}")
                 appendLine("Grand Total: ₹${String.format(Locale.US, "%.2f", payload.grandTotal)}")
-                appendLine("Paid: ₹${String.format(Locale.US, "%.2f", payload.paidAmount)}")
-                if (payload.dueAmount > 0.009) {
+                if (payload.documentType.name != "QUOTATION") {
+                    appendLine("Paid Amount: ₹${String.format(Locale.US, "%.2f", payload.paidAmount)}")
                     appendLine("Due Balance: ₹${String.format(Locale.US, "%.2f", payload.dueAmount)}")
                 }
                 append("Thank you for choosing ${payload.company.companyName}.")

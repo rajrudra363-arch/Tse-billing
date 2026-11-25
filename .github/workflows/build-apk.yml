@@ -43,16 +43,25 @@ jobs:
           DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         run: |
           if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
-            printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 -d > debug.keystore
+            printf '%s' "$DEBUG_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > debug.keystore
             echo "Restored debug.keystore from DEBUG_KEYSTORE_BASE64 secret."
           elif [ -f debug.keystore.base64 ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
+            tr -d '[:space:]' < debug.keystore.base64 | base64 -d > debug.keystore
             echo "Restored debug.keystore from debug.keystore.base64 file."
+          elif [ -f app/debug.keystore.base64 ]; then
+            tr -d '[:space:]' < app/debug.keystore.base64 | base64 -d > debug.keystore
+            echo "Restored debug.keystore from app/debug.keystore.base64 file."
+          elif [ -f app/debug.keystore ] && [ ! -f debug.keystore ]; then
+            cp app/debug.keystore debug.keystore
+            echo "Copied debug.keystore from app/debug.keystore."
           fi
 
-          if [ ! -f debug.keystore ]; then
-            echo "::error::debug.keystore is missing! Ensure debug.keystore.base64 is present or DEBUG_KEYSTORE_BASE64 secret is provided."
-            exit 1
+          if [ ! -s debug.keystore ]; then
+            echo "::warning::debug.keystore.base64 and DEBUG_KEYSTORE_BASE64 secret were not found. Generating a fallback debug.keystore so the APK can build. Add DEBUG_KEYSTORE_BASE64 secret in GitHub Settings -> Secrets -> Actions to match the Firebase SHA-1 (aedc72600a0532f17d55fe07341e4b9c8619237b)."
+            keytool -genkeypair -v -keystore debug.keystore \
+              -storepass android -alias androiddebugkey -keypass android \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
           fi
 
           cp debug.keystore app/debug.keystore
@@ -63,7 +72,7 @@ jobs:
           echo "Firebase Config SHA-1: $EXPECTED_SHA1"
 
           if [ "$CURRENT_SHA1" != "$EXPECTED_SHA1" ]; then
-            echo "::warning::Keystore SHA-1 ($CURRENT_SHA1) does not match Firebase configuration ($EXPECTED_SHA1)! Native Google Sign-In requires matching SHA-1."
+            echo "::warning::Keystore SHA-1 ($CURRENT_SHA1) does not match Firebase configuration ($EXPECTED_SHA1)! Add DEBUG_KEYSTORE_BASE64 GitHub Secret or register $CURRENT_SHA1 in Firebase Console for Google Sign-In."
           else
             echo "Keystore SHA-1 verified and matches Firebase configuration."
           fi
@@ -77,10 +86,10 @@ jobs:
             printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
             echo "Wrote app/google-services.json from GOOGLE_SERVICES_JSON secret."
           elif [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
-            printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > app/google-services.json
+            printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | tr -d '[:space:]' | base64 -d > app/google-services.json
             echo "Wrote app/google-services.json from GOOGLE_SERVICES_JSON_BASE64 secret."
           elif [ ! -f app/google-services.json ] && [ -f google-services.json.base64 ]; then
-            base64 -d google-services.json.base64 > app/google-services.json
+            tr -d '[:space:]' < google-services.json.base64 | base64 -d > app/google-services.json
             echo "Restored app/google-services.json from google-services.json.base64."
           fi
 

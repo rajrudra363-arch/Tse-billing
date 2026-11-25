@@ -62,6 +62,14 @@ data class InvoicePrintPayload(
     val quotationNote: String = ""
 )
 
+enum class SummaryRowTone { NORMAL, GRAND_TOTAL, DUE_PENDING, DUE_SETTLED }
+
+data class InvoiceSummaryRow(
+    val label: String,
+    val amount: Double,
+    val tone: SummaryRowTone = SummaryRowTone.NORMAL
+)
+
 object InvoicePdfPrinter {
     // Exact ISO A4 Portrait in 72pt/inch (210mm x 297mm)
     const val A4_WIDTH_PT = 595
@@ -520,21 +528,33 @@ object InvoicePdfPrinter {
 
             val totLeft = sumSplitX
             val totValSplit = tableRight - 88f
-            canvas.drawRect(totLeft, sumTop, tableRight, sumBottom, fillGrand)
-            canvas.drawLine(totValSplit, sumTop, totValSplit, sumBottom, thinBorder)
-            val grandLbl = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.BLACK
-                textSize = 10.5f
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            val quoteRows = buildSummaryRows(p)
+            val qRowH = sumH / quoteRows.size.toFloat()
+            quoteRows.forEachIndexed { i, row ->
+                val rTop = sumTop + i * qRowH
+                val rBot = rTop + qRowH
+                val isGrand = row.tone == SummaryRowTone.GRAND_TOTAL
+                if (isGrand) {
+                    canvas.drawRect(totLeft, rTop, tableRight, rBot, fillGrand)
+                }
+                if (i > 0) canvas.drawLine(totLeft, rTop, tableRight, rTop, thinBorder)
+                canvas.drawLine(totValSplit, rTop, totValSplit, rBot, thinBorder)
+
+                val lPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.BLACK
+                    textSize = if (isGrand) 9.4f else 8.3f
+                    typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                }
+                val vPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = if (isGrand) Color.parseColor("#102F4B") else Color.BLACK
+                    textSize = if (isGrand) 10.2f else 8.9f
+                    textAlign = Paint.Align.RIGHT
+                    typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                }
+                val baselineY = rTop + (qRowH * 0.64f)
+                canvas.drawText(row.label, totLeft + 6f, baselineY, lPaint)
+                canvas.drawText("₹${String.format(Locale.US, "%.2f", row.amount)}", tableRight - 6f, baselineY, vPaint)
             }
-            val grandVal = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.parseColor("#102F4B")
-                textSize = 11.5f
-                textAlign = Paint.Align.RIGHT
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            }
-            canvas.drawText("QUOTATION TOTAL", totLeft + 8f, sumTop + 42f, grandLbl)
-            canvas.drawText("₹${String.format(Locale.US, "%.2f", p.grandTotal)}", tableRight - 8f, sumTop + 42f, grandVal)
 
             // Quotation Note + Right Authorised Signatory
             val footTop = sumBottom
@@ -606,7 +626,7 @@ object InvoicePdfPrinter {
 
         // TAX INVOICE / HELP BILL SUMMARY & FOOTER
         val sumTop = tableBottom
-        val sumH = 114f
+        val sumH = 120f
         val sumBottom = sumTop + sumH
         val sumSplitX = tableLeft + tableW * 0.57f
         canvas.drawRect(tableLeft, sumTop, tableRight, sumBottom, borderPaint)
@@ -650,44 +670,52 @@ object InvoicePdfPrinter {
         }
         canvas.drawText(ellipsizeText("A/c: ${p.upi.payeeName}", smallCenter, qrColW - 6f), qrColCenterX, sumTop + 102f, smallCenter)
 
-        // Right side: Totals 3 rows (SUB TOTAL, ADVANCE / PAID, GRAND TOTAL)
+        // Right side: Totals 5 rows (SUB TOTAL, DISCOUNT, GRAND TOTAL, PAID AMOUNT, DUE BALANCE)
         val totLeft = sumSplitX
-        val totRowH = sumH / 3f
+        val billSummaryRows = buildSummaryRows(p)
+        val totRowH = sumH / billSummaryRows.size.toFloat()
         val totValSplit = tableRight - 84f
+        val fillDuePending = Paint().apply { color = Color.parseColor("#FEF2F2"); style = Paint.Style.FILL }
+        val fillDueSettled = Paint().apply { color = Color.parseColor("#ECFDF5"); style = Paint.Style.FILL }
 
-        val totLabels = arrayOf("SUB TOTAL", "ADVANCE / PAID", "GRAND TOTAL")
-        val totValues = arrayOf(p.subtotal, p.paidAmount, p.grandTotal)
-
-        for (i in 0 until 3) {
+        billSummaryRows.forEachIndexed { i, row ->
             val rTop = sumTop + i * totRowH
             val rBot = rTop + totRowH
-            val isGrand = (i == 2)
-            if (isGrand) {
-                canvas.drawRect(totLeft, rTop, tableRight, rBot, fillGrand)
+            val isGrand = row.tone == SummaryRowTone.GRAND_TOTAL
+            when (row.tone) {
+                SummaryRowTone.GRAND_TOTAL -> canvas.drawRect(totLeft, rTop, tableRight, rBot, fillGrand)
+                SummaryRowTone.DUE_PENDING -> canvas.drawRect(totLeft, rTop, tableRight, rBot, fillDuePending)
+                SummaryRowTone.DUE_SETTLED -> canvas.drawRect(totLeft, rTop, tableRight, rBot, fillDueSettled)
+                SummaryRowTone.NORMAL -> Unit
             }
             if (i > 0) canvas.drawLine(totLeft, rTop, tableRight, rTop, thinBorder)
             canvas.drawLine(totValSplit, rTop, totValSplit, rBot, thinBorder)
 
+            val textColor = when (row.tone) {
+                SummaryRowTone.DUE_PENDING -> Color.parseColor("#991B1B")
+                SummaryRowTone.DUE_SETTLED -> Color.parseColor("#065F46")
+                else -> Color.BLACK
+            }
             val lPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.BLACK
-                textSize = if (isGrand) 9.6f else 8.4f
+                color = textColor
+                textSize = if (isGrand || row.tone != SummaryRowTone.NORMAL) 8.6f else 8.0f
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             }
             val vPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.BLACK
-                textSize = if (isGrand) 10.2f else 9.0f
+                color = textColor
+                textSize = if (isGrand || row.tone != SummaryRowTone.NORMAL) 9.2f else 8.6f
                 textAlign = Paint.Align.RIGHT
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             }
-            val baselineY = rTop + (totRowH * 0.60f)
-            canvas.drawText(totLabels[i], totLeft + 6f, baselineY, lPaint)
-            canvas.drawText("₹${String.format(Locale.US, "%.2f", totValues[i])}", tableRight - 6f, baselineY, vPaint)
+            val baselineY = rTop + (totRowH * 0.64f)
+            canvas.drawText(row.label, totLeft + 6f, baselineY, lPaint)
+            canvas.drawText("₹${String.format(Locale.US, "%.2f", row.amount)}", tableRight - 6f, baselineY, vPaint)
         }
 
         // 6. BOTTOM SECTION
         val footTop = sumBottom
-        val footRow1H = 92f
-        val footRow2H = 38f
+        val footRow1H = 90f
+        val footRow2H = 36f
         val col1X = tableLeft + tableW * 0.32f
         val col2X = tableLeft + tableW * 0.68f
 
@@ -906,6 +934,28 @@ object InvoicePdfPrinter {
             )
         }
         return active
+    }
+
+    fun buildSummaryRows(p: InvoicePrintPayload): List<InvoiceSummaryRow> {
+        return if (p.documentType == DocumentType.QUOTATION) {
+            listOf(
+                InvoiceSummaryRow("SUB TOTAL", p.subtotal),
+                InvoiceSummaryRow("DISCOUNT", p.discount),
+                InvoiceSummaryRow("QUOTATION TOTAL", p.grandTotal, SummaryRowTone.GRAND_TOTAL)
+            )
+        } else {
+            listOf(
+                InvoiceSummaryRow("SUB TOTAL", p.subtotal),
+                InvoiceSummaryRow("DISCOUNT", p.discount),
+                InvoiceSummaryRow("GRAND TOTAL", p.grandTotal, SummaryRowTone.GRAND_TOTAL),
+                InvoiceSummaryRow("PAID AMOUNT", p.paidAmount),
+                InvoiceSummaryRow(
+                    label = "DUE BALANCE",
+                    amount = p.dueAmount,
+                    tone = if (p.dueAmount > 0.009) SummaryRowTone.DUE_PENDING else SummaryRowTone.DUE_SETTLED
+                )
+            )
+        }
     }
 
     fun decodeBase64Bitmap(raw: String): Bitmap? = BitmapUtils.decodeBase64Bitmap(raw, 900)

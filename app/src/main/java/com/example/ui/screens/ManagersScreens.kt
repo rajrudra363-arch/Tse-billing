@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
@@ -89,6 +90,7 @@ import com.example.util.LocationHelper
 import java.util.Locale
 
 private val DEFAULT_PRODUCT_FOLDERS = listOf(
+    "Combo",
     "CCTV Cameras",
     "DVR & NVR",
     "Storage & Power",
@@ -491,6 +493,7 @@ fun ProductsScreen(
     var folder by remember { mutableStateOf("CCTV Cameras") }
     var folderMenuOpen by remember { mutableStateOf(false) }
     var selectedFolderFilter by remember { mutableStateOf("All") }
+    var searchQuery by remember { mutableStateOf("") }
     var editingProduct by remember { mutableStateOf<ProductEntity?>(null) }
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
@@ -500,11 +503,18 @@ fun ProductsScreen(
             .distinct()
     }
     val existingFolderTabs = remember(products) {
-        listOf("All") + products.map { it.folder.ifBlank { "General" } }.distinct().sorted()
+        val dynamic = products.map { it.folder.ifBlank { "General" } }
+        val merged = (listOf("Combo") + dynamic).distinct()
+        val sorted = merged.sortedWith(
+            compareBy<String> { !it.equals("Combo", ignoreCase = true) }
+                .thenBy { it.lowercase(Locale.ROOT) }
+        )
+        listOf("All") + sorted
     }
-    val visibleProducts = remember(products, selectedFolderFilter) {
-        if (selectedFolderFilter == "All") products
-        else products.filter { it.folder.ifBlank { "General" }.equals(selectedFolderFilter, ignoreCase = true) }
+    val visibleProducts = remember(products, selectedFolderFilter, searchQuery) {
+        val searched = BillingRepository.filterProducts(products, searchQuery)
+        if (selectedFolderFilter == "All") searched
+        else searched.filter { it.folder.ifBlank { "General" }.equals(selectedFolderFilter, ignoreCase = true) }
     }
 
     LazyColumn(
@@ -525,10 +535,32 @@ fun ProductsScreen(
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Product Folders & Price Manager (Admin)", style = MaterialTheme.typography.titleLarge)
                         Text(
-                            text = "Organize CCTV items into folders so Technicians and Billing can browse prices cleanly.",
+                            text = "Add products or save ready-made setups in the 'Combo' folder for fast Quotation & Billing.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            FilterChip(
+                                selected = folder.equals("Combo", ignoreCase = true),
+                                onClick = {
+                                    folder = "Combo"
+                                    if (unit == "Nos" || unit.isBlank()) unit = "Set"
+                                    selectedFolderFilter = "Combo"
+                                },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = Color(0xFF5B21B6),
+                                    selectedLabelColor = Color.White,
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                    labelColor = MaterialTheme.colorScheme.onSurface
+                                ),
+                                label = { Text("Combo Folder (Quotation Setup)", fontWeight = FontWeight.SemiBold) },
+                                modifier = Modifier.testTag("quick_select_combo_folder")
+                            )
+                        }
 
                         Box(modifier = Modifier.fillMaxWidth()) {
                             OutlinedTextField(
@@ -553,6 +585,9 @@ fun ProductsScreen(
                                         text = { Text(f) },
                                         onClick = {
                                             folder = f
+                                            if (f.equals("Combo", ignoreCase = true) && unit == "Nos") {
+                                                unit = "Set"
+                                            }
                                             folderMenuOpen = false
                                         }
                                     )
@@ -563,7 +598,15 @@ fun ProductsScreen(
                         OutlinedTextField(
                             value = name,
                             onValueChange = { name = it },
-                            label = { Text("Product Name (e.g. 4 Channel DVR)") },
+                            label = {
+                                Text(
+                                    if (folder.equals("Combo", ignoreCase = true)) {
+                                        "Combo Setup Name (e.g. 4 Ch HD Full Combo)"
+                                    } else {
+                                        "Product Name (e.g. 4 Channel DVR)"
+                                    }
+                                )
+                            },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_product_name")
                         )
@@ -642,9 +685,9 @@ fun ProductsScreen(
                         Text("Product Folders & Price Catalog", style = MaterialTheme.typography.titleLarge)
                         Text(
                             text = if (user.isSuperAdmin) {
-                                "Super Admin read-only view: inspect all product folders and unit prices."
+                                "Super Admin read-only view: search or browse all product folders, unit prices, and stock."
                             } else {
-                                "Technicians can browse any folder below to inspect product prices (Admin manages catalog edits)."
+                                "Search any product name below to check price, unit & available stock, or browse folders including Combo."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -654,13 +697,50 @@ fun ProductsScreen(
             }
         }
 
-        // Folder Selector Chips
+        // Search & Folder Selector Chips
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
             ) {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { newValue ->
+                            searchQuery = newValue
+                            if (newValue.isNotBlank() && selectedFolderFilter != "All") {
+                                selectedFolderFilter = "All"
+                            }
+                        },
+                        label = { Text("Search Product Name, Price & Stock") },
+                        placeholder = { Text("Type dome, bullet, dvr, wire, smps, combo...") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = TealAccent) },
+                        trailingIcon = {
+                            if (searchQuery.isNotBlank()) {
+                                IconButton(
+                                    onClick = { searchQuery = "" },
+                                    modifier = Modifier.testTag("product_search_clear")
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "Clear search")
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .bringIntoViewOnFocus()
+                            .testTag("product_search_input")
+                    )
+
+                    if (searchQuery.isNotBlank()) {
+                        Text(
+                            text = "Found ${visibleProducts.size} matching & related product(s)",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TealAccent,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Icon(Icons.Default.Folder, contentDescription = null, tint = TealAccent)
                         Text("Product Folders", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
@@ -672,14 +752,15 @@ fun ProductsScreen(
                         existingFolderTabs.forEach { folderName ->
                             val count = if (folderName == "All") products.size
                             else products.count { it.folder.ifBlank { "General" }.equals(folderName, ignoreCase = true) }
+                            val isCombo = folderName.equals("Combo", ignoreCase = true)
                             FilterChip(
                                 selected = selectedFolderFilter == folderName,
                                 onClick = { selectedFolderFilter = folderName },
                                 colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = TealAccent,
+                                    selectedContainerColor = if (isCombo) Color(0xFF5B21B6) else TealAccent,
                                     selectedLabelColor = Color.White,
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    labelColor = MaterialTheme.colorScheme.onSurface
+                                    containerColor = if (isCombo) Color(0xFFEDE9FE) else MaterialTheme.colorScheme.surfaceVariant,
+                                    labelColor = if (isCombo) Color(0xFF5B21B6) else MaterialTheme.colorScheme.onSurface
                                 ),
                                 label = { Text("$folderName ($count)", fontWeight = FontWeight.SemiBold) },
                                 modifier = Modifier.testTag("product_folder_chip_${folderName.replace(" ", "_")}")
@@ -718,14 +799,16 @@ fun ProductsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            val prodFolder = prod.folder.ifBlank { "General" }
+                            val isComboProd = prodFolder.equals("Combo", ignoreCase = true)
                             Surface(
-                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                color = if (isComboProd) Color(0xFFEDE9FE) else MaterialTheme.colorScheme.secondaryContainer,
                                 shape = RoundedCornerShape(6.dp)
                             ) {
                                 Text(
-                                    text = prod.folder.ifBlank { "General" },
+                                    text = prodFolder,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    color = if (isComboProd) Color(0xFF5B21B6) else MaterialTheme.colorScheme.onSecondaryContainer,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                                 )

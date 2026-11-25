@@ -3165,6 +3165,77 @@ class BillingRepository(
             }
         }
 
+        private val RELATED_PRODUCT_GROUPS = listOf(
+            setOf("cam", "camera", "cameras", "cctv", "dome", "bullet", "ip", "ptz", "nightvision", "colorvu", "hd"),
+            setOf("dvr", "nvr", "xvr", "recorder", "channel", "ch"),
+            setOf("hdd", "harddisk", "hard", "disk", "storage", "tb", "ssd", "memory"),
+            setOf("wire", "cable", "taar", "3+1", "cat6", "hdmi", "coaxial", "lan"),
+            setOf("power", "smps", "supply", "adapter", "adaptor", "psu"),
+            setOf("connector", "bnc", "dc", "pin", "jack", "rj45", "box", "junction", "rack", "cabinet"),
+            setOf("combo", "kit", "package", "set", "setup", "quotation", "bundle"),
+            setOf("install", "installation", "service", "repair", "fitting", "support", "maintenance", "labour", "labor", "charge")
+        )
+
+        fun filterProducts(products: List<ProductEntity>, rawQuery: String): List<ProductEntity> {
+            val q = rawQuery.trim().lowercase(Locale.ROOT)
+            if (q.isEmpty()) return products
+            val tokens = q.split(Regex("[\\s,/+\\-]+")).filter { it.isNotBlank() }
+
+            val relatedTermsByToken = tokens.map { tok ->
+                val groupMatches = RELATED_PRODUCT_GROUPS
+                    .filter { grp ->
+                        tok in grp || (tok.length >= 3 && grp.any { word -> word.startsWith(tok) || tok.startsWith(word) })
+                    }
+                    .flatten()
+                    .toSet()
+                groupMatches - tok
+            }
+
+            return products.mapNotNull { prod ->
+                val nameLow = prod.name.lowercase(Locale.ROOT)
+                val folderLow = prod.folder.ifBlank { "General" }.lowercase(Locale.ROOT)
+                val unitLow = prod.unit.lowercase(Locale.ROOT)
+                val haystack = "$nameLow $folderLow $unitLow"
+                val words = haystack.split(Regex("[\\s,/+\\-()]+")).filter { it.isNotBlank() }
+
+                var score = 0
+                if (nameLow.contains(q)) {
+                    score += 1000
+                    if (nameLow.startsWith(q)) score += 200
+                }
+                if (folderLow.contains(q)) score += 600
+
+                if (tokens.isNotEmpty() && tokens.all { haystack.contains(it) }) {
+                    score += 450
+                }
+
+                var directTokenHits = 0
+                tokens.forEach { tok ->
+                    if (haystack.contains(tok)) {
+                        directTokenHits++
+                        score += 120
+                    } else if (tok.length >= 2 && words.any { w -> w.startsWith(tok) || (w.length >= 3 && tok.startsWith(w)) }) {
+                        directTokenHits++
+                        score += 75
+                    }
+                }
+
+                relatedTermsByToken.forEach { synonyms ->
+                    if (synonyms.any { syn -> haystack.contains(syn) }) {
+                        score += if (directTokenHits > 0) 45 else 35
+                    }
+                }
+
+                if (score > 0) prod to score else null
+            }
+                .sortedWith(
+                    compareByDescending<Pair<ProductEntity, Int>> { it.second }
+                        .thenBy { !it.first.folder.equals("Combo", ignoreCase = true) }
+                        .thenBy { it.first.name.lowercase(Locale.ROOT) }
+                )
+                .map { it.first }
+        }
+
         fun findMatchingCustomersByPhone(customers: List<CustomerEntity>, phoneInput: String): List<CustomerEntity> {
             val qDigits = phoneInput.filter { it.isDigit() }
             if (qDigits.length < 5) return emptyList()

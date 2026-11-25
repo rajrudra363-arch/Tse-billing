@@ -165,6 +165,7 @@ import com.example.util.InvoicePdfPrinter
 import com.example.util.InvoicePrintPayload
 import com.example.util.SoundEngine
 import com.example.util.WhatsAppHelper
+import com.example.util.configureAppCheck
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -184,6 +185,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureAppCheck(this, intent)
         soundEngine = SoundEngine(applicationContext)
         viewModel.handleIncomingInviteUri(intent?.data)
         enableEdgeToEdge()
@@ -919,6 +921,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                             cloudWorkspaceInfo = cloudWorkspaceInfo,
                                             cloudBusy = cloudBusy,
                                             cloudTechBusy = cloudTechBusy,
+                                            cloudAuthError = authError,
                                             availableUpdate = availableUpdate,
                                             expenses = expenses,
                                             trashItems = trashItems,

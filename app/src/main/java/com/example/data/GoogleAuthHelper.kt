@@ -20,6 +20,7 @@ import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
+import com.example.util.getLocalAppCheckDebugToken
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.auth.api.signin.GoogleSignInStatusCodes
@@ -296,10 +297,10 @@ object GoogleAuthHelper {
             throw e
         } catch (e: FirebaseAuthException) {
             Log.e(TAG, "FirebaseAuthException (${e.errorCode}): ${e.message}", e)
-            Result.failure(IllegalStateException("Firebase Auth failed (${e.errorCode}): ${e.localizedMessage ?: e.message}", e))
+            Result.failure(IllegalStateException(formatFirebaseAuthError(activityContext, e), e))
         } catch (t: Throwable) {
             Log.e(TAG, "Google Sign-In failed", t)
-            Result.failure(Exception(t.message ?: "Google Sign-In failed.", t))
+            Result.failure(Exception(formatFirebaseThrowableError(activityContext, t), t))
         }
     }
 
@@ -412,6 +413,32 @@ object GoogleAuthHelper {
             return null
         }
         return GoogleIdTokenCredential.createFrom(credential.data).idToken
+    }
+
+    private fun formatFirebaseAuthError(context: Context, e: FirebaseAuthException): String {
+        val raw = e.localizedMessage ?: e.message.orEmpty()
+        if (raw.contains("App Check", ignoreCase = true) || raw.contains("appcheck", ignoreCase = true)) {
+            val token = getLocalAppCheckDebugToken(context)
+            return if (!token.isNullOrBlank()) {
+                "Firebase App Check rejected sign-in. In Firebase Console -> App Check -> APIs -> Authentication, either click Unenforce (for all team phones) OR add this phone's Debug Token under Manage debug tokens: $token"
+            } else {
+                "Firebase App Check rejected sign-in ($raw). In Firebase Console -> App Check -> APIs -> Authentication, click Unenforce or register this app's App Check provider."
+            }
+        }
+        return "Firebase Auth failed (${e.errorCode}): $raw"
+    }
+
+    private fun formatFirebaseThrowableError(context: Context, t: Throwable): String {
+        val raw = t.message.orEmpty()
+        if (raw.contains("App Check", ignoreCase = true) || raw.contains("appcheck", ignoreCase = true)) {
+            val token = getLocalAppCheckDebugToken(context)
+            return if (!token.isNullOrBlank()) {
+                "Firebase App Check rejected sign-in. In Firebase Console -> App Check -> APIs -> Authentication, either click Unenforce (for all team phones) OR add this phone's Debug Token under Manage debug tokens: $token"
+            } else {
+                "Firebase App Check rejected sign-in ($raw). Check Firebase Console -> App Check -> APIs -> Authentication."
+            }
+        }
+        return raw.ifBlank { "Google Sign-In failed." }
     }
 
     private suspend fun exchangeIdTokenWithFirebase(

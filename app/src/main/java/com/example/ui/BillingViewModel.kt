@@ -501,6 +501,9 @@ class BillingViewModel(
         BillingRepository.filterCustomers(all, q)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    val comboPackages: StateFlow<List<ComboPackage>> = repository.comboPackages
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     init {
         viewModelScope.launch {
             repository.seedDefaultsIfNeeded()
@@ -1742,6 +1745,109 @@ class BillingViewModel(
             ""
         }
         _billDraft.update { it.copy(signatureBase64 = encoded) }
+    }
+
+    fun saveComboPackage(pkg: ComboPackage) {
+        val currentUser = _session.value ?: return
+        if (!currentUser.isAdmin || currentUser.isSuperAdmin) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Only Admin can create or edit combo packages", isError = true)
+            return
+        }
+        val cleanName = pkg.name.trim()
+        if (cleanName.isBlank()) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Please enter a Combo Name first", isError = true)
+            return
+        }
+        val validItems = pkg.items.filter { it.productName.isNotBlank() }
+        if (validItems.isEmpty()) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Please select at least 1 product for this combo", isError = true)
+            return
+        }
+        val sanitized = pkg.copy(
+            name = cleanName,
+            description = pkg.description.trim(),
+            items = validItems.map {
+                it.copy(
+                    productName = it.productName.trim(),
+                    qty = it.qty.coerceAtLeast(0.01),
+                    rate = it.rate.coerceAtLeast(0.0)
+                )
+            }
+        )
+        viewModelScope.launch {
+            repository.saveComboPackage(sanitized)
+            soundEngine.play(SoundCue.CLICK)
+            emitToast("Combo package '$cleanName' saved (${validItems.size} products)")
+        }
+    }
+
+    fun deleteComboPackage(id: String) {
+        val currentUser = _session.value ?: return
+        if (!currentUser.isAdmin || currentUser.isSuperAdmin) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Only Admin can delete combo packages", isError = true)
+            return
+        }
+        viewModelScope.launch {
+            repository.deleteComboPackage(id)
+            soundEngine.play(SoundCue.DELETE)
+            emitToast("Combo package deleted")
+        }
+    }
+
+    fun addComboPackageToDraft(combo: ComboPackage) {
+        if (combo.items.isEmpty()) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Combo package '${combo.name}' has no products", isError = true)
+            return
+        }
+        val catalogById = products.value.associateBy { it.id }
+        val catalogByLowerName = products.value.associateBy { it.name.trim().lowercase(Locale.ROOT) }
+        var addedCount = 0
+        var droppedCount = 0
+
+        _billDraft.update { draft ->
+            val existing = draft.items.toMutableList()
+            if (existing.size == 1 && existing[0].description.isBlank() && existing[0].rate == 0.0) {
+                existing.clear()
+            }
+            val availableSlots = 15 - existing.size
+            if (availableSlots <= 0) {
+                droppedCount = combo.items.size
+                return@update draft
+            }
+            val taken = combo.items.take(availableSlots)
+            addedCount = taken.size
+            droppedCount = (combo.items.size - taken.size).coerceAtLeast(0)
+            val toAdd = taken.map { cItem ->
+                val catalogMatch = (if (cItem.productId > 0L) catalogById[cItem.productId] else null)
+                    ?: catalogByLowerName[cItem.productName.trim().lowercase(Locale.ROOT)]
+                InvoiceItem(
+                    folder = catalogMatch?.folder?.ifBlank { "General" }
+                        ?: cItem.folder.ifBlank { "Combo" },
+                    description = catalogMatch?.name ?: cItem.productName.trim(),
+                    qty = if (cItem.qty <= 0.0) 1.0 else cItem.qty,
+                    unit = cItem.unit.ifBlank { catalogMatch?.unit ?: "Nos" },
+                    rate = cItem.rate.coerceAtLeast(0.0)
+                )
+            }
+            draft.copy(items = existing + toAdd)
+        }
+        if (addedCount <= 0) {
+            soundEngine.play(SoundCue.ERROR)
+            emitToast("Maximum 15 items allowed per bill. Remove some rows first.", isError = true)
+            return
+        }
+        soundEngine.play(SoundCue.ADD)
+        val docTypeLabel = if (_billDraft.value.documentType == DocumentType.QUOTATION) "quotation" else "bill"
+        if (droppedCount > 0) {
+            emitToast("Added $addedCount product(s) from '${combo.name}' into $docTypeLabel ($droppedCount skipped due to 15-item limit)")
+        } else {
+            emitToast("Added $addedCount product(s) from '${combo.name}' into $docTypeLabel")
+        }
     }
 
     fun addItem() {

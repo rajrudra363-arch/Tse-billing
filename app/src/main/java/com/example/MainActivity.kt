@@ -278,6 +278,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
         val activationError by viewModel.activationError.collectAsStateWithLifecycle()
         val lastCreatedTechPasskey by viewModel.lastCreatedTechPasskey.collectAsStateWithLifecycle()
         val dueInstallationReminders by viewModel.dueInstallationReminders.collectAsStateWithLifecycle()
+        val comboPackages by viewModel.comboPackages.collectAsStateWithLifecycle()
         var showNotificationCenter by remember { mutableStateOf(false) }
 
         val lifecycleOwner = LocalLifecycleOwner.current
@@ -806,7 +807,9 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         onSharePdf = viewModel::triggerSharePdf,
                                         onSavePhoto = viewModel::triggerSavePhoto,
                                         onSharePhoto = viewModel::triggerSharePhoto,
-                                        onOpenPaymentAndReview = viewModel::openSettlementReviewForExport
+                                        onOpenPaymentAndReview = viewModel::openSettlementReviewForExport,
+                                        comboPackages = comboPackages,
+                                        onAddComboPackage = viewModel::addComboPackageToDraft
                                     )
 
                                     MainTab.SAVED -> SavedBillsScreen(
@@ -901,7 +904,10 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         onUpdateProduct = { id, n, u, r, f -> viewModel.updateProduct(id, n, u, r, f) },
                                         onDeleteProduct = viewModel::deleteProduct,
                                         onAddProductWithStock = viewModel::addProduct,
-                                        onUpdateProductWithStock = viewModel::updateProduct
+                                        onUpdateProductWithStock = viewModel::updateProduct,
+                                        comboPackages = comboPackages,
+                                        onSaveComboPackage = viewModel::saveComboPackage,
+                                        onDeleteComboPackage = viewModel::deleteComboPackage
                                     )
 
                                     MainTab.ANALYTICS -> SuperAdminDashboardScreen(

@@ -74,8 +74,17 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.text.style.TextOverflow
 import com.example.data.BillEntity
 import com.example.data.BillingRepository
+import com.example.data.ComboPackage
+import com.example.data.ComboPackageItem
 import com.example.data.CustomerEntity
 import com.example.data.DocumentType
 import com.example.data.ProductEntity
@@ -93,9 +102,9 @@ import com.example.ui.theme.RedDueDark
 import com.example.ui.theme.TealAccent
 import com.example.util.LocationHelper
 import java.util.Locale
+import java.util.UUID
 
 private val DEFAULT_PRODUCT_FOLDERS = listOf(
-    "Combo",
     "CCTV Cameras",
     "DVR & NVR",
     "Storage & Power",
@@ -723,7 +732,10 @@ fun ProductsScreen(
     onUpdateProduct: (id: Long, name: String, unit: String, rateText: String, folder: String) -> Unit,
     onDeleteProduct: (Long) -> Unit,
     onAddProductWithStock: ((name: String, unit: String, rateText: String, folder: String, stockQtyText: String, minStockAlertText: String) -> Unit)? = null,
-    onUpdateProductWithStock: ((id: Long, name: String, unit: String, rateText: String, folder: String, stockQtyText: String, minStockAlertText: String) -> Unit)? = null
+    onUpdateProductWithStock: ((id: Long, name: String, unit: String, rateText: String, folder: String, stockQtyText: String, minStockAlertText: String) -> Unit)? = null,
+    comboPackages: List<ComboPackage> = emptyList(),
+    onSaveComboPackage: (ComboPackage) -> Unit = {},
+    onDeleteComboPackage: (String) -> Unit = {}
 ) {
     val canManageProducts = user.isAdmin && !user.isSuperAdmin
     var name by remember { mutableStateOf("") }
@@ -736,26 +748,94 @@ fun ProductsScreen(
     var selectedFolderFilter by remember { mutableStateOf("All") }
     var searchQuery by remember { mutableStateOf("") }
     var editingProduct by remember { mutableStateOf<ProductEntity?>(null) }
+
+    // Combo Package Builder states
+    var editingComboId by remember { mutableStateOf<String?>(null) }
+    var comboName by remember { mutableStateOf("") }
+    var comboDesc by remember { mutableStateOf("") }
+    var comboProdSearch by remember { mutableStateOf("") }
+    var selectedComboItems by remember { mutableStateOf<List<ComboPackageItem>>(emptyList()) }
+    var comboQtyInputs by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var comboRateInputs by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var comboToDelete by remember { mutableStateOf<ComboPackage?>(null) }
+
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
 
-    val allFolders = remember(products) {
-        (DEFAULT_PRODUCT_FOLDERS + products.map { it.folder.ifBlank { "General" } })
+    val catalogProducts = remember(products) {
+        products.filter { !it.folder.equals("Combo", ignoreCase = true) }
+    }
+    val catalogById = remember(catalogProducts) { catalogProducts.associateBy { it.id } }
+    val catalogByLowerName = remember(catalogProducts) {
+        catalogProducts.associateBy { it.name.trim().lowercase(Locale.ROOT) }
+    }
+
+    val allFolders = remember(catalogProducts) {
+        (DEFAULT_PRODUCT_FOLDERS + catalogProducts.map { it.folder.ifBlank { "General" } })
             .distinct()
     }
-    val existingFolderTabs = remember(products) {
-        val dynamic = products.map { it.folder.ifBlank { "General" } }
-        val merged = (listOf("Combo") + dynamic).distinct()
-        val sorted = merged.sortedWith(
-            compareBy<String> { !it.equals("Combo", ignoreCase = true) }
-                .thenBy { it.lowercase(Locale.ROOT) }
-        )
-        listOf("All") + sorted
+    val existingFolderTabs = remember(catalogProducts) {
+        val dynamic = catalogProducts.map { it.folder.ifBlank { "General" } }.distinct()
+            .sortedBy { it.lowercase(Locale.ROOT) }
+        listOf("All", "Combo") + dynamic
     }
-    val visibleProducts = remember(products, selectedFolderFilter, searchQuery) {
-        val searched = BillingRepository.filterProducts(products, searchQuery)
-        if (selectedFolderFilter == "All") searched
-        else searched.filter { it.folder.ifBlank { "General" }.equals(selectedFolderFilter, ignoreCase = true) }
+    val isComboFolderSelected = selectedFolderFilter.equals("Combo", ignoreCase = true)
+
+    val visibleProducts = remember(catalogProducts, selectedFolderFilter, searchQuery) {
+        if (selectedFolderFilter.equals("Combo", ignoreCase = true)) {
+            emptyList()
+        } else {
+            val searched = BillingRepository.filterProducts(catalogProducts, searchQuery)
+            if (selectedFolderFilter == "All") searched
+            else searched.filter { it.folder.ifBlank { "General" }.equals(selectedFolderFilter, ignoreCase = true) }
+        }
+    }
+
+    val visibleComboPackages = remember(comboPackages, searchQuery) {
+        val q = searchQuery.trim()
+        if (q.isBlank()) comboPackages
+        else comboPackages.filter { pkg ->
+            pkg.name.contains(q, ignoreCase = true) ||
+                pkg.description.contains(q, ignoreCase = true) ||
+                pkg.items.any { it.productName.contains(q, ignoreCase = true) }
+        }
+    }
+
+    val filteredCatalogForCombo = remember(catalogProducts, comboProdSearch) {
+        BillingRepository.filterProducts(catalogProducts, comboProdSearch)
+    }
+
+    fun itemKey(item: ComboPackageItem): String =
+        if (item.productId > 0L) "id_${item.productId}" else "nm_${item.productName.trim().lowercase(Locale.ROOT)}"
+
+    fun prodKey(prod: ProductEntity): String =
+        if (prod.id > 0L) "id_${prod.id}" else "nm_${prod.name.trim().lowercase(Locale.ROOT)}"
+
+    fun loadComboForEdit(pkg: ComboPackage) {
+        editingComboId = pkg.id
+        comboName = pkg.name
+        comboDesc = pkg.description
+        selectedComboItems = pkg.items
+        val qMap = mutableMapOf<String, String>()
+        val rMap = mutableMapOf<String, String>()
+        pkg.items.forEach { cItem ->
+            val k = itemKey(cItem)
+            qMap[k] = formatStockNum(cItem.qty)
+            rMap[k] = if (cItem.rate % 1.0 == 0.0) cItem.rate.toInt().toString() else String.format(Locale.US, "%.2f", cItem.rate)
+        }
+        comboQtyInputs = qMap
+        comboRateInputs = rMap
+        selectedFolderFilter = "Combo"
+    }
+
+    fun resetComboBuilder() {
+        editingComboId = null
+        comboName = ""
+        comboDesc = ""
+        comboProdSearch = ""
+        selectedComboItems = emptyList()
+        comboQtyInputs = emptyMap()
+        comboRateInputs = emptyMap()
     }
 
     LazyColumn(
@@ -767,7 +847,7 @@ fun ProductsScreen(
     ) {
         item { Spacer(Modifier.height(4.dp)) }
 
-        if (canManageProducts) {
+        if (canManageProducts && !isComboFolderSelected) {
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -776,7 +856,7 @@ fun ProductsScreen(
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Product Folders & Price Manager (Admin)", style = MaterialTheme.typography.titleLarge)
                         Text(
-                            text = "Add products or save ready-made setups in the 'Combo' folder for fast Quotation & Billing.",
+                            text = "Add products with stock, or open the 'Combo' folder to bundle multiple products with custom Qty & Price.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -786,19 +866,18 @@ fun ProductsScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             FilterChip(
-                                selected = folder.equals("Combo", ignoreCase = true),
+                                selected = isComboFolderSelected,
                                 onClick = {
-                                    folder = "Combo"
-                                    if (unit == "Nos" || unit.isBlank()) unit = "Set"
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
                                     selectedFolderFilter = "Combo"
                                 },
                                 colors = FilterChipDefaults.filterChipColors(
                                     selectedContainerColor = Color(0xFF5B21B6),
                                     selectedLabelColor = Color.White,
-                                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    labelColor = MaterialTheme.colorScheme.onSurface
+                                    containerColor = Color(0xFFEDE9FE),
+                                    labelColor = Color(0xFF5B21B6)
                                 ),
-                                label = { Text("Combo Folder (Quotation Setup)", fontWeight = FontWeight.SemiBold) },
+                                label = { Text("Open Combo Folder (${comboPackages.size})", fontWeight = FontWeight.SemiBold) },
                                 modifier = Modifier.testTag("quick_select_combo_folder")
                             )
                         }
@@ -826,9 +905,6 @@ fun ProductsScreen(
                                         text = { Text(f) },
                                         onClick = {
                                             folder = f
-                                            if (f.equals("Combo", ignoreCase = true) && unit == "Nos") {
-                                                unit = "Set"
-                                            }
                                             folderMenuOpen = false
                                         }
                                     )
@@ -839,15 +915,7 @@ fun ProductsScreen(
                         OutlinedTextField(
                             value = name,
                             onValueChange = { name = it },
-                            label = {
-                                Text(
-                                    if (folder.equals("Combo", ignoreCase = true)) {
-                                        "Combo Setup Name (e.g. 4 Ch HD Full Combo)"
-                                    } else {
-                                        "Product Name (e.g. 4 Channel DVR)"
-                                    }
-                                )
-                            },
+                            label = { Text("Product Name (e.g. 4 Channel DVR)") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_product_name")
                         )
@@ -916,7 +984,7 @@ fun ProductsScreen(
                     }
                 }
             }
-        } else {
+        } else if (!canManageProducts) {
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -926,9 +994,9 @@ fun ProductsScreen(
                         Text("Product Folders & Price Catalog", style = MaterialTheme.typography.titleLarge)
                         Text(
                             text = if (user.isSuperAdmin) {
-                                "Super Admin read-only view: search or browse all product folders, unit prices, and stock."
+                                "Super Admin read-only view: search or browse all product folders, combo packages, unit prices, and stock."
                             } else {
-                                "Search any product name below to check price, unit & available stock, or browse folders including Combo."
+                                "Search any product name below to check price, unit & available stock, or open Combo folder to view bundles."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -949,11 +1017,16 @@ fun ProductsScreen(
                         value = searchQuery,
                         onValueChange = { newValue ->
                             searchQuery = newValue
-                            if (newValue.isNotBlank() && selectedFolderFilter != "All") {
+                            if (newValue.isNotBlank() && !isComboFolderSelected && selectedFolderFilter != "All") {
                                 selectedFolderFilter = "All"
                             }
                         },
-                        label = { Text("Search Product Name, Price & Stock") },
+                        label = {
+                            Text(
+                                if (isComboFolderSelected) "Search Combo Name or Product Inside Combo"
+                                else "Search Product Name, Price & Stock"
+                            )
+                        },
                         placeholder = { Text("Type dome, bullet, dvr, wire, smps, combo...") },
                         leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = TealAccent) },
                         trailingIcon = {
@@ -973,7 +1046,7 @@ fun ProductsScreen(
                             .testTag("product_search_input")
                     )
 
-                    if (searchQuery.isNotBlank()) {
+                    if (searchQuery.isNotBlank() && !isComboFolderSelected) {
                         Text(
                             text = "Found ${visibleProducts.size} matching & related product(s)",
                             style = MaterialTheme.typography.labelMedium,
@@ -991,17 +1064,20 @@ fun ProductsScreen(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         existingFolderTabs.forEach { folderName ->
-                            val count = if (folderName == "All") products.size
-                            else products.count { it.folder.ifBlank { "General" }.equals(folderName, ignoreCase = true) }
-                            val isCombo = folderName.equals("Combo", ignoreCase = true)
+                            val isComboTab = folderName.equals("Combo", ignoreCase = true)
+                            val count = when {
+                                folderName == "All" -> catalogProducts.size
+                                isComboTab -> comboPackages.size
+                                else -> catalogProducts.count { it.folder.ifBlank { "General" }.equals(folderName, ignoreCase = true) }
+                            }
                             FilterChip(
-                                selected = selectedFolderFilter == folderName,
+                                selected = selectedFolderFilter.equals(folderName, ignoreCase = true),
                                 onClick = { selectedFolderFilter = folderName },
                                 colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = if (isCombo) Color(0xFF5B21B6) else TealAccent,
+                                    selectedContainerColor = if (isComboTab) Color(0xFF5B21B6) else TealAccent,
                                     selectedLabelColor = Color.White,
-                                    containerColor = if (isCombo) Color(0xFFEDE9FE) else MaterialTheme.colorScheme.surfaceVariant,
-                                    labelColor = if (isCombo) Color(0xFF5B21B6) else MaterialTheme.colorScheme.onSurface
+                                    containerColor = if (isComboTab) Color(0xFFEDE9FE) else MaterialTheme.colorScheme.surfaceVariant,
+                                    labelColor = if (isComboTab) Color(0xFF5B21B6) else MaterialTheme.colorScheme.onSurface
                                 ),
                                 label = { Text("$folderName ($count)", fontWeight = FontWeight.SemiBold) },
                                 modifier = Modifier.testTag("product_folder_chip_${folderName.replace(" ", "_")}")
@@ -1012,7 +1088,503 @@ fun ProductsScreen(
             }
         }
 
-        if (visibleProducts.isEmpty()) {
+        if (isComboFolderSelected) {
+            if (canManageProducts) {
+                item {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.5.dp, Color(0xFF7C3AED).copy(alpha = 0.45f)),
+                        modifier = Modifier.testTag("combo_builder_card")
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (editingComboId != null) "Edit Combo Package" else "Create New Combo Folder Setup",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF5B21B6)
+                                )
+                                if (editingComboId != null) {
+                                    TextButton(
+                                        onClick = { resetComboBuilder() },
+                                        modifier = Modifier.testTag("combo_cancel_edit_button")
+                                    ) {
+                                        Text("Cancel Edit")
+                                    }
+                                }
+                            }
+                            Text(
+                                text = "Enter a Combo Name, tick products from your catalog, and set custom Qty & Price. Catalog stock still tracks automatically when billed.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
+                            OutlinedTextField(
+                                value = comboName,
+                                onValueChange = { comboName = it },
+                                label = { Text("Combo Name (e.g. 4 Ch HD Full Combo)") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("combo_name_input")
+                            )
+
+                            OutlinedTextField(
+                                value = comboDesc,
+                                onValueChange = { comboDesc = it },
+                                label = { Text("Note / Description (Optional)") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("combo_desc_input")
+                            )
+
+                            HorizontalDivider()
+
+                            Text(
+                                text = "1. Select Products to Include (${selectedComboItems.size} selected):",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+
+                            OutlinedTextField(
+                                value = comboProdSearch,
+                                onValueChange = { comboProdSearch = it },
+                                label = { Text("Filter Catalog Products") },
+                                placeholder = { Text("Search camera, dvr, cable, hard disk...") },
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color(0xFF5B21B6)) },
+                                trailingIcon = {
+                                    if (comboProdSearch.isNotBlank()) {
+                                        IconButton(onClick = { comboProdSearch = "" }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Clear filter")
+                                        }
+                                    }
+                                },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("combo_product_search")
+                            )
+
+                            if (filteredCatalogForCombo.isEmpty()) {
+                                Text(
+                                    text = "No catalog products match \"$comboProdSearch\". Add products first in other folders.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            } else {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(max = 240.dp)
+                                            .verticalScroll(rememberScrollState())
+                                            .padding(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        filteredCatalogForCombo.forEach { prod ->
+                                            val pk = prodKey(prod)
+                                            val isSelected = selectedComboItems.any { itemKey(it) == pk }
+                                            val toggleSelect = {
+                                                if (isSelected) {
+                                                    selectedComboItems = selectedComboItems.filterNot { itemKey(it) == pk }
+                                                    comboQtyInputs = comboQtyInputs - pk
+                                                    comboRateInputs = comboRateInputs - pk
+                                                } else {
+                                                    val newItem = ComboPackageItem(
+                                                        productId = prod.id,
+                                                        productName = prod.name,
+                                                        unit = prod.unit.ifBlank { "Nos" },
+                                                        qty = 1.0,
+                                                        rate = prod.defaultRate.coerceAtLeast(0.0),
+                                                        folder = prod.folder.ifBlank { "General" }
+                                                    )
+                                                    selectedComboItems = selectedComboItems + newItem
+                                                    comboQtyInputs = comboQtyInputs + (pk to "1")
+                                                    val rTxt = if (prod.defaultRate % 1.0 == 0.0) {
+                                                        prod.defaultRate.toInt().toString()
+                                                    } else {
+                                                        String.format(Locale.US, "%.2f", prod.defaultRate)
+                                                    }
+                                                    comboRateInputs = comboRateInputs + (pk to rTxt)
+                                                }
+                                            }
+                                            Surface(
+                                                shape = RoundedCornerShape(8.dp),
+                                                color = if (isSelected) Color(0xFFEDE9FE) else MaterialTheme.colorScheme.surface,
+                                                border = BorderStroke(
+                                                    1.dp,
+                                                    if (isSelected) Color(0xFF7C3AED) else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                                                ),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable { toggleSelect() }
+                                                    .testTag("combo_pick_row_${prod.id}")
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Checkbox(
+                                                        checked = isSelected,
+                                                        onCheckedChange = { toggleSelect() },
+                                                        colors = CheckboxDefaults.colors(
+                                                            checkedColor = Color(0xFF5B21B6),
+                                                            checkmarkColor = Color.White
+                                                        ),
+                                                        modifier = Modifier.testTag("combo_pick_product_${prod.id}")
+                                                    )
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = prod.name,
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            fontWeight = FontWeight.SemiBold,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                        Text(
+                                                            text = "${prod.folder.ifBlank { "General" }} · Catalog ₹${String.format(Locale.US, "%.2f", prod.defaultRate)}/${prod.unit} · Stock: ${formatStockNum(prod.stockQty)}",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = TealAccent,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (selectedComboItems.isNotEmpty()) {
+                                HorizontalDivider()
+                                Text(
+                                    text = "2. Set Custom Qty & Price for Each Combo Product:",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF5B21B6)
+                                )
+                                selectedComboItems.forEachIndexed { idx, cItem ->
+                                    val k = itemKey(cItem)
+                                    val catProd = (if (cItem.productId > 0L) catalogById[cItem.productId] else null)
+                                        ?: catalogByLowerName[cItem.productName.trim().lowercase(Locale.ROOT)]
+                                    val qtyStr = comboQtyInputs[k] ?: formatStockNum(cItem.qty)
+                                    val rateStr = comboRateInputs[k]
+                                        ?: if (cItem.rate % 1.0 == 0.0) cItem.rate.toInt().toString()
+                                        else String.format(Locale.US, "%.2f", cItem.rate)
+                                    val lineAmount = (qtyStr.toDoubleOrNull() ?: cItem.qty).coerceAtLeast(0.0) *
+                                        (rateStr.toDoubleOrNull() ?: cItem.rate).coerceAtLeast(0.0)
+
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                        border = BorderStroke(1.dp, Color(0xFF7C3AED).copy(alpha = 0.35f)),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(10.dp),
+                                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = "${idx + 1}. ${cItem.productName}",
+                                                        style = MaterialTheme.typography.titleSmall,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                    val catInfo = if (catProd != null) {
+                                                        "Catalog Stock: ${formatStockNum(catProd.stockQty)} ${catProd.unit} · Regular Rate: ₹${String.format(Locale.US, "%.2f", catProd.defaultRate)}"
+                                                    } else {
+                                                        "Unit: ${cItem.unit}"
+                                                    }
+                                                    Text(
+                                                        text = catInfo,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                                IconButton(
+                                                    onClick = {
+                                                        selectedComboItems = selectedComboItems.filterNot { itemKey(it) == k }
+                                                        comboQtyInputs = comboQtyInputs - k
+                                                        comboRateInputs = comboRateInputs - k
+                                                    },
+                                                    modifier = Modifier.testTag("combo_remove_item_${cItem.productId}")
+                                                ) {
+                                                    Icon(Icons.Default.Delete, contentDescription = "Remove from combo", tint = RedDue)
+                                                }
+                                            }
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                OutlinedTextField(
+                                                    value = qtyStr,
+                                                    onValueChange = { txt ->
+                                                        comboQtyInputs = comboQtyInputs + (k to txt)
+                                                        val parsed = txt.toDoubleOrNull()
+                                                        if (parsed != null && parsed >= 0.0) {
+                                                            selectedComboItems = selectedComboItems.map {
+                                                                if (itemKey(it) == k) it.copy(qty = parsed) else it
+                                                            }
+                                                        }
+                                                    },
+                                                    label = { Text("Qty (${cItem.unit})") },
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                    singleLine = true,
+                                                    modifier = Modifier
+                                                        .weight(0.9f)
+                                                        .bringIntoViewOnFocus()
+                                                        .testTag("combo_item_qty_${cItem.productId}")
+                                                )
+                                                OutlinedTextField(
+                                                    value = rateStr,
+                                                    onValueChange = { txt ->
+                                                        comboRateInputs = comboRateInputs + (k to txt)
+                                                        val parsed = txt.toDoubleOrNull()
+                                                        if (parsed != null && parsed >= 0.0) {
+                                                            selectedComboItems = selectedComboItems.map {
+                                                                if (itemKey(it) == k) it.copy(rate = parsed) else it
+                                                            }
+                                                        }
+                                                    },
+                                                    label = { Text("Combo Price (₹)") },
+                                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                    singleLine = true,
+                                                    modifier = Modifier
+                                                        .weight(1.1f)
+                                                        .bringIntoViewOnFocus()
+                                                        .testTag("combo_item_rate_${cItem.productId}")
+                                                )
+                                            }
+                                            Text(
+                                                text = "Line Amount: ₹${String.format(Locale.US, "%.2f", lineAmount)}",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = Color(0xFF5B21B6),
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+
+                                val comboTotal = selectedComboItems.sumOf { cItem ->
+                                    val k = itemKey(cItem)
+                                    val q = (comboQtyInputs[k]?.toDoubleOrNull() ?: cItem.qty).coerceAtLeast(0.0)
+                                    val r = (comboRateInputs[k]?.toDoubleOrNull() ?: cItem.rate).coerceAtLeast(0.0)
+                                    q * r
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = Color(0xFFEDE9FE),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "Combo Total (${selectedComboItems.size} products)",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF4C1D95)
+                                        )
+                                        Text(
+                                            text = "₹${String.format(Locale.US, "%.2f", comboTotal)}",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Black,
+                                            color = Color(0xFF5B21B6)
+                                        )
+                                    }
+                                }
+                            }
+
+                            Button(
+                                onClick = {
+                                    clearFocusAndHideToolbar(focusManager, textToolbar)
+                                    val resolvedItems = selectedComboItems.map { cItem ->
+                                        val k = itemKey(cItem)
+                                        val q = (comboQtyInputs[k]?.toDoubleOrNull() ?: cItem.qty).coerceAtLeast(0.01)
+                                        val r = (comboRateInputs[k]?.toDoubleOrNull() ?: cItem.rate).coerceAtLeast(0.0)
+                                        cItem.copy(qty = q, rate = r)
+                                    }
+                                    val pkg = ComboPackage(
+                                        id = editingComboId ?: UUID.randomUUID().toString(),
+                                        name = comboName.trim(),
+                                        description = comboDesc.trim(),
+                                        items = resolvedItems
+                                    )
+                                    onSaveComboPackage(pkg)
+                                    if (pkg.name.isNotBlank() && pkg.items.isNotEmpty()) {
+                                        resetComboBuilder()
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF5B21B6), contentColor = Color.White),
+                                modifier = Modifier.fillMaxWidth().height(48.dp).testTag("save_combo_package_button")
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White)
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = if (editingComboId != null) "Update Combo Package" else "Save Combo Package",
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (visibleComboPackages.isEmpty()) {
+                item {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(Icons.Default.Inventory2, contentDescription = null, modifier = Modifier.size(44.dp), tint = Color(0xFF5B21B6))
+                            Text(
+                                text = if (comboPackages.isEmpty()) {
+                                    if (canManageProducts) "No combo packages created yet. Build one above!"
+                                    else "No combo packages created by Admin yet."
+                                } else {
+                                    "No combo packages match \"$searchQuery\""
+                                },
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
+                    }
+                }
+            } else {
+                items(visibleComboPackages, key = { it.id }) { pkg ->
+                    Card(
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = BorderStroke(1.dp, Color(0xFF7C3AED).copy(alpha = 0.35f)),
+                        modifier = Modifier.fillMaxWidth().testTag("combo_package_card_${pkg.id}")
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Surface(
+                                            color = Color(0xFFEDE9FE),
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "COMBO · ${pkg.items.size} ITEMS",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color(0xFF5B21B6),
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                        Text(
+                                            text = "₹${String.format(Locale.US, "%.2f", pkg.totalAmount)}",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Black,
+                                            color = Color(0xFF5B21B6)
+                                        )
+                                    }
+                                    Text(pkg.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                    if (pkg.description.isNotBlank()) {
+                                        Text(
+                                            text = pkg.description,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                if (canManageProducts) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        IconButton(
+                                            onClick = {
+                                                clearFocusAndHideToolbar(focusManager, textToolbar)
+                                                loadComboForEdit(pkg)
+                                            },
+                                            modifier = Modifier.testTag("edit_combo_${pkg.id}")
+                                        ) {
+                                            Icon(Icons.Default.Edit, contentDescription = "Edit combo", tint = TealAccent)
+                                        }
+                                        IconButton(
+                                            onClick = { comboToDelete = pkg },
+                                            modifier = Modifier.testTag("delete_combo_${pkg.id}")
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete combo", tint = RedDue)
+                                        }
+                                    }
+                                }
+                            }
+
+                            HorizontalDivider()
+
+                            pkg.items.forEach { cItem ->
+                                val catProd = (if (cItem.productId > 0L) catalogById[cItem.productId] else null)
+                                    ?: catalogByLowerName[cItem.productName.trim().lowercase(Locale.ROOT)]
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "• ${cItem.productName}",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                        Text(
+                                            text = "Qty: ${formatStockNum(cItem.qty)} ${cItem.unit} × ₹${String.format(Locale.US, "%.2f", cItem.rate)} = ₹${String.format(Locale.US, "%.2f", cItem.amount)}",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = TealAccent
+                                        )
+                                    }
+                                    if (catProd != null) {
+                                        val isLowStock = catProd.minStockAlert > 0.0 && catProd.stockQty <= catProd.minStockAlert
+                                        Surface(
+                                            color = if (isLowStock) RedDueBg else GreenPaidBg,
+                                            shape = RoundedCornerShape(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "Stock: ${formatStockNum(catProd.stockQty)}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (isLowStock) RedDueDark else GreenPaid,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (visibleProducts.isEmpty()) {
             item {
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -1041,15 +1613,14 @@ fun ProductsScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             val prodFolder = prod.folder.ifBlank { "General" }
-                            val isComboProd = prodFolder.equals("Combo", ignoreCase = true)
                             Surface(
-                                color = if (isComboProd) Color(0xFFEDE9FE) else MaterialTheme.colorScheme.secondaryContainer,
+                                color = MaterialTheme.colorScheme.secondaryContainer,
                                 shape = RoundedCornerShape(6.dp)
                             ) {
                                 Text(
                                     text = prodFolder,
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = if (isComboProd) Color(0xFF5B21B6) else MaterialTheme.colorScheme.onSecondaryContainer,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                                 )
@@ -1142,6 +1713,36 @@ fun ProductsScreen(
                     onUpdateProduct(productToEdit.id, updatedName, updatedUnit, updatedRate, updatedFolder)
                 }
                 editingProduct = null
+            }
+        )
+    }
+
+    val deleteTargetCombo = comboToDelete
+    if (canManageProducts && deleteTargetCombo != null) {
+        AlertDialog(
+            onDismissRequest = { comboToDelete = null },
+            icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = RedDue) },
+            title = { Text("Delete Combo Package?") },
+            text = {
+                Text("Delete '${deleteTargetCombo.name}' (${deleteTargetCombo.items.size} products)? Catalog products & stock will NOT be affected.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteComboPackage(deleteTargetCombo.id)
+                        if (editingComboId == deleteTargetCombo.id) resetComboBuilder()
+                        comboToDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = RedDue, contentColor = Color.White),
+                    modifier = Modifier.testTag("confirm_delete_combo_button")
+                ) {
+                    Text("Delete Combo", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { comboToDelete = null }) {
+                    Text("Cancel")
+                }
             }
         )
     }

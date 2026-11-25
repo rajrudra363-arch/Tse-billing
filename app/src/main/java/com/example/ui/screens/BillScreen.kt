@@ -122,6 +122,7 @@ import androidx.compose.ui.unit.dp
 import com.example.data.BillEntity
 import com.example.data.BillingRepository
 import com.example.data.ChargeType
+import com.example.data.ComboPackage
 import com.example.data.CompanySettings
 import com.example.data.CustomerEntity
 import com.example.data.DocumentType
@@ -199,7 +200,9 @@ fun BillScreen(
     onSharePdf: (InvoicePrintPayload) -> Unit,
     onSavePhoto: (InvoicePrintPayload) -> Unit,
     onSharePhoto: (InvoicePrintPayload) -> Unit,
-    onOpenPaymentAndReview: (InvoicePrintPayload) -> Unit = {}
+    onOpenPaymentAndReview: (InvoicePrintPayload) -> Unit = {},
+    comboPackages: List<ComboPackage> = emptyList(),
+    onAddComboPackage: (ComboPackage) -> Unit = {}
 ) {
     val isAdmin = currentUser.isAdmin && !currentUser.isSuperAdmin
     val isQuotation = draft.documentType == DocumentType.QUOTATION
@@ -251,9 +254,7 @@ fun BillScreen(
         }
     }
 
-    val comboProducts = remember(products) {
-        products.filter { it.folder.equals("Combo", ignoreCase = true) }
-    }
+    // Live comboPackages passed from ViewModel / Repository
 
     LazyColumn(
         modifier = Modifier
@@ -691,57 +692,81 @@ fun BillScreen(
             }
         }
 
-        // Step 2: Quick Saved Combos (when available) + Line Items with Search Product Picker
-        if (comboProducts.isNotEmpty()) {
+        // Step 2: 1-Tap Quick Combo Packages (adds all bundled products with custom qty & price)
+        if (comboPackages.isNotEmpty()) {
             item {
                 Card(
                     shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, Color(0xFF7C3AED).copy(alpha = 0.4f)),
+                    modifier = Modifier.testTag("bill_combo_packages_card")
                 ) {
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
                             text = if (isQuotation) {
-                                "Quick Combo Setups for Quotation (Tap to Add):"
+                                "Quick Combo Packages for Quotation (1 Tap = Add All Products):"
                             } else {
-                                "Quick Combo Setups (Tap to Add):"
+                                "Quick Combo Packages (1 Tap = Add All Products):"
                             },
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF5B21B6)
                         )
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            comboProducts.forEach { combo ->
-                                val alreadyAdded = draft.items.any { it.description.trim().equals(combo.name.trim(), ignoreCase = true) }
-                                FilterChip(
-                                    selected = alreadyAdded,
-                                    onClick = {
-                                        clearFocusAndHideToolbar(focusManager, textToolbar)
-                                        val emptyIdx = draft.items.indexOfFirst { it.description.isBlank() && it.rate == 0.0 }
-                                        if (emptyIdx >= 0) {
-                                            onSelectProductForRow(emptyIdx, combo)
-                                        } else if (draft.items.size < 15) {
-                                            val nextIdx = draft.items.size
-                                            onAddItem()
-                                            onSelectProductForRow(nextIdx, combo)
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            comboPackages.forEach { combo ->
+                                val previewItems = combo.items.joinToString(", ") { cItem ->
+                                    val qTxt = if (cItem.qty % 1.0 == 0.0) cItem.qty.toInt().toString() else String.format(Locale.US, "%.1f", cItem.qty)
+                                    "${cItem.productName} ×$qTxt"
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = Color(0xFFEDE9FE),
+                                    border = BorderStroke(1.dp, Color(0xFF7C3AED).copy(alpha = 0.5f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            clearFocusAndHideToolbar(focusManager, textToolbar)
+                                            onAddComboPackage(combo)
                                         }
-                                    },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        selectedContainerColor = Color(0xFF5B21B6),
-                                        selectedLabelColor = Color.White,
-                                        containerColor = Color(0xFFEDE9FE),
-                                        labelColor = Color(0xFF5B21B6)
-                                    ),
-                                    label = {
-                                        Text(
-                                            "${combo.name} (₹${String.format(Locale.US, "%.0f", combo.defaultRate)})",
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("bill_quick_combo_${combo.id}")
-                                )
+                                        .testTag("bill_quick_combo_${combo.id}")
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Text(
+                                                text = combo.name,
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF4C1D95)
+                                            )
+                                            Text(
+                                                text = previewItems,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Color(0xFF5B21B6),
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Spacer(Modifier.width(8.dp))
+                                        Column(horizontalAlignment = Alignment.End) {
+                                            Text(
+                                                text = "₹${String.format(Locale.US, "%.0f", combo.totalAmount)}",
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.Black,
+                                                color = Color(0xFF5B21B6)
+                                            )
+                                            Text(
+                                                text = "+ Add ${combo.items.size} items",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF4C1D95)
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

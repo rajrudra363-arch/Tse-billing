@@ -80,12 +80,16 @@ class BillingRepository(
         if (volatile) cloud else local
     }
 
-    val products: Flow<List<ProductEntity>> = combine(
+    private val rawProducts: Flow<List<ProductEntity>> = combine(
         productDao.observeAll(),
         _volatileCloudActive,
         _volatileProducts
     ) { local, volatile, cloud ->
         if (volatile) cloud else local
+    }
+
+    val products: Flow<List<ProductEntity>> = rawProducts.map { list ->
+        list.filter { !it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
     }
 
     private val localNormalizedAccounts: Flow<List<UserAccountEntity>> = userDao.observeAll().map { raw ->
@@ -154,6 +158,25 @@ class BillingRepository(
 
     val prefillInviteCode: Flow<String> = configMap.map { m ->
         m[KEY_PREFILL_INVITE_CODE].orEmpty()
+    }
+
+    val comboPackages: Flow<List<ComboPackage>> = combine(
+        rawProducts,
+        configMap,
+        _volatileCloudActive
+    ) { rawList, m, volatile ->
+        val syncedCombos = rawList
+            .filter { it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
+            .mapNotNull { row ->
+                ComboPackageJson.fromSingleJson(row.unit)?.copy(name = row.name)
+            }
+            .sortedByDescending { it.createdAt }
+        if (syncedCombos.isNotEmpty() || volatile) {
+            syncedCombos
+        } else {
+            val rawCfg = m[KEY_COMBO_PACKAGES].orEmpty()
+            if (rawCfg.isBlank()) emptyList() else ComboPackageJson.fromJson(rawCfg)
+        }
     }
 
     val cloudWorkspaceInfo: Flow<CloudWorkspaceInfo> = configMap.map { m ->
@@ -828,11 +851,11 @@ class BillingRepository(
             return Result.success(emptyMap())
         }
 
-        val currentProducts = if (_volatileCloudActive.value) {
+        val currentProducts = (if (_volatileCloudActive.value) {
             _volatileProducts.value
         } else {
             productDao.getAll()
-        }
+        }).filter { !it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
         val byLowerName = currentProducts.associateBy { it.name.trim().lowercase(Locale.ROOT) }
         val docDeltas = linkedMapOf<String, Double>()
 
@@ -1020,6 +1043,7 @@ class BillingRepository(
         if (keys.isEmpty()) return emptyList()
 
         val allProducts = productDao.getAll()
+            .filter { !it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
         val byLowerName = allProducts.associateBy { it.name.trim().lowercase(Locale.ROOT) }
         val updatedList = mutableListOf<ProductEntity>()
         for (k in keys) {
@@ -1055,7 +1079,10 @@ class BillingRepository(
         for (k in keys) {
             val delta = (oldMap[k] ?: 0.0) - (newMap[k] ?: 0.0)
             if (kotlin.math.abs(delta) < 1e-6) continue
-            val idx = currentProducts.indexOfFirst { it.name.trim().lowercase(Locale.ROOT) == k }
+            val idx = currentProducts.indexOfFirst {
+                !it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) &&
+                    it.name.trim().lowercase(Locale.ROOT) == k
+            }
             if (idx < 0) continue
             val product = currentProducts[idx]
             if (product.stockQty <= 0.0 && product.minStockAlert <= 0.0) continue
@@ -1827,6 +1854,73 @@ class BillingRepository(
             cloudSync?.pushTrashItem(wsId, trashItem)
             cloudSync?.pushAuditLog(wsId, audit)
         }
+    }
+
+    suspend fun saveComboPackage(pkg: ComboPackage) {
+        val cleanName = pkg.name.trim()
+        if (cleanName.isBlank() || pkg.items.isEmpty()) return
+        val cleanItems = pkg.items
+            .filter { it.productName.isNotBlank() }
+            .map {
+                it.copy(
+                    productName = it.productName.trim(),
+                    unit = it.unit.trim().ifBlank { "Nos" },
+                    qty = it.qty.coerceAtLeast(0.01),
+                    rate = it.rate.coerceAtLeast(0.0)
+                )
+            }
+        if (cleanItems.isEmpty()) return
+        val cleanPkg = pkg.copy(name = cleanName, description = pkg.description.trim(), items = cleanItems)
+        val existingCombos = productDao.getAll().filter { it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
+        val existingMatch = existingCombos.firstOrNull { row ->
+            ComboPackageJson.fromSingleJson(row.unit)?.id == cleanPkg.id ||
+                row.name.trim().equals(cleanName, ignoreCase = true)
+        }
+        val entity = ProductEntity(
+            id = existingMatch?.id ?: 0L,
+            name = cleanName,
+            unit = ComboPackageJson.toSingleJson(cleanPkg),
+            defaultRate = cleanPkg.totalAmount.coerceAtLeast(0.0),
+            folder = COMBO_STORAGE_FOLDER,
+            stockQty = 0.0,
+            minStockAlert = 0.0
+        )
+        val rowId = productDao.upsert(entity)
+        val persistedId = if (entity.id > 0L) entity.id else rowId
+        val savedEntity = entity.copy(id = persistedId)
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushProduct(wsId, savedEntity)
+        }
+    }
+
+    suspend fun deleteComboPackage(id: String) {
+        val existingCombos = productDao.getAll().filter { it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
+        val matched = existingCombos.filter { row ->
+            ComboPackageJson.fromSingleJson(row.unit)?.id == id
+        }
+        val wsId = getActiveWorkspaceId()
+        matched.forEach { row ->
+            productDao.deleteById(row.id)
+            if (wsId.isNotBlank()) {
+                cloudSync?.deleteProduct(wsId, row.id)
+            }
+        }
+        val legacyRaw = configDao.getValue(KEY_COMBO_PACKAGES).orEmpty()
+        if (legacyRaw.isNotBlank()) {
+            val remaining = ComboPackageJson.fromJson(legacyRaw).filterNot { it.id == id }
+            configDao.setValue(AppConfigEntity(KEY_COMBO_PACKAGES, ComboPackageJson.toJson(remaining)))
+        }
+    }
+
+    suspend fun getComboPackagesList(): List<ComboPackage> {
+        val synced = productDao.getAll()
+            .filter { it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
+            .mapNotNull { row -> ComboPackageJson.fromSingleJson(row.unit)?.copy(name = row.name) }
+            .sortedByDescending { it.createdAt }
+        if (synced.isNotEmpty()) return synced
+        val raw = configDao.getValue(KEY_COMBO_PACKAGES).orEmpty()
+        return if (raw.isBlank()) emptyList() else ComboPackageJson.fromJson(raw)
     }
 
     suspend fun saveExpense(
@@ -2626,10 +2720,24 @@ class BillingRepository(
             return
         }
         if (cloudProducts.isEmpty()) return
-        val existingByName = productDao.getAll().associateBy { it.name.lowercase(Locale.ROOT) }
+        val existingAll = productDao.getAll()
+        val existingNormalByName = existingAll
+            .filter { !it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
+            .associateBy { it.name.lowercase(Locale.ROOT) }
+        val existingCombos = existingAll
+            .filter { it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
         cloudProducts.forEach { cp ->
-            val old = existingByName[cp.name.lowercase(Locale.ROOT)]
-            productDao.upsert(cp.copy(id = old?.id ?: cp.id))
+            if (cp.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true)) {
+                val cpComboId = ComboPackageJson.fromSingleJson(cp.unit)?.id
+                val oldCombo = existingCombos.firstOrNull { ex ->
+                    (cpComboId != null && ComboPackageJson.fromSingleJson(ex.unit)?.id == cpComboId) ||
+                        ex.name.equals(cp.name, ignoreCase = true)
+                }
+                productDao.upsert(cp.copy(id = oldCombo?.id ?: cp.id))
+            } else {
+                val old = existingNormalByName[cp.name.lowercase(Locale.ROOT)]
+                productDao.upsert(cp.copy(id = old?.id ?: cp.id))
+            }
         }
     }
 
@@ -3049,6 +3157,8 @@ class BillingRepository(
 
         const val KEY_SEEDED = "seeded_v1"
         const val KEY_STAFF_APK_MODE = "staff_apk_mode_v1"
+        const val KEY_COMBO_PACKAGES = "combo_packages_json"
+        const val COMBO_STORAGE_FOLDER = "__COMBO_PKG__"
         const val KEY_PREFILL_INVITE_CODE = "prefill_invite_code_v1"
         const val KEY_STOCK_TRACKED_PREFIX = "stock_tracked_"
         const val KEY_CLOUD_WORKSPACE_ID = "cloud_workspace_id"

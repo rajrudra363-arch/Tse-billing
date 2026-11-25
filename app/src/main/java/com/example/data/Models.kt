@@ -292,3 +292,98 @@ object BillingTimePolicy {
         return isNightClosed(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
     }
 }
+
+data class ComboPackageItem(
+    val productId: Long = 0L,
+    val productName: String = "",
+    val unit: String = "Nos",
+    val qty: Double = 1.0,
+    val rate: Double = 0.0,
+    val folder: String = ""
+) {
+    val amount: Double get() = qty.coerceAtLeast(0.0) * rate.coerceAtLeast(0.0)
+}
+
+data class ComboPackage(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val name: String = "",
+    val description: String = "",
+    val items: List<ComboPackageItem> = emptyList(),
+    val createdAt: Long = System.currentTimeMillis()
+) {
+    val totalAmount: Double get() = items.sumOf { it.amount }
+    val totalQty: Double get() = items.sumOf { it.qty }
+}
+
+object ComboPackageJson {
+    fun toJsonObject(pkg: ComboPackage): JSONObject = JSONObject().apply {
+        put("id", pkg.id)
+        put("name", pkg.name)
+        put("desc", pkg.description)
+        put("createdAt", pkg.createdAt)
+        val itemsArr = JSONArray()
+        pkg.items.forEach { itm ->
+            itemsArr.put(
+                JSONObject().apply {
+                    put("prodId", itm.productId)
+                    put("prodName", itm.productName)
+                    put("unit", itm.unit)
+                    put("qty", itm.qty)
+                    put("rate", itm.rate)
+                    put("folder", itm.folder)
+                }
+            )
+        }
+        put("items", itemsArr)
+    }
+
+    fun fromJsonObject(obj: JSONObject): ComboPackage {
+        val itemsArr = obj.optJSONArray("items") ?: JSONArray()
+        val items = List(itemsArr.length()) { j ->
+            val itmObj = itemsArr.getJSONObject(j)
+            ComboPackageItem(
+                productId = itmObj.optLong("prodId", 0L),
+                productName = itmObj.optString("prodName", ""),
+                unit = itmObj.optString("unit", "Nos"),
+                qty = itmObj.optDouble("qty", 1.0),
+                rate = itmObj.optDouble("rate", 0.0),
+                folder = itmObj.optString("folder", "")
+            )
+        }
+        return ComboPackage(
+            id = obj.optString("id", java.util.UUID.randomUUID().toString()),
+            name = obj.optString("name", "Combo Setup"),
+            description = obj.optString("desc", ""),
+            items = items,
+            createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+        )
+    }
+
+    fun toSingleJson(pkg: ComboPackage): String = toJsonObject(pkg).toString()
+
+    fun fromSingleJson(raw: String): ComboPackage? {
+        if (raw.isBlank()) return null
+        return try {
+            fromJsonObject(JSONObject(raw))
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun toJson(packages: List<ComboPackage>): String {
+        val arr = JSONArray()
+        packages.forEach { pkg -> arr.put(toJsonObject(pkg)) }
+        return arr.toString()
+    }
+
+    fun fromJson(raw: String): List<ComboPackage> {
+        if (raw.isBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            List(arr.length()) { i -> fromJsonObject(arr.getJSONObject(i)) }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+}
+

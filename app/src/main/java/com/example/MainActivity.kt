@@ -143,6 +143,7 @@ import com.example.ui.screens.AdminPanelScreen
 import com.example.ui.screens.BillScreen
 import com.example.ui.screens.CustomerHelpScreen
 import com.example.ui.screens.CustomersScreen
+import com.example.ui.screens.EmployeeManagementScreen
 import com.example.ui.screens.ProductsScreen
 import com.example.ui.screens.SavedBillsScreen
 import com.example.ui.screens.SettingsScreen
@@ -769,6 +770,15 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                 label = "tabContent"
                             ) { tab ->
                                 when (tab) {
+                                    MainTab.EMPLOYEES -> EmployeeManagementScreen(
+                                         user = currentSession,
+                                         summaries = employeeSalarySummaries,
+                                         salaryPayments = salaryPayments,
+                                         onSaveEmployee = { emp, onDone -> viewModel.saveEmployee(emp, onDone) },
+                                         onDeleteEmployee = viewModel::deleteEmployee,
+                                         onRecordSalaryPayment = viewModel::recordSalaryPayment
+                                    )
+
                                     MainTab.BILL -> BillScreen(
                                         draft = billDraft,
                                         products = products,
@@ -894,7 +904,9 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                                 onSaved = { onDone() }
                                             )
                                         },
-                                        onApproveQuotation = viewModel::approveQuotationWithInstallationDate,
+                                        onApproveQuotation = { reqId, instDate, tech, onDone ->
+                                            viewModel.approveQuotationWithInstallationDate(reqId, instDate, tech, onDone = onDone)
+                                        },
                                         onRejectQuotation = viewModel::rejectQuotation,
                                         onRejectHelpRequest = viewModel::rejectHelpRequest,
                                         onDismissInstallationReminder = viewModel::dismissInstallationReminder,
@@ -947,7 +959,9 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                             onSaveUpi = viewModel::saveUpiSettings,
                                             onClearUpi = viewModel::clearUpiId,
                                             onAddTechnician = viewModel::addTechnician,
-                                            onCreateCloudTechnician = viewModel::createCloudTechnicianAccount,
+                                            onCreateCloudTechnician = { n, p, e, u, pw, bmp, done ->
+                                                viewModel.createCloudTechnicianAccount(n, p, e, u, pw, bmp, onSuccess = done)
+                                            },
                                             onUpdateTechnician = viewModel::updateTechnician,
                                             onRemoveTechnician = viewModel::removeTechnician,
                                             onAddSuperAdmin = viewModel::addSuperAdmin,

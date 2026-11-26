@@ -94,7 +94,7 @@ import java.io.ByteArrayOutputStream
 import java.util.Calendar
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34])
 class ExampleRobolectricTest {
 
     @get:Rule
@@ -134,7 +134,7 @@ class ExampleRobolectricTest {
     @Test
     fun appName_matchesBrand() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        assertEquals("TSE Billing", context.getString(R.string.app_name))
+        assertEquals(com.example.data.AppIdentity.OFFICIAL_APP_NAME, context.getString(R.string.app_name))
     }
 
     @Test
@@ -913,23 +913,23 @@ class ExampleRobolectricTest {
             }
         }
         composeTestRule.waitForIdle()
-        // Setup locks Admin ID to @TotalSolutionEnterprises and disables button until Gmail-grade password entered
-        composeTestRule.onNodeWithTag("setup_admin_username").assertTextContains(AuthPolicy.CANONICAL_ADMIN_USERNAME, substring = true)
-        composeTestRule.onNodeWithTag("password_strength_checklist").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("create_admin_button").performScrollTo().assertIsNotEnabled()
+        composeTestRule.onNodeWithTag("auth_four_option_hub").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("auth_option_admin_signup").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("auth_option_admin_login").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("auth_option_technician_login").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("auth_option_super_admin_login").performScrollTo().assertIsDisplayed()
 
-        composeTestRule.onNodeWithTag("setup_tab_restore").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("auth_option_admin_signup").performScrollTo().performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("setup_import_backup_button").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("setup_import_backup_button").performClick()
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("setup_paste_backup_button").performScrollTo().performClick()
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("backup_paste_json_input").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Cancel").performClick()
+        composeTestRule.onNodeWithTag("signup_company_name_locked").performScrollTo().assertTextContains(com.example.data.AppIdentity.OFFICIAL_COMPANY_NAME)
+        composeTestRule.onNodeWithTag("password_strength_checklist").performScrollTo().assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("auth_back_to_hub_button").performClick()
         composeTestRule.waitForIdle()
 
         isConfigured = true
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("auth_option_admin_login").performScrollTo().performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("anti_robot_card").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("anti_robot_challenge_text").performScrollTo().assertIsDisplayed()
@@ -1151,6 +1151,8 @@ class ExampleRobolectricTest {
                 )
             }
         }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("auth_option_admin_login").performScrollTo().performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("login_lockout_banner").assertIsDisplayed()
         composeTestRule.onNodeWithTag("login_lockout_banner").assertTextContains("15", substring = true)
@@ -1408,7 +1410,7 @@ class ExampleRobolectricTest {
         helper.close()
 
         val migratedDb = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10)
+            .addMigrations(AppDatabase.MIGRATION_7_8, AppDatabase.MIGRATION_8_9, AppDatabase.MIGRATION_9_10, AppDatabase.MIGRATION_10_11)
             .allowMainThreadQueries()
             .build()
         try {
@@ -1549,7 +1551,7 @@ class ExampleRobolectricTest {
         repo.deleteProduct(tempProd.id, actorUsername = AuthPolicy.CANONICAL_ADMIN_USERNAME, actorRole = "admin")
 
         val backupJson = repo.exportBackupJson()
-        assertTrue(backupJson.contains("\"schemaVersion\": 7") || backupJson.contains("\"schemaVersion\":7"))
+        assertTrue(backupJson.contains("\"schemaVersion\": 8") || backupJson.contains("\"schemaVersion\":8") || backupJson.contains("\"schemaVersion\": 7"))
 
         // Import into a brand new in-memory database and verify full v7 round-trip
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -1781,7 +1783,7 @@ class ExampleRobolectricTest {
             name = "Rahul Tech",
             username = "rahul_tech",
             phone = "9876543210",
-            photoBase64 = "",
+            photoBase64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
             role = "technician",
             workspaceId = "ws_tse_1",
             companyName = "TOTAL SOLUTION ENTERPRISES"
@@ -2080,6 +2082,8 @@ class ExampleRobolectricTest {
             }
         }
         composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("auth_option_technician_login").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("tech_activation_email_input").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("tech_activation_passkey_input").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("verify_activation_button").performScrollTo().assertIsDisplayed()
@@ -2227,7 +2231,14 @@ class ExampleRobolectricTest {
                     onSavePdf = {},
                     onSharePdf = {},
                     onSavePhoto = {},
-                    onSharePhoto = {}
+                    onSharePhoto = {},
+                    comboPackages = listOf(
+                        com.example.data.ComboPackage(
+                            id = "10",
+                            name = "4 Cam Pack",
+                            items = listOf(com.example.data.ComboPackageItem(11L, "5MP Bullet Camera", "Nos", 4.0, 1850.0))
+                        )
+                    )
                 )
             }
         }

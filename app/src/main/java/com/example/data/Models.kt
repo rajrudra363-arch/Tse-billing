@@ -388,32 +388,54 @@ data class ProductComboItem(
     val productName: String = "",
     val unit: String = "Nos",
     val qty: Double = 1.0,
-    val rate: Double = 0.0,
-    val catalogRate: Double = rate,
+    val catalogRate: Double = 0.0,
     val folder: String = ""
 ) {
-    val amount: Double get() = qty.coerceAtLeast(0.0) * rate.coerceAtLeast(0.0)
+    val rate: Double get() = catalogRate
+    val amount: Double get() = qty.coerceAtLeast(0.0) * catalogRate.coerceAtLeast(0.0)
 }
 
 data class ProductComboFile(
-    val id: String = UUID.randomUUID().toString(),
-    val comboFileId: String = id,
+    val comboFileId: String = UUID.randomUUID().toString(),
     val companyId: String = "",
     val name: String = "",
     val description: String = "",
     val items: List<ProductComboItem> = emptyList(),
     val comboPrice: Double = 0.0,
-    val totalAmount: Double = comboPrice,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 ) {
+    val id: String get() = comboFileId
     val catalogSum: Double get() = items.sumOf { it.amount }
     val effectiveComboPrice: Double get() = if (comboPrice > 0.0) comboPrice else catalogSum
+    val totalAmount: Double get() = effectiveComboPrice
     val totalQty: Double get() = items.sumOf { it.qty }
 }
 
-typealias ComboPackage = ProductComboFile
-typealias ComboPackageItem = ProductComboItem
+data class ComboPackageItem(
+    val productId: Long = 0L,
+    val productName: String = "",
+    val unit: String = "Nos",
+    val qty: Double = 1.0,
+    val rate: Double = 0.0,
+    val folder: String = ""
+) {
+    val amount: Double get() = qty.coerceAtLeast(0.0) * rate.coerceAtLeast(0.0)
+    val catalogRate: Double get() = rate
+}
+
+data class ComboPackage(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String = "",
+    val description: String = "",
+    val items: List<ComboPackageItem> = emptyList(),
+    val comboPrice: Double = 0.0,
+    val createdAt: Long = System.currentTimeMillis()
+) {
+    val comboFileId: String get() = id
+    val totalAmount: Double get() = if (comboPrice > 0.0) comboPrice else items.sumOf { it.amount }
+    val totalQty: Double get() = items.sumOf { it.qty }
+}
 
 object ProductComboFileJson {
     fun itemsToJson(items: List<ProductComboItem>): String {
@@ -503,24 +525,22 @@ object ComboPackageJson {
         val itemsArr = obj.optJSONArray("items") ?: JSONArray()
         val items = List(itemsArr.length()) { j ->
             val itmObj = itemsArr.getJSONObject(j)
-            ProductComboItem(
+            ComboPackageItem(
                 productId = itmObj.optLong("prodId", itmObj.optLong("productId", 0L)),
                 productName = itmObj.optString("prodName", itmObj.optString("productName", "")),
                 unit = itmObj.optString("unit", "Nos"),
                 qty = itmObj.optDouble("qty", 1.0),
-                catalogRate = itmObj.optDouble("rate", itmObj.optDouble("catalogRate", 0.0)),
+                rate = itmObj.optDouble("rate", itmObj.optDouble("catalogRate", 0.0)),
                 folder = itmObj.optString("folder", "")
             )
         }
-        return ProductComboFile(
-            comboFileId = obj.optString("id", obj.optString("comboFileId", UUID.randomUUID().toString())),
-            companyId = obj.optString("companyId", ""),
+        return ComboPackage(
+            id = obj.optString("id", obj.optString("comboFileId", UUID.randomUUID().toString())),
             name = obj.optString("name", "Combo File"),
             description = obj.optString("desc", obj.optString("description", "")),
             items = items,
             comboPrice = obj.optDouble("comboPrice", 0.0),
-            createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
-            updatedAt = obj.optLong("updatedAt", System.currentTimeMillis())
+            createdAt = obj.optLong("createdAt", System.currentTimeMillis())
         )
     }
 

@@ -67,11 +67,13 @@ object GoogleAuthHelper {
     }
 
     private fun resolveWebClientId(context: Context): String {
-        val id = runCatching { context.getString(R.string.default_web_client_id).trim() }.getOrDefault("")
-        if (id.isEmpty()) {
-            error("Google Sign-In configuration missing (default_web_client_id). Rebuild with Google Services plugin.")
+        val resId = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+        val id = if (resId != 0) runCatching { context.getString(resId).trim() }.getOrDefault("") else ""
+        if (id.isNotEmpty()) {
+            return id
         }
-        return id
+        // Fallback to client ID configured in google-services.json
+        return "760882645284-h3fggvajhb7p2ebhb707hnjtlp16p266.apps.googleusercontent.com"
     }
 
     private fun getAppSha1Fingerprint(context: Context): String {

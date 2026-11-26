@@ -45,7 +45,7 @@ exports.requestEmailOtp = onCall(opts, (request) =>
 );
 
 exports.verifyEmailOtp = onCall(opts, (request) =>
-  verifyEmailOtpHandler(request, { db, Timestamp, HttpsError })
+  verifyEmailOtpHandler(request, { db, FieldValue, Timestamp, HttpsError })
 );
 
 exports.registerCompanyAdmin = onCall(opts, (request) =>

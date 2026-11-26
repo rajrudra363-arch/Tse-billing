@@ -460,14 +460,28 @@ class BillingRepository(
         }
     }
 
-    suspend fun setupAdmin(username: String, password: String, finalCode: String = "") {
+    suspend fun setupAdmin(
+        username: String,
+        password: String,
+        finalCode: String = "",
+        displayName: String = "Admin",
+        phone: String = "",
+        email: String = "",
+        uid: String = "",
+        companyId: String = "",
+        pushToCloud: Boolean = true
+    ) {
         val cleanUser = AuthPolicy.CANONICAL_ADMIN_USERNAME
         val adminEntity = UserAccountEntity(
             username = cleanUser,
-            displayName = "Admin",
+            displayName = displayName.ifBlank { "Admin" },
             passwordHash = AuthHasher.sha256(password),
             role = "admin",
-            phone = ""
+            phone = phone.trim(),
+            email = email.trim().lowercase(Locale.ROOT),
+            uid = uid.trim(),
+            companyId = companyId.trim(),
+            loginEnabled = true
         )
         _volatileCloudActive.value = false
         _volatileDeviceRole.value = "admin"
@@ -479,8 +493,8 @@ class BillingRepository(
                 configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, AuthHasher.sha256(finalCode)))
             }
         }
-        val wsId = getActiveWorkspaceId()
-        if (wsId.isNotBlank()) {
+        val wsId = companyId.ifBlank { getActiveWorkspaceId() }
+        if (pushToCloud && wsId.isNotBlank()) {
             cloudSync?.pushAccount(wsId, adminEntity)
         }
     }

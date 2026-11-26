@@ -19,6 +19,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextReplacement
 import androidx.room.Room
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
@@ -931,14 +932,15 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("auth_option_admin_login").performScrollTo().performClick()
         composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("admin_login_identifier").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("login_password_input").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("admin_passkey_login_button").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("anti_robot_card").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("anti_robot_challenge_text").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("anti_robot_answer_input").performScrollTo().assertIsDisplayed()
-        composeTestRule.onNodeWithTag("login_username_dropdown").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("forgot_password_button").performScrollTo().performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("login_user_option_${AuthPolicy.CANONICAL_ADMIN_USERNAME}").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("login_user_option_admin_dup").assertDoesNotExist()
-        composeTestRule.onNodeWithTag("login_user_option_rahul_tech").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("forgot_password_dialog").assertIsDisplayed()
     }
 
     @Test
@@ -2082,7 +2084,7 @@ class ExampleRobolectricTest {
             }
         }
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("auth_option_technician_login").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("setup_tab_activation").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("tech_activation_email_input").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("tech_activation_passkey_input").performScrollTo().assertIsDisplayed()
@@ -2096,6 +2098,8 @@ class ExampleRobolectricTest {
             workspaceId = "ws1",
             companyName = "TSE"
         )
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("setup_tab_tech_email").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("tech_activation_verified_badge").assertIsDisplayed()
         composeTestRule.onNodeWithTag("login_username_dropdown").performScrollTo().performClick()
@@ -2515,6 +2519,134 @@ class ExampleRobolectricTest {
         val trashedBill = list.firstOrNull { it.entityId == "b_cust_del_1" }
         assertNotNull(trashedBill)
         assertEquals("Admin", trashedBill?.deletedBy)
+    }
+
+    @Test
+    fun adminSignUp_enforcesSixDigitEmailOtp_cooldown_error_andSubmitsOnlyAfterVerification() {
+        var otpState by mutableStateOf(com.example.ui.OtpUiState())
+        var requestedEmail = ""
+        var requestedPurpose = ""
+        var verifiedOtpSubmitted = ""
+        var clearOtpCalls = 0
+        var registeredEmail = ""
+
+        composeTestRule.setContent {
+            TseBillingTheme {
+                AuthScreen(
+                    isAdminConfigured = false,
+                    accounts = emptyList(),
+                    authError = "",
+                    otpState = otpState,
+                    onClearError = {},
+                    onLogin = { _, _, _, _ -> },
+                    onClearOtp = {
+                        clearOtpCalls++
+                        otpState = com.example.ui.OtpUiState()
+                    },
+                    onRequestOtp = { email, purpose ->
+                        requestedEmail = email.trim()
+                        requestedPurpose = purpose
+                        val now = System.currentTimeMillis()
+                        otpState = com.example.ui.OtpUiState(
+                            challengeId = "ch_admin_signup_1",
+                            email = email.trim().lowercase(),
+                            purpose = purpose,
+                            expiresAtMillis = now + 300_000L,
+                            resendAvailableAtMillis = now + 60_000L,
+                            message = "6-digit OTP sent to ${email.trim()}"
+                        )
+                    },
+                    onVerifyOtp = { otp, _ ->
+                        verifiedOtpSubmitted = otp
+                        if (otp == "654321") {
+                            otpState = otpState.copy(
+                                otpVerified = true,
+                                verificationToken = "tok_verified_1",
+                                expiresAtMillis = 0L,
+                                message = "Email verified successfully",
+                                errorMessage = ""
+                            )
+                        } else {
+                            otpState = otpState.copy(
+                                errorMessage = "Invalid OTP. 4 attempts remaining."
+                            )
+                        }
+                    },
+                    onRegisterCompanyAdmin = { _, _, email, _, _, _, _, onDone ->
+                        registeredEmail = email
+                        onDone()
+                    }
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("auth_option_admin_signup").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("signup_company_name_locked").performScrollTo()
+            .assertTextContains(com.example.data.AppIdentity.OFFICIAL_COMPANY_NAME)
+        composeTestRule.onNodeWithTag("signup_send_otp_button").performScrollTo().assertIsNotEnabled()
+        composeTestRule.onNodeWithTag("create_admin_button").performScrollTo().assertIsNotEnabled()
+
+        composeTestRule.onNodeWithTag("signup_admin_name").performScrollTo().performTextInput("Manoj Saha")
+        composeTestRule.onNodeWithTag("signup_admin_mobile").performScrollTo().performTextInput("7083805120")
+        composeTestRule.onNodeWithTag("signup_admin_email").performScrollTo().performTextInput("admin@totalsolution.in")
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("signup_send_otp_button").performScrollTo().assertIsEnabled().performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals("admin@totalsolution.in", requestedEmail)
+        assertEquals("ADMIN_SIGNUP", requestedPurpose)
+        // Cooldown active: button displays countdown and is disabled
+        composeTestRule.onNodeWithTag("signup_send_otp_button").performScrollTo().assertIsNotEnabled()
+        composeTestRule.onNodeWithTag("signup_otp_status_text").performScrollTo().assertIsDisplayed()
+
+        // 4-digit OTP keeps Verify button disabled; 6-digit OTP enables it
+        composeTestRule.onNodeWithTag("signup_otp_input").performScrollTo().performTextInput("1234")
+        composeTestRule.onNodeWithTag("signup_verify_otp_button").performScrollTo().assertIsNotEnabled()
+        composeTestRule.onNodeWithTag("signup_otp_input").performScrollTo().performTextInput("56")
+        composeTestRule.onNodeWithTag("signup_verify_otp_button").performScrollTo().assertIsEnabled().performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals("123456", verifiedOtpSubmitted)
+        composeTestRule.onNodeWithTag("signup_otp_error_text").performScrollTo()
+            .assertTextContains("Invalid OTP. 4 attempts remaining.")
+
+        // Strong password + matching confirm + differing 2FA password still blocked before OTP verification
+        composeTestRule.onNodeWithTag("setup_admin_password").performScrollTo().performTextInput("AdminStrong@2026")
+        composeTestRule.onNodeWithTag("setup_admin_confirm").performScrollTo().performTextInput("AdminStrong@2026")
+        composeTestRule.onNodeWithTag("setup_admin_verify_code").performScrollTo().performTextInput("2FA@99")
+        composeTestRule.onNodeWithTag("setup_admin_verify_code_confirm").performScrollTo().performTextInput("2FA@99")
+        composeTestRule.onNodeWithTag("create_admin_button").performScrollTo().assertIsNotEnabled()
+
+        // Verify with valid 6-digit OTP -> enables Complete Admin Sign Up
+        composeTestRule.onNodeWithTag("signup_otp_input").performScrollTo().performTextReplacement("654321")
+        composeTestRule.onNodeWithTag("signup_verify_otp_button").performScrollTo().assertIsEnabled().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals("654321", verifiedOtpSubmitted)
+
+        composeTestRule.onNodeWithTag("create_admin_button").performScrollTo().assertIsEnabled().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals("admin@totalsolution.in", registeredEmail)
+
+        // Editing email after OTP verification resets OTP state
+        composeTestRule.onNodeWithTag("signup_admin_email").performScrollTo().performTextInput("2")
+        composeTestRule.waitForIdle()
+        assertTrue(clearOtpCalls >= 1)
+        composeTestRule.onNodeWithTag("create_admin_button").performScrollTo().assertIsNotEnabled()
+    }
+
+    @Test
+    fun digitalAssetLinks_andWebAuthnRpId_resourcesAreConfigured() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val rpId = context.getString(R.string.webauthn_rp_id)
+        val assetStatements = context.getString(R.string.asset_statements)
+
+        assertEquals("gen-lang-client-0614473240.web.app", rpId)
+        assertTrue(assetStatements.contains("delegate_permission/common.get_login_creds"))
+        assertTrue(assetStatements.contains("https://gen-lang-client-0614473240.web.app"))
     }
 }
 

@@ -287,6 +287,8 @@ fun TseBillingApp(viewModel: BillingViewModel) {
         val activeUpiTransaction by viewModel.activeUpiTransaction.collectAsStateWithLifecycle()
         val qrGatewayBusy by viewModel.qrGatewayBusy.collectAsStateWithLifecycle()
         val billPaymentFilter by viewModel.billPaymentFilter.collectAsStateWithLifecycle()
+        val otpState by viewModel.otpState.collectAsStateWithLifecycle()
+        val passkeyBusy by viewModel.passkeyBusy.collectAsStateWithLifecycle()
         var showNotificationCenter by remember { mutableStateOf(false) }
 
         val lifecycleOwner = LocalLifecycleOwner.current
@@ -576,7 +578,19 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     authError = authError,
                     busy = cloudBusy,
                     logoBase64 = company.logoBase64,
+                    passkeyBusy = passkeyBusy,
                     onSubmitNewPassword = viewModel::completeFirstLoginPasswordChange,
+                    onCompleteFirstLogin = { uname, newP, confP, photoBmp ->
+                        viewModel.completeFirstLoginPasswordChange(
+                            newPassword = newP,
+                            confirmPassword = confP,
+                            usernameInput = uname,
+                            photoBitmap = photoBmp
+                        )
+                    },
+                    onRegisterPasskey = {
+                        viewModel.registerPasskeyForCurrentUser(context.findFragmentActivity() ?: context)
+                    },
                     onSignOut = { viewModel.cancelPendingPasswordChangeAndSignOut(context) }
                 )
                 SnackbarHost(
@@ -602,6 +616,8 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     techActivationState = techActivationState,
                     activationBusy = activationBusy,
                     activationError = activationError,
+                    otpState = otpState,
+                    passkeyBusy = passkeyBusy,
                     onClearError = viewModel::clearAuthError,
                     onSetupAdmin = viewModel::setupAdmin,
                     onLogin = { u, p, antiRobotPassed, verifyCode ->
@@ -613,7 +629,22 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     onJoinInviteCode = viewModel::joinWorkspaceWithInviteCode,
                     onVerifyTechActivation = viewModel::verifyTechnicianActivation,
                     onClearTechActivation = viewModel::clearTechActivation,
-                    onResetAdminPassword = viewModel::resetAdminPassword
+                    onResetAdminPassword = viewModel::resetAdminPassword,
+                    onRequestOtp = viewModel::requestEmailOtp,
+                    onVerifyOtp = viewModel::verifyEmailOtp,
+                    onClearOtp = viewModel::clearOtpState,
+                    onRegisterCompanyAdmin = viewModel::registerCompanyAdminWithOtp,
+                    onResetPasswordWithOtp = viewModel::resetPasswordViaEmailOtp,
+                    onLoginAdminEmailOrUser = viewModel::loginAdminWithEmailOrUsername,
+                    onLoginSuperAdmin = viewModel::loginSuperAdmin,
+                    onLoginWithPasskey = { expectedRole, emailHint, antiRobotPassed ->
+                        viewModel.loginWithPasskey(
+                            context = context.findFragmentActivity() ?: context,
+                            expectedRole = expectedRole,
+                            emailHint = emailHint,
+                            antiRobotPassed = antiRobotPassed
+                        )
+                    }
                 )
                 SnackbarHost(
                     hostState = snackbarHostState,
@@ -955,6 +986,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                             expenses = expenses,
                                             trashItems = trashItems,
                                             auditLogs = auditLogs,
+                                            otpState = otpState,
                                             lastCreatedTechPasskey = lastCreatedTechPasskey,
                                             onSaveUpi = viewModel::saveUpiSettings,
                                             onClearUpi = viewModel::clearUpiId,
@@ -962,6 +994,23 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                             onCreateCloudTechnician = { n, p, e, u, pw, bmp, done ->
                                                 viewModel.createCloudTechnicianAccount(n, p, e, u, pw, bmp, onSuccess = done)
                                             },
+                                            onCreateCloudTechnicianOtp = { n, p, e, u, pw, bmp, chId, tok, done ->
+                                                viewModel.createCloudTechnicianAccount(
+                                                    name = n,
+                                                    phone = p,
+                                                    email = e,
+                                                    username = u,
+                                                    initialPassword = pw,
+                                                    photoBitmap = bmp,
+                                                    otpChallengeId = chId,
+                                                    otpVerificationToken = tok,
+                                                    requireOtpVerification = true,
+                                                    onSuccess = done
+                                                )
+                                            },
+                                            onRequestOtp = viewModel::requestEmailOtp,
+                                            onVerifyOtp = viewModel::verifyEmailOtp,
+                                            onToggleTechnicianLogin = viewModel::setTechnicianLoginEnabled,
                                             onUpdateTechnician = viewModel::updateTechnician,
                                             onRemoveTechnician = viewModel::removeTechnician,
                                             onAddSuperAdmin = viewModel::addSuperAdmin,
@@ -994,7 +1043,11 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                                         user = currentSession,
                                         deviceAuthEnabled = deviceAuthByUser[currentSession.username.lowercase(Locale.ROOT)] == true,
                                         updateCheckBusy = updateCheckBusy,
+                                        passkeyBusy = passkeyBusy,
                                         onToggleDeviceAuth = viewModel::setDeviceAuthForCurrentUser,
+                                        onRegisterPasskey = {
+                                            viewModel.registerPasskeyForCurrentUser(context.findFragmentActivity() ?: context)
+                                        },
                                         onSaveSettings = viewModel::saveCompanySettings,
                                         onPickCompanyLogoBitmap = viewModel::saveCompanyLogoBitmap,
                                         onPickFallbackQrBitmap = viewModel::saveFallbackQrBitmap,

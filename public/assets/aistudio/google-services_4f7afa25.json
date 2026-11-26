@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "760882645284",
+    "project_id": "gen-lang-client-0614473240",
+    "storage_bucket": "gen-lang-client-0614473240.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:760882645284:android:c066a4cd211d3662900bb1",
+        "android_client_info": {
+          "package_name": "com.aistudio.cctvbilling.tsekmp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "760882645284-h3fggvajhb7p2ebhb707hnjtlp16p266.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.cctvbilling.tsekmp",
+            "certificate_hash": "aedc72600a0532f17d55fe07341e4b9c8619237b"
+          }
+        },
+        {
+          "client_id": "760882645284-ha4304oiq1ql4fobu04lmben27c32lgk.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAwOquGvzixQ9DuuVN5s1CtAmIYgfeNjkg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "760882645284-ha4304oiq1ql4fobu04lmben27c32lgk.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

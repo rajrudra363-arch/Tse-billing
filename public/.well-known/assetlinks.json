@@ -1,0 +1,15 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.aistudio.cctvbilling.tsekmp",
+      "sha256_cert_fingerprints": [
+        "A9:45:BB:9C:25:9B:DD:9B:F3:4A:15:91:A8:DC:8B:71:A3:39:41:F7:01:84:6D:FE:B2:C0:FD:46:C1:52:BC:EC"
+      ]
+    }
+  }
+]

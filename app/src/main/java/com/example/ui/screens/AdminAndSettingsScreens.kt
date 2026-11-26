@@ -655,25 +655,40 @@ fun AdminPanelScreen(
                                     color = if (techOtpVerified) GreenPaid else MaterialTheme.colorScheme.onSurface
                                 )
                                 OutlinedButton(
-                                    onClick = { onRequestOtp(techEmail, "TECH_VERIFY") },
-                                    enabled = !otpState.busy && AuthPolicy.isValidEmail(techEmail.trim()),
+                                    onClick = { onRequestOtp(techEmail, "TECHNICIAN_ADD") },
+                                    enabled = !otpState.busy && AuthPolicy.isValidEmail(techEmail.trim()) && !otpState.blocked,
                                     modifier = Modifier.testTag("new_tech_send_otp_button")
                                 ) {
                                     Text(if (otpState.challengeId.isNotBlank()) "Resend OTP" else "Send OTP", fontWeight = FontWeight.Bold)
                                 }
                             }
-                            if (!techOtpVerified && otpState.challengeId.isNotBlank() && otpState.purpose == "TECH_VERIFY") {
+                            if (otpState.errorMessage.isNotBlank() && otpState.purpose == "TECHNICIAN_ADD") {
+                                Text(
+                                    text = otpState.errorMessage,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            } else if (otpState.message.isNotBlank() && otpState.purpose == "TECHNICIAN_ADD") {
+                                Text(
+                                    text = otpState.message,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (techOtpVerified) GreenPaid else TealAccent,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            if (!techOtpVerified && otpState.challengeId.isNotBlank() && otpState.purpose == "TECHNICIAN_ADD") {
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                                     OutlinedTextField(
                                         value = techOtpInput,
                                         onValueChange = { techOtpInput = it.filter { ch -> ch.isDigit() }.take(6) },
-                                        label = { Text("Enter Tech OTP") },
+                                        label = { Text("Enter 6-digit Tech OTP") },
                                         singleLine = true,
                                         modifier = Modifier.weight(1f).testTag("new_tech_otp_input")
                                     )
                                     Button(
                                         onClick = { onVerifyOtp(techOtpInput) {} },
-                                        enabled = !otpState.busy && techOtpInput.length >= 4,
+                                        enabled = !otpState.busy && techOtpInput.length == 6,
                                         colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
                                         modifier = Modifier.height(50.dp).testTag("new_tech_verify_otp_button")
                                     ) {

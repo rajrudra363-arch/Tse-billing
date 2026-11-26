@@ -175,6 +175,10 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    match /otpRateLimits/{id} {
+      allow read, write: if false;
+    }
+
     match /passkeyChallenges/{id} {
       allow read, write: if false;
     }

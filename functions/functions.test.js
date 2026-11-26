@@ -8,6 +8,9 @@ const {
   OFFICIAL_COMPANY_NAME,
   TECH_LOGIN_DISABLED_MESSAGE,
   TRASH_RETENTION_MS,
+  OTP_TTL_MS,
+  OTP_RESEND_COOLDOWN_MS,
+  OTP_BLOCK_DURATION_MS,
   hashActivationPasskey,
   requestEmailOtpHandler,
   verifyEmailOtpHandler,
@@ -913,4 +916,136 @@ describe("Cloud Functions: TS – TOTAL SOLUTION Complete Backend Suite", () => 
     assert.equal(schedRes.purgedCount, 1);
     assert.ok(!env.store.has("workspaces/ws_tse_1/trash/tr_fresh"));
   });
+
+  test("Email OTP enforces 5-min expiry, 60s resend cooldown, OTP superseding, 5-attempt 15-min blocking, and duplicate email guard", async () => {
+    const t0 = 1_760_100_000_000;
+    const env = createFakeEnv({}, t0);
+    const sentEmails = [];
+    const depsWithMailer = {
+      ...env.deps,
+      sendEmail: async (mail) => {
+        sentEmails.push(mail);
+      }
+    };
+    const email = "first.admin@totalsolution.app";
+
+    // Reject unverified registration immediately
+    await assert.rejects(
+      () => registerCompanyAdminHandler(
+        {
+          data: {
+            companyName: OFFICIAL_COMPANY_NAME,
+            adminName: "Priya Admin",
+            mobile: "9876543210",
+            email,
+            password: "StrongPassword@1",
+            confirmPassword: "StrongPassword@1",
+            twoFactorPassword: "2fa@Pass",
+            confirmTwoFactorPassword: "2fa@Pass",
+            otpChallengeId: "otp_missing",
+            otpVerificationToken: "invalid_token_123456"
+          }
+        },
+        depsWithMailer
+      ),
+      (e) => e.code === "permission-denied"
+    );
+
+    // Request first OTP
+    const req1 = await requestEmailOtpHandler({ data: { email, purpose: "ADMIN_SIGNUP" } }, depsWithMailer);
+    assert.equal(req1.expiresAtMillis, t0 + OTP_TTL_MS);
+    assert.equal(req1.resendAvailableAtMillis, t0 + OTP_RESEND_COOLDOWN_MS);
+    const otp1 = sentEmails[0].text.match(/\b(\d{6})\b/)[1];
+    assert.ok(sentEmails[0].text.includes("5 minutes"));
+
+    // Immediate resend before 60s cooldown is rejected
+    env.setNowMillis(t0 + 25_000);
+    await assert.rejects(
+      () => requestEmailOtpHandler({ data: { email, purpose: "ADMIN_SIGNUP" } }, depsWithMailer),
+      (e) => e.code === "resource-exhausted" && e.message.includes("wait")
+    );
+
+    // Resend after 60s cooldown succeeds and invalidates old OTP
+    env.setNowMillis(t0 + OTP_RESEND_COOLDOWN_MS + 1000);
+    const req2 = await requestEmailOtpHandler({ data: { email, purpose: "ADMIN_SIGNUP" } }, depsWithMailer);
+    const otp2 = sentEmails[1].text.match(/\b(\d{6})\b/)[1];
+    await assert.rejects(
+      () => verifyEmailOtpHandler({ data: { challengeId: req1.challengeId, email, purpose: "ADMIN_SIGNUP", otp: otp1 } }, depsWithMailer),
+      (e) => e.code === "failed-precondition"
+    );
+
+    // 5-minute expiry rejection
+    env.setNowMillis(t0 + OTP_RESEND_COOLDOWN_MS + 1000 + OTP_TTL_MS + 1000);
+    await assert.rejects(
+      () => verifyEmailOtpHandler({ data: { challengeId: req2.challengeId, email, purpose: "ADMIN_SIGNUP", otp: otp2 } }, depsWithMailer),
+      (e) => e.code === "deadline-exceeded" && e.message.includes("5 minutes")
+    );
+
+    // Request fresh OTP, fail 5 wrong attempts -> temporary 15-min block
+    const tFresh = t0 + OTP_RESEND_COOLDOWN_MS + OTP_TTL_MS + 5000;
+    env.setNowMillis(tFresh);
+    const req3 = await requestEmailOtpHandler({ data: { email, purpose: "ADMIN_SIGNUP" } }, depsWithMailer);
+    const otp3 = sentEmails[2].text.match(/\b(\d{6})\b/)[1];
+    const wrongOtp = otp3 === "123456" ? "654321" : "123456";
+
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await assert.rejects(
+        () => verifyEmailOtpHandler({ data: { challengeId: req3.challengeId, email, purpose: "ADMIN_SIGNUP", otp: wrongOtp } }, depsWithMailer),
+        (e) => e.code === "permission-denied" && e.message.includes(`${5 - attempt} attempt`)
+      );
+    }
+    await assert.rejects(
+      () => verifyEmailOtpHandler({ data: { challengeId: req3.challengeId, email, purpose: "ADMIN_SIGNUP", otp: wrongOtp } }, depsWithMailer),
+      (e) => e.code === "resource-exhausted" && e.message.includes("15 minutes")
+    );
+
+    // Blocked email cannot request OTP during 15-min cooldown window
+    env.setNowMillis(tFresh + 120_000);
+    await assert.rejects(
+      () => requestEmailOtpHandler({ data: { email, purpose: "ADMIN_SIGNUP" } }, depsWithMailer),
+      (e) => e.code === "resource-exhausted" && e.message.includes("blocked")
+    );
+
+    // After 15-min block expires, user can request OTP, verify, register, and duplicate email is blocked
+    env.setNowMillis(tFresh + OTP_BLOCK_DURATION_MS + 1000);
+    const req4 = await requestEmailOtpHandler({ data: { email, purpose: "ADMIN_SIGNUP" } }, depsWithMailer);
+    const otp4 = sentEmails[3].text.match(/\b(\d{6})\b/)[1];
+    const verified = await verifyEmailOtpHandler(
+      { data: { challengeId: req4.challengeId, email, purpose: "ADMIN_SIGNUP", otp: otp4 } },
+      depsWithMailer
+    );
+    assert.equal(verified.verified, true);
+
+    const reg = await registerCompanyAdminHandler(
+      {
+        data: {
+          companyName: OFFICIAL_COMPANY_NAME,
+          adminName: "Priya Admin",
+          mobile: "9876543210",
+          email,
+          password: "StrongPassword@1",
+          confirmPassword: "StrongPassword@1",
+          twoFactorPassword: "2fa@Pass",
+          confirmTwoFactorPassword: "2fa@Pass",
+          otpChallengeId: req4.challengeId,
+          otpVerificationToken: verified.verificationToken
+        }
+      },
+      depsWithMailer
+    );
+    assert.equal(reg.role, "admin");
+    const adminDoc = env.store.get(`admins/${reg.uid}`);
+    const memberDoc = env.store.get(`workspaces/${reg.workspaceId}/members/${reg.uid}`);
+    assert.equal(adminDoc.email, email);
+    assert.equal(memberDoc.role, "admin");
+    assert.ok(!JSON.stringify(memberDoc).includes("StrongPassword@1"));
+    assert.ok(!JSON.stringify(env.store.get(`otpChallenges/${req4.challengeId}`)).includes(otp4));
+
+    // Duplicate email rejected on subsequent ADMIN_SIGNUP OTP request
+    await assert.rejects(
+      () => requestEmailOtpHandler({ data: { email, purpose: "ADMIN_SIGNUP" } }, depsWithMailer),
+      (e) => e.code === "already-exists"
+    );
+  });
 });
+

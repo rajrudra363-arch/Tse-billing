@@ -219,7 +219,10 @@ data class OtpUiState(
     val busy: Boolean = false,
     val maskedEmail: String = "",
     val expiresAtMillis: Long = 0L,
-    val message: String = ""
+    val resendAvailableAtMillis: Long = 0L,
+    val message: String = "",
+    val errorMessage: String = "",
+    val blocked: Boolean = false
 )
 
 class BillingViewModel(
@@ -1441,35 +1444,73 @@ class BillingViewModel(
     fun requestEmailOtp(email: String, purpose: String) {
         val cleanEmail = email.trim().lowercase(Locale.US)
         if (!AuthPolicy.isValidEmail(cleanEmail)) {
-            _authError.value = "Enter a valid Email Address for OTP verification."
+            val msg = "Enter a valid Email Address for OTP verification."
+            _otpState.update { it.copy(errorMessage = msg) }
+            _authError.value = msg
             soundEngine.play(SoundCue.ERROR)
             return
         }
+        val normPurpose = when (purpose.trim().uppercase(Locale.US)) {
+            "TECH_VERIFY" -> "TECHNICIAN_ADD"
+            "PASSWORD_RESET" -> "ADMIN_FORGOT_PASSWORD"
+            else -> purpose.trim().uppercase(Locale.US)
+        }
         val sync = cloudSync ?: run {
-            _authError.value = "Cloud OTP service requires active internet & Firebase connection."
+            val msg = "Cloud OTP service requires active internet & Firebase connection."
+            _otpState.update { it.copy(errorMessage = msg) }
+            _authError.value = msg
             soundEngine.play(SoundCue.ERROR)
             return
         }
         viewModelScope.launch {
-            _otpState.update { it.copy(busy = true, email = cleanEmail, purpose = purpose, otpVerified = false, verificationToken = "") }
+            val prev = _otpState.value
+            _otpState.update {
+                it.copy(
+                    busy = true,
+                    email = cleanEmail,
+                    purpose = normPurpose,
+                    otpVerified = false,
+                    verificationToken = "",
+                    errorMessage = "",
+                    blocked = false
+                )
+            }
             _authError.value = ""
-            val res = sync.requestEmailOtp(cleanEmail, purpose)
+            val res = sync.requestEmailOtp(cleanEmail, normPurpose)
             if (res.isSuccess) {
                 val info = res.getOrNull()!!
+                val displayTarget = info.maskedEmail.ifBlank { cleanEmail }
                 _otpState.value = OtpUiState(
                     challengeId = info.challengeId,
-                    email = info.email,
-                    purpose = info.purpose,
+                    email = info.email.ifBlank { cleanEmail },
+                    purpose = info.purpose.ifBlank { normPurpose },
                     busy = false,
-                    maskedEmail = info.maskedEmail.ifBlank { cleanEmail },
+                    maskedEmail = displayTarget,
                     expiresAtMillis = info.expiresAtMillis,
-                    message = "6-digit OTP sent to ${info.maskedEmail.ifBlank { cleanEmail }}"
+                    resendAvailableAtMillis = info.resendAvailableAtMillis,
+                    message = "6-digit OTP sent to $displayTarget (expires in 5 minutes)",
+                    errorMessage = "",
+                    blocked = false
                 )
                 soundEngine.play(SoundCue.NOTIFICATION)
-                emitToast("OTP sent to ${info.maskedEmail.ifBlank { cleanEmail }}")
+                emitToast("OTP sent to $displayTarget")
             } else {
                 val msg = res.exceptionOrNull()?.message ?: "Could not send Email OTP."
-                _otpState.update { it.copy(busy = false) }
+                val isBlocked = msg.contains("blocked", ignoreCase = true)
+                val isWaitCooldown = msg.contains("wait", ignoreCase = true)
+                _otpState.update {
+                    if (isWaitCooldown && prev.challengeId.isNotBlank() && prev.email == cleanEmail) {
+                        prev.copy(busy = false, errorMessage = msg, blocked = false)
+                    } else {
+                        OtpUiState(
+                            email = cleanEmail,
+                            purpose = normPurpose,
+                            busy = false,
+                            errorMessage = msg,
+                            blocked = isBlocked
+                        )
+                    }
+                }
                 _authError.value = msg
                 soundEngine.play(SoundCue.ERROR)
                 emitToast(msg, isError = true)
@@ -1481,18 +1522,22 @@ class BillingViewModel(
         val cleanOtp = otp.trim()
         val state = _otpState.value
         if (state.challengeId.isBlank()) {
-            _authError.value = "Please click Send OTP first."
+            val msg = "Please click Send OTP first."
+            _otpState.update { it.copy(errorMessage = msg) }
+            _authError.value = msg
             soundEngine.play(SoundCue.ERROR)
             return
         }
-        if (cleanOtp.length < 4) {
-            _authError.value = "Enter the verification OTP received in your email."
+        if (cleanOtp.length != 6 || !cleanOtp.all { it.isDigit() }) {
+            val msg = "Enter the 6-digit OTP received in your email."
+            _otpState.update { it.copy(errorMessage = msg) }
+            _authError.value = msg
             soundEngine.play(SoundCue.ERROR)
             return
         }
         val sync = cloudSync ?: return
         viewModelScope.launch {
-            _otpState.update { it.copy(busy = true) }
+            _otpState.update { it.copy(busy = true, errorMessage = "") }
             _authError.value = ""
             val res = sync.verifyEmailOtp(state.challengeId, state.email, state.purpose, cleanOtp)
             if (res.isSuccess && res.getOrNull()?.verified == true) {
@@ -1502,7 +1547,10 @@ class BillingViewModel(
                         busy = false,
                         otpVerified = true,
                         verificationToken = vr.verificationToken,
-                        message = "Email verified successfully"
+                        expiresAtMillis = 0L,
+                        message = "Email verified successfully",
+                        errorMessage = "",
+                        blocked = false
                     )
                 }
                 soundEngine.play(SoundCue.SAVE)
@@ -1510,7 +1558,29 @@ class BillingViewModel(
                 onVerified()
             } else {
                 val msg = res.exceptionOrNull()?.message ?: "Invalid or expired OTP."
-                _otpState.update { it.copy(busy = false) }
+                val isBlocked = msg.contains("blocked", ignoreCase = true)
+                val isInvalidChallenge = msg.contains("expired", ignoreCase = true) ||
+                    msg.contains("no longer active", ignoreCase = true) ||
+                    msg.contains("not found", ignoreCase = true)
+                _otpState.update { current ->
+                    if (isBlocked || isInvalidChallenge) {
+                        current.copy(
+                            busy = false,
+                            challengeId = "",
+                            expiresAtMillis = 0L,
+                            otpVerified = false,
+                            verificationToken = "",
+                            message = "",
+                            errorMessage = msg,
+                            blocked = isBlocked
+                        )
+                    } else {
+                        current.copy(
+                            busy = false,
+                            errorMessage = msg
+                        )
+                    }
+                }
                 _authError.value = msg
                 soundEngine.play(SoundCue.ERROR)
                 emitToast(msg, isError = true)
@@ -1577,6 +1647,11 @@ class BillingViewModel(
             soundEngine.play(SoundCue.ERROR)
             return
         }
+        if (twoFactorPassword == password) {
+            _authError.value = "Two-Factor Authentication Password must differ from your login password."
+            soundEngine.play(SoundCue.ERROR)
+            return
+        }
         val sync = cloudSync ?: run {
             _authError.value = "Cloud service is required for Admin Sign Up."
             soundEngine.play(SoundCue.ERROR)
@@ -1605,13 +1680,67 @@ class BillingViewModel(
                 return@launch
             }
             val result = regRes.getOrNull()!!
-            repository.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, password, twoFactorPassword)
-            sync.signInWithEmailPassword(cleanEmail, password)
+            val wsId = result.workspaceId.ifBlank { result.companyId }
+
+            val signInRes = sync.signInWithEmailPassword(cleanEmail, password)
+            if (signInRes.isFailure) {
+                repository.setupAdmin(
+                    username = AuthPolicy.CANONICAL_ADMIN_USERNAME,
+                    password = password,
+                    finalCode = twoFactorPassword,
+                    displayName = cleanName,
+                    phone = cleanMobile,
+                    email = cleanEmail,
+                    uid = result.uid,
+                    companyId = wsId,
+                    pushToCloud = false
+                )
+                clearOtpState()
+                _cloudBusy.value = false
+                val errMsg = "Account created, please log in: ${signInRes.exceptionOrNull()?.message ?: "Sign-in pending."}"
+                _authError.value = errMsg
+                emitToast(errMsg)
+                onRegistered()
+                return@launch
+            }
+
             syncExistingCloudWorkspace()
+            val syncedWsId = wsId.ifBlank { repository.getActiveWorkspaceId() }
+            repository.setupAdmin(
+                username = AuthPolicy.CANONICAL_ADMIN_USERNAME,
+                password = password,
+                finalCode = twoFactorPassword,
+                displayName = cleanName,
+                phone = cleanMobile,
+                email = cleanEmail,
+                uid = result.uid,
+                companyId = syncedWsId,
+                pushToCloud = false
+            )
+            repository.resetAdminLoginSecurityState()
+
+            _cloudUser.value = CloudAuthUser(
+                uid = result.uid,
+                email = cleanEmail,
+                displayName = cleanName
+            )
+            _session.value = UserSession(
+                username = AuthPolicy.CANONICAL_ADMIN_USERNAME,
+                displayName = cleanName,
+                role = "admin",
+                phone = cleanMobile,
+                photoBase64 = "",
+                email = cleanEmail,
+                uid = result.uid,
+                companyId = syncedWsId
+            )
+            _activeTab.value = MainTab.ADMIN
             clearOtpState()
             _cloudBusy.value = false
             soundEngine.play(SoundCue.SAVE)
-            emitToast("Admin account created for ${AppIdentity.OFFICIAL_COMPANY_NAME}. Company ID: ${result.companyId}")
+            emitToast("Admin account created for ${AppIdentity.OFFICIAL_COMPANY_NAME}. Welcome $cleanName!")
+            val cfg = voiceAndNoteSettings.value
+            soundEngine.speakEnglish(cfg.postLoginVoice, cfg.voiceModelId)
             onRegistered()
         }
     }
@@ -1696,11 +1825,13 @@ class BillingViewModel(
         }
         viewModelScope.launch {
             _passkeyBusy.value = true
+            val rpId = runCatching { context.getString(com.example.R.string.webauthn_rp_id) }.getOrDefault("")
             val challengeRes = sync.beginPasskeyRegistration(
                 workspaceId = wsId,
                 email = email,
                 displayName = displayName,
-                role = role
+                role = role,
+                rpId = rpId
             )
             if (challengeRes.isFailure) {
                 _passkeyBusy.value = false
@@ -1755,7 +1886,8 @@ class BillingViewModel(
         viewModelScope.launch {
             _passkeyBusy.value = true
             _authError.value = ""
-            val beginRes = sync.beginPasskeyAuthentication(emailHint, expectedRole)
+            val rpId = runCatching { context.getString(com.example.R.string.webauthn_rp_id) }.getOrDefault("")
+            val beginRes = sync.beginPasskeyAuthentication(emailHint, expectedRole, rpId)
             if (beginRes.isFailure) {
                 _passkeyBusy.value = false
                 val msg = beginRes.exceptionOrNull()?.message ?: "Passkey login unavailable."
@@ -2114,15 +2246,6 @@ class BillingViewModel(
             BillingRepository.normalizeRole(it.role) == "admin" &&
                 (it.email.equals(cleanId, ignoreCase = true) || it.username.equals(cleanId, ignoreCase = true))
         }
-        if (localAdmin != null) {
-            login(
-                username = localAdmin.username,
-                password = password,
-                antiRobotPassed = antiRobotPassed,
-                adminVerifyCode = twoFactorCode
-            )
-            return
-        }
         if (!antiRobotPassed) {
             _authError.value = "Please complete the Anti-Robot CAPTCHA verification first."
             soundEngine.play(SoundCue.ERROR)
@@ -2151,12 +2274,27 @@ class BillingViewModel(
             _authError.value = ""
             val signRes = sync.signInWithEmailPassword(cleanId, password)
             if (signRes.isFailure) {
+                val errText = signRes.exceptionOrNull()?.message.orEmpty()
+                val looksOffline = errText.contains("network", ignoreCase = true) ||
+                    errText.contains("unreachable", ignoreCase = true) ||
+                    errText.contains("Unable to resolve host", ignoreCase = true)
+                if (looksOffline && localAdmin != null && localAdmin.passwordHash != AuthPolicy.FIREBASE_EMAIL_AUTH_MARKER) {
+                    _cloudBusy.value = false
+                    login(
+                        username = localAdmin.username,
+                        password = password,
+                        antiRobotPassed = antiRobotPassed,
+                        nowMillis = nowMillis,
+                        adminVerifyCode = twoFactorCode
+                    )
+                    return@launch
+                }
                 _cloudBusy.value = false
                 val updated = repository.recordAdminLoginFailure(nowMillis)
                 val msg = if (updated.isLocked(nowMillis)) {
                     "Wrong Admin password entered 3 times. Locked for 15 minutes."
                 } else {
-                    signRes.exceptionOrNull()?.message ?: "Invalid Admin email or password."
+                    errText.ifBlank { "Invalid Admin email or password." }
                 }
                 _authError.value = msg
                 soundEngine.play(SoundCue.ERROR)
@@ -2176,15 +2314,25 @@ class BillingViewModel(
                 return@launch
             }
             val uid = signRes.getOrNull().orEmpty()
-            repository.setupAdmin(AuthPolicy.CANONICAL_ADMIN_USERNAME, password, twoFactorCode)
             syncExistingCloudWorkspace()
-            repository.resetAdminLoginSecurityState()
             val adminAcc = accounts.value.firstOrNull { BillingRepository.normalizeRole(it.role) == "admin" }
             val wsId = cloudWorkspaceInfo.value.workspaceId
+            repository.setupAdmin(
+                username = AuthPolicy.CANONICAL_ADMIN_USERNAME,
+                password = password,
+                finalCode = twoFactorCode,
+                displayName = adminAcc?.displayName?.ifBlank { "Admin" } ?: "Admin",
+                phone = adminAcc?.phone.orEmpty(),
+                email = cleanId,
+                uid = uid,
+                companyId = wsId,
+                pushToCloud = false
+            )
+            repository.resetAdminLoginSecurityState()
             _cloudUser.value = CloudAuthUser(uid = uid, email = cleanId, displayName = adminAcc?.displayName ?: "Admin")
             val user = UserSession(
                 username = adminAcc?.username ?: AuthPolicy.CANONICAL_ADMIN_USERNAME,
-                displayName = adminAcc?.displayName ?: AppIdentity.OFFICIAL_COMPANY_NAME,
+                displayName = adminAcc?.displayName?.ifBlank { AppIdentity.OFFICIAL_COMPANY_NAME } ?: AppIdentity.OFFICIAL_COMPANY_NAME,
                 role = "admin",
                 phone = adminAcc?.phone.orEmpty(),
                 photoBase64 = adminAcc?.photoBase64.orEmpty(),

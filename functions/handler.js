@@ -14,8 +14,14 @@ const OFFICIAL_COMPANY_NAME = "TOTAL SOLUTION";
 const TECH_LOGIN_DISABLED_MESSAGE = "Your login has been disabled by Admin. Please contact your Admin.";
 const PASSKEY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const TRASH_RETENTION_MS = 24 * 60 * 60 * 1000;
-const OTP_TTL_MS = 10 * 60 * 1000;
+const OTP_TTL_MS = 5 * 60 * 1000;
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+const OTP_BLOCK_DURATION_MS = 15 * 60 * 1000;
+const OTP_ABUSE_WINDOW_MS = 15 * 60 * 1000;
+const OTP_MAX_REQUESTS_PER_WINDOW = 5;
+const OTP_MAX_VERIFY_ATTEMPTS = 5;
 const WEBAUTHN_CHALLENGE_TTL_MS = 5 * 60 * 1000;
+const DEFAULT_WEBAUTHN_RP_ID = "gen-lang-client-0614473240.web.app";
 
 function isValidEmail(email) {
   if (typeof email !== "string") return false;
@@ -120,16 +126,84 @@ function maskEmail(email) {
   return `${shown}***@${parts[1]}`;
 }
 
-async function defaultSendEmail({ to, subject, text, html, HttpsError }) {
-  const host = process.env.SMTP_HOST || "";
-  const port = Number(process.env.SMTP_PORT || 587);
+function hashRateLimitKey(email, purpose) {
+  return crypto
+    .createHash("sha256")
+    .update(`${String(email || "").trim().toLowerCase()}|${String(purpose || "").trim().toUpperCase()}`)
+    .digest("hex");
+}
+
+function formatBlockRemaining(ms) {
+  const totalSec = Math.max(1, Math.ceil(ms / 1000));
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  if (mins > 0 && secs > 0) return `${mins}m ${secs}s`;
+  if (mins > 0) return `${mins}m`;
+  return `${secs}s`;
+}
+
+async function defaultSendEmail({ to, subject, text, html, HttpsError, fetchFn }) {
+  const from = process.env.EMAIL_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || "no-reply@totalsolution.app";
+  const resendKey = process.env.RESEND_API_KEY || "";
+  const sendgridKey = process.env.SENDGRID_API_KEY || "";
+  const smtpService = process.env.SMTP_SERVICE || "";
+  const host = process.env.SMTP_HOST || (smtpService.toLowerCase() === "gmail" ? "smtp.gmail.com" : "");
+  const port = Number(process.env.SMTP_PORT || (smtpService.toLowerCase() === "gmail" ? 465 : 587));
   const user = process.env.SMTP_USER || "";
   const pass = process.env.SMTP_PASS || "";
-  const from = process.env.SMTP_FROM || user || "no-reply@totalsolution.app";
+
+  if (resendKey) {
+    const fn = fetchFn || globalThis.fetch;
+    if (typeof fn !== "function") {
+      throw new HttpsError("failed-precondition", "HTTP fetch is unavailable for Resend email delivery.");
+    }
+    const resp = await fn("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${resendKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ from, to: [to], subject, text, html })
+    });
+    if (!resp.ok) {
+      const errBody = await resp.text().catch(() => "");
+      throw new HttpsError("unavailable", `Email delivery failed via Resend (${resp.status}). ${errBody}`.trim());
+    }
+    return;
+  }
+
+  if (sendgridKey) {
+    const fn = fetchFn || globalThis.fetch;
+    if (typeof fn !== "function") {
+      throw new HttpsError("failed-precondition", "HTTP fetch is unavailable for SendGrid email delivery.");
+    }
+    const resp = await fn("https://api.sendgrid.com/v3/mail/send", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${sendgridKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: to }] }],
+        from: { email: from },
+        subject,
+        content: [
+          { type: "text/plain", value: text },
+          { type: "text/html", value: html }
+        ]
+      })
+    });
+    if (!resp.ok) {
+      const errBody = await resp.text().catch(() => "");
+      throw new HttpsError("unavailable", `Email delivery failed via SendGrid (${resp.status}). ${errBody}`.trim());
+    }
+    return;
+  }
+
   if (!host || !user || !pass) {
     throw new HttpsError(
       "failed-precondition",
-      "Email OTP delivery is not configured on backend. Configure SMTP_HOST, SMTP_USER, and SMTP_PASS environment secrets."
+      "Email OTP delivery is not configured on backend. Configure RESEND_API_KEY, SENDGRID_API_KEY, or SMTP_HOST/SMTP_USER/SMTP_PASS secrets in Firebase Functions."
     );
   }
   let nodemailer;
@@ -138,12 +212,10 @@ async function defaultSendEmail({ to, subject, text, html, HttpsError }) {
   } catch (e) {
     throw new HttpsError("failed-precondition", "nodemailer dependency is not installed on Functions runtime.");
   }
-  const transporter = nodemailer.createTransport({
-    host,
-    port,
-    secure: port === 465,
-    auth: { user, pass }
-  });
+  const transportConfig = smtpService
+    ? { service: smtpService, auth: { user, pass } }
+    : { host, port, secure: port === 465, auth: { user, pass } };
+  const transporter = nodemailer.createTransport(transportConfig);
   await transporter.sendMail({ from, to, subject, text, html });
 }
 
@@ -197,7 +269,8 @@ async function assertAuthorizedWorkspaceAdmin({ authCtx, db, workspaceId, HttpsE
 }
 
 /**
- * Issues a real time-limited 6-digit Email OTP. Stores ONLY SHA-256 hash in Firestore.
+ * Issues a real time-limited (5-minute) 6-digit Email OTP with 60s resend cooldown and abuse blocking.
+ * Stores ONLY SHA-256 hash in Firestore (never plaintext OTP).
  */
 async function requestEmailOtpHandler(request, deps) {
   const { auth, db, FieldValue, Timestamp, HttpsError, sendEmail } = deps;
@@ -231,23 +304,94 @@ async function requestEmailOtpHandler(request, deps) {
         }
       }
     }
+    if (!exists && purpose === "ADMIN_SIGNUP") {
+      const [wsSnap, adminSnap] = await Promise.all([
+        db.collection("workspaces").where("ownerEmail", "==", email).limit(1).get(),
+        db.collection("admins").where("email", "==", email).limit(1).get()
+      ]);
+      if (!wsSnap.empty || !adminSnap.empty) {
+        exists = true;
+      }
+    }
     if (exists) {
       throw new HttpsError("already-exists", "An account with this email address already exists.");
     }
   }
 
+  const createdAtMillis = nowEpoch(Timestamp);
+  const rateKey = hashRateLimitKey(email, purpose);
+  const rateRef = db.collection("otpRateLimits").doc(rateKey);
+  const rateSnap = await rateRef.get();
+  const rateData = rateSnap.exists ? (rateSnap.data() || {}) : {};
+
+  const blockedUntilMillis = Number(rateData.blockedUntilMillis || 0);
+  if (blockedUntilMillis > createdAtMillis) {
+    throw new HttpsError(
+      "resource-exhausted",
+      `Too many OTP attempts. Temporarily blocked for ${formatBlockRemaining(blockedUntilMillis - createdAtMillis)}.`
+    );
+  }
+
+  const lastSentAtMillis = Number(rateData.lastSentAtMillis || 0);
+  if (lastSentAtMillis > 0 && createdAtMillis - lastSentAtMillis < OTP_RESEND_COOLDOWN_MS) {
+    const waitSec = Math.max(1, Math.ceil((OTP_RESEND_COOLDOWN_MS - (createdAtMillis - lastSentAtMillis)) / 1000));
+    throw new HttpsError(
+      "resource-exhausted",
+      `Please wait ${waitSec}s before requesting another OTP.`
+    );
+  }
+
+  const prevWindowStart = Number(rateData.requestWindowStartMillis || 0);
+  const inWindow = prevWindowStart > 0 && (createdAtMillis - prevWindowStart) <= OTP_ABUSE_WINDOW_MS;
+  const nextWindowStart = inWindow ? prevWindowStart : createdAtMillis;
+  const nextCount = inWindow ? (Number(rateData.requestCountInWindow || 0) + 1) : 1;
+  if (nextCount > OTP_MAX_REQUESTS_PER_WINDOW) {
+    const newBlockUntil = createdAtMillis + OTP_BLOCK_DURATION_MS;
+    await rateRef.set({
+      email,
+      purpose,
+      lastSentAtMillis,
+      requestWindowStartMillis: nextWindowStart,
+      requestCountInWindow: nextCount,
+      blockedUntilMillis: newBlockUntil,
+      activeChallengeId: rateData.activeChallengeId || ""
+    }, { merge: true });
+    throw new HttpsError(
+      "resource-exhausted",
+      "Too many OTP requests. Temporarily blocked for 15 minutes."
+    );
+  }
+
+  // Supersede any previous active unverified challenge for this email & purpose
+  const prevChallengeId = typeof rateData.activeChallengeId === "string" ? rateData.activeChallengeId : "";
+  if (prevChallengeId && isValidFirestoreId(prevChallengeId)) {
+    try {
+      const prevRef = db.collection("otpChallenges").doc(prevChallengeId);
+      const prevSnap = await prevRef.get();
+      if (prevSnap.exists) {
+        const prev = prevSnap.data() || {};
+        if (!prev.used && !prev.verified) {
+          await prevRef.update({ used: true, superseded: true, supersededAtMillis: createdAtMillis });
+        }
+      }
+    } catch (_) {
+      // Best-effort cleanup of previous active challenge.
+    }
+  }
+
   const otpCode = String(crypto.randomInt(100000, 1000000));
   const challengeId = `otp_${crypto.randomBytes(12).toString("hex")}`;
-  const createdAtMillis = nowEpoch(Timestamp);
   const expiresAtMillis = createdAtMillis + OTP_TTL_MS;
+  const resendAvailableAtMillis = createdAtMillis + OTP_RESEND_COOLDOWN_MS;
   const otpHash = hashOtpCode(challengeId, email, purpose, otpCode);
+  const challengeRef = db.collection("otpChallenges").doc(challengeId);
 
-  await db.collection("otpChallenges").doc(challengeId).set({
+  await challengeRef.set({
     challengeId,
     email,
     purpose,
     otpHash,
-    attemptsLeft: 5,
+    attemptsLeft: OTP_MAX_VERIFY_ATTEMPTS,
     verified: false,
     used: false,
     verificationTokenHash: "",
@@ -257,18 +401,39 @@ async function requestEmailOtpHandler(request, deps) {
   });
 
   const mailer = sendEmail || ((mail) => defaultSendEmail({ ...mail, HttpsError }));
-  await mailer({
-    to: email,
-    subject: `${OFFICIAL_APP_NAME} — Email Verification OTP`,
-    text: `Your ${OFFICIAL_APP_NAME} verification OTP for ${purpose.replace(/_/g, " ")} is ${otpCode}. This OTP expires in 10 minutes. Do not share it with anyone.`,
-    html: `<p>Your <strong>${OFFICIAL_APP_NAME}</strong> verification OTP is:</p><h2>${otpCode}</h2><p>Valid for 10 minutes. Do not share this code.</p>`
-  });
+  try {
+    await mailer({
+      to: email,
+      subject: `${OFFICIAL_APP_NAME} — Email Verification OTP`,
+      text: `Your ${OFFICIAL_APP_NAME} verification OTP for ${purpose.replace(/_/g, " ")} is ${otpCode}. This OTP expires in 5 minutes. Do not share it with anyone.`,
+      html: `<p>Your <strong>${OFFICIAL_APP_NAME}</strong> verification OTP is:</p><h2>${otpCode}</h2><p>Valid for 5 minutes. Do not share this code.</p>`
+    });
+  } catch (mailErr) {
+    try {
+      await challengeRef.delete();
+    } catch (_) {
+      // Best-effort cleanup of unsent challenge.
+    }
+    throw mailErr;
+  }
+
+  await rateRef.set({
+    email,
+    purpose,
+    lastSentAtMillis: createdAtMillis,
+    requestWindowStartMillis: nextWindowStart,
+    requestCountInWindow: nextCount,
+    blockedUntilMillis: 0,
+    activeChallengeId: challengeId,
+    updatedAt: FieldValue ? FieldValue.serverTimestamp() : createdAtMillis
+  }, { merge: true });
 
   return {
     challengeId,
     email,
     purpose,
     expiresAtMillis,
+    resendAvailableAtMillis,
     maskedEmail: maskEmail(email)
   };
 }
@@ -277,7 +442,7 @@ async function requestEmailOtpHandler(request, deps) {
  * Verifies a 6-digit Email OTP against stored SHA-256 hash & issues a one-time verificationToken.
  */
 async function verifyEmailOtpHandler(request, deps) {
-  const { db, Timestamp, HttpsError } = deps;
+  const { db, FieldValue, Timestamp, HttpsError } = deps;
   const data = (request && request.data) || {};
 
   const challengeId = typeof data.challengeId === "string" ? data.challengeId.trim() : "";
@@ -286,35 +451,65 @@ async function verifyEmailOtpHandler(request, deps) {
   const otp = typeof data.otp === "string" ? data.otp.trim() : "";
 
   if (!isValidFirestoreId(challengeId) || !isValidEmail(email) || !/^\d{6}$/.test(otp)) {
-    throw new HttpsError("invalid-argument", "Valid challengeId, email, and 6-digit OTP are required.");
+    throw new HttpsError("invalid-argument", "Enter a valid 6-digit Email OTP code.");
   }
 
+  const currentMillis = nowEpoch(Timestamp);
   const ref = db.collection("otpChallenges").doc(challengeId);
   const snap = await ref.get();
   if (!snap.exists) {
-    throw new HttpsError("not-found", "OTP verification session not found.");
+    throw new HttpsError("not-found", "OTP verification session not found. Please request a new OTP.");
   }
   const ch = snap.data() || {};
-  const currentMillis = nowEpoch(Timestamp);
+
+  const ratePurpose = ch.purpose || purpose;
+  const rateRef = db.collection("otpRateLimits").doc(hashRateLimitKey(email, ratePurpose));
+  const rateSnap = await rateRef.get();
+  if (rateSnap.exists) {
+    const blockedUntilMillis = Number((rateSnap.data() || {}).blockedUntilMillis || 0);
+    if (blockedUntilMillis > currentMillis) {
+      throw new HttpsError(
+        "resource-exhausted",
+        `Too many failed OTP attempts. Temporarily blocked for ${formatBlockRemaining(blockedUntilMillis - currentMillis)}.`
+      );
+    }
+  }
 
   if (ch.used) {
-    throw new HttpsError("failed-precondition", "This OTP has already been used.");
+    throw new HttpsError("failed-precondition", "This OTP is no longer active. Please request a new OTP.");
   }
   if (ch.email !== email || (purpose && ch.purpose !== purpose)) {
     throw new HttpsError("permission-denied", "OTP does not match this email or operation.");
   }
   if (Number(ch.expiresAtMillis || 0) < currentMillis) {
-    throw new HttpsError("deadline-exceeded", "OTP has expired. Please request a new OTP.");
+    throw new HttpsError("deadline-exceeded", "OTP has expired after 5 minutes. Please request a new OTP.");
   }
   const attemptsLeft = Number(ch.attemptsLeft || 0);
   if (attemptsLeft <= 0) {
-    throw new HttpsError("resource-exhausted", "Too many wrong OTP attempts. Request a new OTP.");
+    throw new HttpsError("resource-exhausted", "Too many wrong OTP attempts. Temporarily blocked for 15 minutes.");
   }
 
   const suppliedHash = hashOtpCode(challengeId, email, ch.purpose, otp);
   if (!timingSafeHashEqual(ch.otpHash, suppliedHash)) {
-    await ref.update({ attemptsLeft: attemptsLeft - 1 });
-    throw new HttpsError("permission-denied", "Invalid OTP code.");
+    const remaining = attemptsLeft - 1;
+    if (remaining <= 0) {
+      await ref.update({ attemptsLeft: 0, used: true, blocked: true });
+      await rateRef.set({
+        email,
+        purpose: ch.purpose,
+        blockedUntilMillis: currentMillis + OTP_BLOCK_DURATION_MS,
+        updatedAt: FieldValue ? FieldValue.serverTimestamp() : currentMillis
+      }, { merge: true });
+      throw new HttpsError(
+        "resource-exhausted",
+        "Too many wrong OTP attempts (5/5). Temporarily blocked for 15 minutes."
+      );
+    }
+    await ref.update({ attemptsLeft: remaining });
+    throw new HttpsError(
+      "permission-denied",
+      `Invalid OTP code. ${remaining} attempt${remaining === 1 ? "" : "s"} remaining.`
+    );
   }
 
   const verificationToken = crypto.randomBytes(24).toString("hex");
@@ -325,6 +520,14 @@ async function verifyEmailOtpHandler(request, deps) {
     verifiedAtMillis: currentMillis,
     verificationTokenHash
   });
+
+  if (rateSnap.exists) {
+    await rateRef.set({
+      blockedUntilMillis: 0,
+      requestCountInWindow: 0,
+      updatedAt: FieldValue ? FieldValue.serverTimestamp() : currentMillis
+    }, { merge: true });
+  }
 
   return {
     verified: true,
@@ -352,7 +555,11 @@ async function consumeVerifiedOtpChallenge({ db, challengeId, verificationToken,
   if (ch.email !== email.toLowerCase() || ch.purpose !== expectedPurpose) {
     throw new HttpsError("permission-denied", "Email OTP does not match email or operation.");
   }
-  if (Number(ch.expiresAtMillis || 0) < currentMillis) {
+  const completionDeadline = Math.max(
+    Number(ch.expiresAtMillis || 0),
+    Number(ch.verifiedAtMillis || 0) + 10 * 60 * 1000
+  );
+  if (completionDeadline < currentMillis) {
     throw new HttpsError("deadline-exceeded", "Email OTP verification expired. Please verify again.");
   }
   const tokenHash = crypto.createHash("sha256").update(verificationToken).digest("hex");
@@ -402,8 +609,8 @@ async function registerCompanyAdminHandler(request, deps) {
   if (password !== confirmPassword) {
     throw new HttpsError("invalid-argument", "Password and Confirm Password do not match.");
   }
-  if (twoFactorPassword.length < 6 || twoFactorPassword.length > 64) {
-    throw new HttpsError("invalid-argument", "Two-Factor Authentication Password must be 6 to 64 characters.");
+  if (twoFactorPassword.length < 4 || twoFactorPassword.length > 64) {
+    throw new HttpsError("invalid-argument", "Two-Factor Authentication Password must be 4 to 64 characters.");
   }
   if (twoFactorPassword !== confirmTwoFactorPassword) {
     throw new HttpsError("invalid-argument", "Two-Factor Authentication passwords do not match.");
@@ -423,8 +630,11 @@ async function registerCompanyAdminHandler(request, deps) {
   });
 
   // Prevent duplicate Admin registration for the same email
-  const dupWsSnap = await db.collection("workspaces").where("ownerEmail", "==", email).limit(1).get();
-  if (!dupWsSnap.empty) {
+  const [dupWsSnap, dupAdminSnap] = await Promise.all([
+    db.collection("workspaces").where("ownerEmail", "==", email).limit(1).get(),
+    db.collection("admins").where("email", "==", email).limit(1).get()
+  ]);
+  if (!dupWsSnap.empty || !dupAdminSnap.empty) {
     throw new HttpsError("already-exists", "An Admin account is already registered with this email.");
   }
 
@@ -1282,10 +1492,7 @@ async function beginPasskeyRegistrationHandler(request, deps) {
   }
   const data = (request && request.data) || {};
   const workspaceId = typeof data.workspaceId === "string" ? data.workspaceId.trim() : "";
-  const rpId = (typeof data.rpId === "string" && data.rpId.trim()) || process.env.WEBAUTHN_RP_ID || "";
-  if (!rpId) {
-    throw new HttpsError("failed-precondition", "WEBAUTHN_RP_ID is not configured on backend.");
-  }
+  const rpId = (typeof data.rpId === "string" && data.rpId.trim()) || process.env.WEBAUTHN_RP_ID || DEFAULT_WEBAUTHN_RP_ID;
 
   const email = String(data.email || (authCtx.token && authCtx.token.email) || "").trim().toLowerCase();
   const displayName = String(data.displayName || email || authCtx.uid).trim();
@@ -1418,10 +1625,7 @@ async function beginPasskeyAuthenticationHandler(request, deps) {
   const data = (request && request.data) || {};
   const email = typeof data.email === "string" ? data.email.trim().toLowerCase() : "";
   const expectedRole = typeof data.expectedRole === "string" ? data.expectedRole.trim().toLowerCase() : "";
-  const rpId = (typeof data.rpId === "string" && data.rpId.trim()) || process.env.WEBAUTHN_RP_ID || "";
-  if (!rpId) {
-    throw new HttpsError("failed-precondition", "WEBAUTHN_RP_ID is not configured on backend.");
-  }
+  const rpId = (typeof data.rpId === "string" && data.rpId.trim()) || process.env.WEBAUTHN_RP_ID || DEFAULT_WEBAUTHN_RP_ID;
 
   const allowCredentials = [];
   if (email && isValidEmail(email)) {
@@ -1680,6 +1884,11 @@ module.exports = {
   OFFICIAL_COMPANY_NAME,
   TECH_LOGIN_DISABLED_MESSAGE,
   TRASH_RETENTION_MS,
+  OTP_TTL_MS,
+  OTP_RESEND_COOLDOWN_MS,
+  OTP_BLOCK_DURATION_MS,
+  OTP_MAX_REQUESTS_PER_WINDOW,
+  OTP_MAX_VERIFY_ATTEMPTS,
   isValidEmail,
   validateStrongPassword,
   deriveSafeUsername,

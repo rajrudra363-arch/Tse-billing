@@ -18,4 +18,6 @@
     <string name="quotation_customer_note">We appreciate the opportunity to serve you. All quoted items use genuine manufacturer-warranted hardware installed by certified technicians of TOTAL SOLUTION.</string>
     <string name="product_disclaimer_text">Product warranty is subject to the respective manufacturer\'s terms and conditions. Physical damage, water damage, voltage fluctuation, improper installation or unauthorised tampering are not covered unless the manufacturer\'s policy states otherwise.</string>
     <string name="error_tech_login_disabled">Your login has been disabled by Admin. Please contact your Admin.</string>
+    <string name="webauthn_rp_id" translatable="false">gen-lang-client-0614473240.web.app</string>
+    <string name="asset_statements" translatable="false">[{\"relation\": [\"delegate_permission/common.handle_all_urls\", \"delegate_permission/common.get_login_creds\"], \"target\": {\"namespace\": \"web\", \"site\": \"https://gen-lang-client-0614473240.web.app\"}}]</string>
 </resources>

@@ -466,12 +466,11 @@ fun AuthScreen(
                                         destination = AuthPortalDestination.HUB
                                     },
                                     onClearError = onClearError,
+                                    onClearOtp = onClearOtp,
                                     onRequestOtp = onRequestOtp,
                                     onVerifyOtp = onVerifyOtp,
                                     onRegisterCompanyAdmin = { name, mob, email, pass, conf, twoFa, confTwoFa ->
-                                        onRegisterCompanyAdmin(name, mob, email, pass, conf, twoFa, confTwoFa) {
-                                            destination = AuthPortalDestination.ADMIN_LOGIN
-                                        }
+                                        onRegisterCompanyAdmin(name, mob, email, pass, conf, twoFa, confTwoFa) {}
                                     },
                                     onSetupLocalAdmin = { user, pass, conf, code ->
                                         onSetupAdmin(user, pass, conf, code)
@@ -715,6 +714,7 @@ private fun AdminSignUpSection(
     otpState: OtpUiState,
     onBack: () -> Unit,
     onClearError: () -> Unit,
+    onClearOtp: () -> Unit = {},
     onRequestOtp: (email: String, purpose: String) -> Unit,
     onVerifyOtp: (otp: String, onVerified: () -> Unit) -> Unit,
     onRegisterCompanyAdmin: (
@@ -746,18 +746,43 @@ private fun AdminSignUpSection(
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
 
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(otpState.challengeId, otpState.expiresAtMillis, otpState.resendAvailableAtMillis, otpState.otpVerified) {
+        nowMillis = System.currentTimeMillis()
+        while (otpState.challengeId.isNotBlank() && !otpState.otpVerified &&
+            (otpState.expiresAtMillis > System.currentTimeMillis() || otpState.resendAvailableAtMillis > System.currentTimeMillis())
+        ) {
+            delay(1000L)
+            nowMillis = System.currentTimeMillis()
+        }
+    }
+
     val passEval = remember(password) { AuthPolicy.evaluatePassword(password) }
-    val otpVerifiedForEmail = otpState.otpVerified && otpState.email.equals(email.trim(), ignoreCase = true)
+    val trimmedEmail = email.trim()
+    val otpVerifiedForEmail = otpState.otpVerified && otpState.email.equals(trimmedEmail, ignoreCase = true)
+    val isChallengeForEmail = otpState.challengeId.isNotBlank() && otpState.email.equals(trimmedEmail, ignoreCase = true)
+    val resendWaitSec = if (otpState.resendAvailableAtMillis > nowMillis &&
+        (otpState.email.isBlank() || otpState.email.equals(trimmedEmail, ignoreCase = true))
+    ) {
+        ((otpState.resendAvailableAtMillis - nowMillis + 999L) / 1000L).toInt().coerceAtLeast(0)
+    } else 0
+    val expiryRemainingSec = if (isChallengeForEmail && !otpVerifiedForEmail && otpState.expiresAtMillis > nowMillis) {
+        ((otpState.expiresAtMillis - nowMillis) / 1000L).toInt().coerceAtLeast(0)
+    } else 0
+    val otpExpired = isChallengeForEmail && !otpVerifiedForEmail && otpState.expiresAtMillis > 0L && nowMillis >= otpState.expiresAtMillis
+    val twoFactorDiffersFromPass = twoFactorPassword.isNotBlank() && twoFactorPassword != password
+
     val canSubmitCloud = !isStaffOnlyApk &&
         !cloudBusy &&
         adminName.trim().length >= 2 &&
         mobile.filter { it.isDigit() }.length >= 10 &&
-        AuthPolicy.isValidEmail(email.trim()) &&
+        AuthPolicy.isValidEmail(trimmedEmail) &&
         otpVerifiedForEmail &&
         passEval.isStrong &&
         password == confirmPassword &&
         twoFactorPassword.trim().length >= 4 &&
-        twoFactorPassword == confirmTwoFactorPassword
+        twoFactorPassword == confirmTwoFactorPassword &&
+        twoFactorDiffersFromPass
 
     fun handleBackupUri(uri: android.net.Uri?) {
         if (uri == null) return
@@ -831,7 +856,14 @@ private fun AdminSignUpSection(
 
         OutlinedTextField(
             value = email,
-            onValueChange = { email = it; onClearError() },
+            onValueChange = { updated ->
+                email = updated
+                onClearError()
+                if (otpState.email.isNotBlank() && !updated.trim().equals(otpState.email, ignoreCase = true)) {
+                    otpInput = ""
+                    onClearOtp()
+                }
+            },
             label = { Text("Email Address") },
             leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, imeAction = ImeAction.Next),
@@ -841,8 +873,19 @@ private fun AdminSignUpSection(
 
         // Email OTP Verification block
         Surface(
-            color = if (otpVerifiedForEmail) GreenPaidBg else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-            border = BorderStroke(1.dp, if (otpVerifiedForEmail) GreenPaid else TealAccent),
+            color = when {
+                otpVerifiedForEmail -> GreenPaidBg
+                otpState.errorMessage.isNotBlank() || otpExpired -> RedDueBg
+                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+            },
+            border = BorderStroke(
+                1.dp,
+                when {
+                    otpVerifiedForEmail -> GreenPaid
+                    otpState.errorMessage.isNotBlank() || otpExpired -> RedDue
+                    else -> TealAccent
+                }
+            ),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -860,33 +903,68 @@ private fun AdminSignUpSection(
                     )
                     OutlinedButton(
                         onClick = { onRequestOtp(email, "ADMIN_SIGNUP") },
-                        enabled = !otpState.busy && AuthPolicy.isValidEmail(email.trim()),
+                        enabled = !otpState.busy &&
+                            AuthPolicy.isValidEmail(trimmedEmail) &&
+                            resendWaitSec == 0 &&
+                            !otpState.blocked &&
+                            !otpVerifiedForEmail,
                         modifier = Modifier.testTag("signup_send_otp_button")
                     ) {
-                        Text(if (otpState.challengeId.isNotBlank()) "Resend OTP" else "Send OTP", fontWeight = FontWeight.Bold)
+                        val btnLabel = when {
+                            otpState.busy && !isChallengeForEmail -> "Sending..."
+                            otpVerifiedForEmail -> "Verified"
+                            resendWaitSec > 0 -> "Resend in ${resendWaitSec}s"
+                            isChallengeForEmail || otpExpired -> "Resend OTP"
+                            else -> "Send OTP"
+                        }
+                        Text(btnLabel, fontWeight = FontWeight.Bold)
                     }
                 }
-                if (otpState.message.isNotBlank()) {
+                val showErrorForEmail = otpState.errorMessage.isNotBlank() &&
+                    (otpState.email.isBlank() || otpState.email.equals(trimmedEmail, ignoreCase = true))
+                if (showErrorForEmail) {
                     Text(
-                        text = otpState.message,
+                        text = otpState.errorMessage,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.testTag("signup_otp_error_text")
+                    )
+                } else if (otpExpired) {
+                    Text(
+                        text = "OTP has expired after 5 minutes. Click Resend OTP to receive a new code.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.testTag("signup_otp_error_text")
+                    )
+                } else if (otpState.message.isNotBlank() && (otpVerifiedForEmail || isChallengeForEmail)) {
+                    val expirySuffix = if (!otpVerifiedForEmail && expiryRemainingSec > 0) {
+                        val mins = expiryRemainingSec / 60
+                        val secs = expiryRemainingSec % 60
+                        String.format(Locale.US, " · Valid %02d:%02d", mins, secs)
+                    } else ""
+                    Text(
+                        text = otpState.message + expirySuffix,
                         style = MaterialTheme.typography.labelSmall,
                         color = if (otpVerifiedForEmail) GreenPaid else TealAccent,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.testTag("signup_otp_status_text")
                     )
                 }
-                if (!otpVerifiedForEmail && otpState.challengeId.isNotBlank()) {
+                if (!otpVerifiedForEmail && isChallengeForEmail && !otpExpired && !otpState.blocked) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
                             value = otpInput,
                             onValueChange = { otpInput = it.filter { ch -> ch.isDigit() }.take(6) },
-                            label = { Text("Enter Email OTP") },
+                            label = { Text("Enter 6-digit OTP") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                             singleLine = true,
                             modifier = Modifier.weight(1f).testTag("signup_otp_input")
                         )
                         Button(
                             onClick = { onVerifyOtp(otpInput) {} },
-                            enabled = !otpState.busy && otpInput.length >= 4,
+                            enabled = !otpState.busy && otpInput.length == 6,
                             colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
                             modifier = Modifier.height(50.dp).testTag("signup_verify_otp_button")
                         ) {
@@ -931,12 +1009,21 @@ private fun AdminSignUpSection(
             value = twoFactorPassword,
             onValueChange = { twoFactorPassword = it; onClearError() },
             label = { Text("Create Two-Factor Authentication Password (min 4 chars)") },
+            isError = twoFactorPassword.isNotEmpty() && twoFactorPassword == password,
             leadingIcon = { Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = TealAccent) },
             visualTransformation = if (showPass) VisualTransformation.None else PasswordVisualTransformation(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
             singleLine = true,
             modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("setup_admin_verify_code")
         )
+        if (twoFactorPassword.isNotEmpty() && twoFactorPassword == password) {
+            Text(
+                text = "Two-Factor Authentication Password must differ from your login password.",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
 
         OutlinedTextField(
             value = confirmTwoFactorPassword,
@@ -1277,7 +1364,7 @@ private fun AdminLoginSection(
     if (showForgotDialog) {
         OtpAndRecoveryForgotPasswordDialog(
             title = "Forgot Admin Password",
-            purpose = "PASSWORD_RESET",
+            purpose = "ADMIN_FORGOT_PASSWORD",
             prefillEmail = savedAdmin?.email.orEmpty().ifBlank { if (identifier.contains("@")) identifier else "" },
             targetUsername = savedAdmin?.username ?: AuthPolicy.CANONICAL_ADMIN_USERNAME,
             showLocalRecoveryTab = true,
@@ -1287,10 +1374,11 @@ private fun AdminLoginSection(
                 onClearOtp()
                 showForgotDialog = false
             },
+            onClearOtp = onClearOtp,
             onRequestOtp = onRequestOtp,
             onVerifyOtp = onVerifyOtp,
             onResetPasswordWithOtp = { em, newP, confP, cb ->
-                onResetPasswordWithOtp(em, "PASSWORD_RESET", newP, confP) { ok, msg ->
+                onResetPasswordWithOtp(em, "ADMIN_FORGOT_PASSWORD", newP, confP) { ok, msg ->
                     if (ok) {
                         password = ""
                         twoFactorCode = ""
@@ -1620,7 +1708,7 @@ private fun TechnicianLoginHubSection(
     if (showForgotDialog) {
         OtpAndRecoveryForgotPasswordDialog(
             title = "Reset Technician Password",
-            purpose = "PASSWORD_RESET",
+            purpose = "TECHNICIAN_FORGOT_PASSWORD",
             prefillEmail = if (techEmailOrUsername.contains("@")) techEmailOrUsername else "",
             targetUsername = selectedTechUsername,
             showLocalRecoveryTab = false,
@@ -1630,10 +1718,11 @@ private fun TechnicianLoginHubSection(
                 onClearOtp()
                 showForgotDialog = false
             },
+            onClearOtp = onClearOtp,
             onRequestOtp = onRequestOtp,
             onVerifyOtp = onVerifyOtp,
             onResetPasswordWithOtp = { em, newP, confP, cb ->
-                onResetPasswordWithOtp(em, "PASSWORD_RESET", newP, confP) { ok, msg ->
+                onResetPasswordWithOtp(em, "TECHNICIAN_FORGOT_PASSWORD", newP, confP) { ok, msg ->
                     if (ok) {
                         techPassword = ""
                         recoverySuccessMsg = msg
@@ -2101,6 +2190,7 @@ private fun OtpAndRecoveryForgotPasswordDialog(
     otpState: OtpUiState,
     cloudBusy: Boolean,
     onDismiss: () -> Unit,
+    onClearOtp: () -> Unit = {},
     onRequestOtp: (email: String, purpose: String) -> Unit,
     onVerifyOtp: (otp: String, onVerified: () -> Unit) -> Unit,
     onResetPasswordWithOtp: (email: String, newPass: String, confirmPass: String, onResult: (Boolean, String) -> Unit) -> Unit,
@@ -2117,7 +2207,26 @@ private fun OtpAndRecoveryForgotPasswordDialog(
     var showNewPass by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf("") }
 
-    val otpVerifiedForEmail = otpState.otpVerified && otpState.email.equals(email.trim(), ignoreCase = true)
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(otpState.challengeId, otpState.expiresAtMillis, otpState.resendAvailableAtMillis, otpState.otpVerified) {
+        nowMillis = System.currentTimeMillis()
+        while (otpState.challengeId.isNotBlank() && !otpState.otpVerified &&
+            (otpState.expiresAtMillis > System.currentTimeMillis() || otpState.resendAvailableAtMillis > System.currentTimeMillis())
+        ) {
+            delay(1000L)
+            nowMillis = System.currentTimeMillis()
+        }
+    }
+
+    val trimmedEmail = email.trim()
+    val otpVerifiedForEmail = otpState.otpVerified && otpState.email.equals(trimmedEmail, ignoreCase = true)
+    val isChallengeForEmail = otpState.challengeId.isNotBlank() && otpState.email.equals(trimmedEmail, ignoreCase = true)
+    val resendWaitSec = if (otpState.resendAvailableAtMillis > nowMillis &&
+        (otpState.email.isBlank() || otpState.email.equals(trimmedEmail, ignoreCase = true))
+    ) {
+        ((otpState.resendAvailableAtMillis - nowMillis + 999L) / 1000L).toInt().coerceAtLeast(0)
+    } else 0
+    val otpExpired = isChallengeForEmail && !otpVerifiedForEmail && otpState.expiresAtMillis > 0L && nowMillis >= otpState.expiresAtMillis
     val newPasswordStrong = remember(newPassword) { AuthPolicy.evaluatePassword(newPassword).isStrong }
     val canSubmit = if (useRecoveryKey) {
         recoveryPassword.isNotBlank() && newPasswordStrong && newPassword == confirmPassword
@@ -2165,7 +2274,14 @@ private fun OtpAndRecoveryForgotPasswordDialog(
                     if (!useRecoveryKey) {
                         OutlinedTextField(
                             value = email,
-                            onValueChange = { email = it; errorMsg = "" },
+                            onValueChange = { updated ->
+                                email = updated
+                                errorMsg = ""
+                                if (otpState.email.isNotBlank() && !updated.trim().equals(otpState.email, ignoreCase = true)) {
+                                    otpCode = ""
+                                    onClearOtp()
+                                }
+                            },
                             label = { Text("Registered Email") },
                             leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
@@ -2175,27 +2291,46 @@ private fun OtpAndRecoveryForgotPasswordDialog(
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             OutlinedButton(
                                 onClick = { onRequestOtp(email, purpose) },
-                                enabled = !otpState.busy && AuthPolicy.isValidEmail(email.trim()),
+                                enabled = !otpState.busy &&
+                                    AuthPolicy.isValidEmail(trimmedEmail) &&
+                                    resendWaitSec == 0 &&
+                                    !otpState.blocked &&
+                                    !otpVerifiedForEmail,
                                 modifier = Modifier.testTag("forgot_send_otp_button")
                             ) {
-                                Text(if (otpState.challengeId.isNotBlank()) "Resend OTP" else "Send OTP")
+                                Text(
+                                    when {
+                                        otpVerifiedForEmail -> "Verified"
+                                        resendWaitSec > 0 -> "Resend in ${resendWaitSec}s"
+                                        isChallengeForEmail || otpExpired -> "Resend OTP"
+                                        else -> "Send OTP"
+                                    }
+                                )
                             }
                             if (otpVerifiedForEmail) {
                                 Text("OTP Verified", color = GreenPaid, fontWeight = FontWeight.Bold)
                             }
                         }
-                        if (!otpVerifiedForEmail && otpState.challengeId.isNotBlank()) {
+                        if (otpState.errorMessage.isNotBlank() && (otpState.email.isBlank() || otpState.email.equals(trimmedEmail, ignoreCase = true))) {
+                            Text(otpState.errorMessage, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                        } else if (otpExpired) {
+                            Text("OTP has expired after 5 minutes. Click Resend OTP.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                        } else if (otpState.message.isNotBlank() && (otpVerifiedForEmail || isChallengeForEmail)) {
+                            Text(otpState.message, color = if (otpVerifiedForEmail) GreenPaid else TealAccent, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+                        }
+                        if (!otpVerifiedForEmail && isChallengeForEmail && !otpExpired && !otpState.blocked) {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                                 OutlinedTextField(
                                     value = otpCode,
                                     onValueChange = { otpCode = it.filter { ch -> ch.isDigit() }.take(6) },
-                                    label = { Text("Enter OTP") },
+                                    label = { Text("Enter 6-digit OTP") },
+                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                     singleLine = true,
                                     modifier = Modifier.weight(1f).testTag("forgot_otp_code_input")
                                 )
                                 Button(
                                     onClick = { onVerifyOtp(otpCode) {} },
-                                    enabled = !otpState.busy && otpCode.length >= 4,
+                                    enabled = !otpState.busy && otpCode.length == 6,
                                     colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
                                     modifier = Modifier.height(50.dp).testTag("forgot_verify_otp_button")
                                 ) {

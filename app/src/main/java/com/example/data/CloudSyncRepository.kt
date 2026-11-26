@@ -99,6 +99,7 @@ data class OtpRequestResult(
     val email: String,
     val purpose: String,
     val expiresAtMillis: Long,
+    val resendAvailableAtMillis: Long = 0L,
     val maskedEmail: String
 )
 
@@ -735,6 +736,16 @@ class CloudSyncRepository(private val context: Context) {
         }
     }
 
+    private fun extractFunctionsMessage(e: Exception, fallback: String): String {
+        if (e is FirebaseFunctionsException) {
+            if (e.code == FirebaseFunctionsException.Code.NOT_FOUND) {
+                return "Firebase Cloud Functions service is not deployed yet. Please deploy functions and configure email provider secrets."
+            }
+            return e.message?.takeIf { it.isNotBlank() } ?: fallback
+        }
+        return e.message?.takeIf { it.isNotBlank() } ?: fallback
+    }
+
     suspend fun requestEmailOtp(email: String, purpose: String): Result<OtpRequestResult> =
         withContext(Dispatchers.IO) {
             val functions = getFunctions()
@@ -746,19 +757,24 @@ class CloudSyncRepository(private val context: Context) {
                 @Suppress("UNCHECKED_CAST")
                 val data = res.getData() as? Map<String, Any?>
                     ?: return@withContext Result.failure(IllegalStateException("Unexpected OTP response."))
+                val expiresAtMillis = (data["expiresAtMillis"] as? Number)?.toLong() ?: (System.currentTimeMillis() + 5 * 60_000L)
+                val resendAtMillis = (data["resendAvailableAtMillis"] as? Number)?.toLong()
+                    ?: (System.currentTimeMillis() + 60_000L)
                 Result.success(
                     OtpRequestResult(
                         challengeId = data["challengeId"]?.toString().orEmpty(),
                         email = data["email"]?.toString().orEmpty(),
                         purpose = data["purpose"]?.toString().orEmpty(),
-                        expiresAtMillis = (data["expiresAtMillis"] as? Number)?.toLong() ?: 0L,
+                        expiresAtMillis = expiresAtMillis,
+                        resendAvailableAtMillis = resendAtMillis,
                         maskedEmail = data["maskedEmail"]?.toString().orEmpty()
                     )
                 )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Result.failure(IllegalStateException(e.message ?: "Failed to send Email OTP.", e))
+                Log.e(TAG, "requestEmailOtp failed", e)
+                Result.failure(IllegalStateException(extractFunctionsMessage(e, "Failed to send Email OTP."), e))
             }
         }
 
@@ -796,7 +812,8 @@ class CloudSyncRepository(private val context: Context) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Result.failure(IllegalStateException(e.message ?: "Invalid or expired OTP.", e))
+            Log.e(TAG, "verifyEmailOtp failed", e)
+            Result.failure(IllegalStateException(extractFunctionsMessage(e, "Invalid or expired OTP."), e))
         }
     }
 
@@ -848,7 +865,8 @@ class CloudSyncRepository(private val context: Context) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Result.failure(IllegalStateException(e.message ?: "Admin Sign Up failed.", e))
+            Log.e(TAG, "registerCompanyAdmin failed", e)
+            Result.failure(IllegalStateException(extractFunctionsMessage(e, "Admin Sign Up failed."), e))
         }
     }
 
@@ -866,7 +884,8 @@ class CloudSyncRepository(private val context: Context) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Result.failure(IllegalStateException(e.message ?: "Incorrect Two-Factor Authentication Password.", e))
+                Log.e(TAG, "verifyAdminSecondFactor failed", e)
+                Result.failure(IllegalStateException(extractFunctionsMessage(e, "Incorrect Two-Factor Authentication Password."), e))
             }
         }
 
@@ -897,7 +916,8 @@ class CloudSyncRepository(private val context: Context) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Result.failure(IllegalStateException(e.message ?: "Password reset failed.", e))
+            Log.e(TAG, "resetPasswordWithOtp failed", e)
+            Result.failure(IllegalStateException(extractFunctionsMessage(e, "Password reset failed."), e))
         }
     }
 
@@ -1042,7 +1062,7 @@ class CloudSyncRepository(private val context: Context) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Result.failure(IllegalStateException(e.message ?: "Failed to initialize Passkey registration.", e))
+            Result.failure(IllegalStateException(extractFunctionsMessage(e, "Failed to initialize Passkey registration."), e))
         }
     }
 
@@ -1067,7 +1087,7 @@ class CloudSyncRepository(private val context: Context) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Result.failure(IllegalStateException(e.message ?: "Passkey verification failed on server.", e))
+            Result.failure(IllegalStateException(extractFunctionsMessage(e, "Passkey verification failed on server."), e))
         }
     }
 
@@ -1098,7 +1118,7 @@ class CloudSyncRepository(private val context: Context) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Result.failure(IllegalStateException(e.message ?: "Unable to start Passkey sign-in.", e))
+            Result.failure(IllegalStateException(extractFunctionsMessage(e, "Unable to start Passkey sign-in."), e))
         }
     }
 
@@ -1145,7 +1165,7 @@ class CloudSyncRepository(private val context: Context) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Result.failure(IllegalStateException(e.message ?: "Passkey sign-in failed.", e))
+            Result.failure(IllegalStateException(extractFunctionsMessage(e, "Passkey sign-in failed."), e))
         }
     }
 

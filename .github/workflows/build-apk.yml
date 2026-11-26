@@ -110,6 +110,8 @@ jobs:
           gradle-version: 9.3.1
 
       - name: Build Debug APK
+        env:
+          FIREBASE_APPCHECK_DEBUG_TOKEN: ${{ secrets.FIREBASE_APPCHECK_DEBUG_TOKEN }}
         run: gradle :app:processDebugGoogleServices --rerun-tasks assembleDebug --no-build-cache
 
       - name: Upload TSE Billing APK

@@ -61,7 +61,7 @@ android {
           ?.removeSurrounding("'")
           .orEmpty()
       } else ""
-      val debugAppCheckToken = (System.getenv("FIREBASE_APPCHECK_DEBUG_TOKEN") ?: envTokenFromFile)
+      val debugAppCheckToken = (System.getenv("FIREBASE_APPCHECK_DEBUG_TOKEN")?.takeIf { it.isNotBlank() } ?: envTokenFromFile)
         .replace("\\", "\\\\")
         .replace("\"", "\\\"")
       buildConfigField("String", "APPCHECK_DEBUG_TOKEN", "\"$debugAppCheckToken\"")

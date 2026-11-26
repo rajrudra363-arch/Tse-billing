@@ -28,11 +28,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -860,7 +862,7 @@ private fun AdminSignUpSection(
                                 text = "Verify Your Email Address",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Black,
-                                color = NavyDeep
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
                                 text = adminVerificationState.email.ifBlank { trimmedEmail },
@@ -902,7 +904,8 @@ private fun AdminSignUpSection(
                         onClick = onCheckVerification,
                         enabled = !adminVerificationState.busy && !cloudBusy,
                         colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
-                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("signup_check_verification_button")
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("signup_check_verification_button")
                     ) {
                         if (adminVerificationState.busy || cloudBusy) {
                             CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
@@ -913,20 +916,23 @@ private fun AdminSignUpSection(
                         Text(
                             text = if (adminVerificationState.busy) "Checking Verification..." else "I've Verified My Email — Continue",
                             fontWeight = FontWeight.Bold,
-                            color = Color.White
+                            color = Color.White,
+                            textAlign = TextAlign.Center
                         )
                     }
 
                     OutlinedButton(
                         onClick = onResendVerification,
                         enabled = !adminVerificationState.busy && resendWaitSec == 0,
-                        modifier = Modifier.fillMaxWidth().height(46.dp).testTag("signup_resend_verification_button")
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("signup_resend_verification_button")
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(
                             text = if (resendWaitSec > 0) "Resend Verification Email (${resendWaitSec}s)" else "Resend Verification Email",
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
                         )
                     }
 
@@ -1344,20 +1350,23 @@ private fun AdminLoginSection(
                         OutlinedButton(
                             onClick = onResendVerification,
                             enabled = !adminVerificationState.busy && resendWaitSec == 0,
-                            modifier = Modifier.weight(1f).testTag("login_resend_verification_button")
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                            modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("login_resend_verification_button")
                         ) {
                             Text(
                                 text = if (resendWaitSec > 0) "Resend (${resendWaitSec}s)" else "Resend Email",
-                                fontWeight = FontWeight.Bold
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center
                             )
                         }
                         Button(
                             onClick = onCheckVerification,
                             enabled = !adminVerificationState.busy,
                             colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
-                            modifier = Modifier.weight(1f).testTag("login_check_verification_button")
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+                            modifier = Modifier.weight(1f).heightIn(min = 44.dp).testTag("login_check_verification_button")
                         ) {
-                            Text("I've Verified", fontWeight = FontWeight.Bold, color = Color.White)
+                            Text("I've Verified", fontWeight = FontWeight.Bold, color = Color.White, textAlign = TextAlign.Center)
                         }
                     }
                 }

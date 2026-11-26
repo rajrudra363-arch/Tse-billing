@@ -17,6 +17,7 @@ import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.PersistentCacheSettings
@@ -330,15 +331,18 @@ class CloudSyncRepository(private val context: Context) {
         val db = getFirestore()
             ?: return@withContext Result.failure(IllegalStateException("Cloud database is not configured."))
         val uid = user.uid
+        var currentStep = "workspaces.list(ownerUid)"
 
         try {
             if (existingWorkspaceId.isNotBlank()) {
+                currentStep = "workspaces.get($existingWorkspaceId)"
                 val existingDoc = db.collection("workspaces").document(existingWorkspaceId).get().await()
                 if (existingDoc.exists() && existingDoc.getString("ownerUid") == uid) {
                     return@withContext Result.success(parseWorkspaceDoc(existingDoc, "admin"))
                 }
             }
 
+            currentStep = "workspaces.list(ownerUid)"
             val owned = db.collection("workspaces")
                 .whereEqualTo("ownerUid", uid)
                 .limit(1)
@@ -380,6 +384,7 @@ class CloudSyncRepository(private val context: Context) {
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
+            currentStep = "workspaces.create($wsId)"
             db.collection("workspaces").document(wsId).set(wsPayload).await()
 
             val ownerMember = hashMapOf<String, Any>(
@@ -392,6 +397,7 @@ class CloudSyncRepository(private val context: Context) {
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
+            currentStep = "workspaces/$wsId/members.create($uid)"
             db.collection("workspaces").document(wsId)
                 .collection("members").document(uid)
                 .set(ownerMember).await()
@@ -412,6 +418,7 @@ class CloudSyncRepository(private val context: Context) {
                 ).await()
             }
 
+            currentStep = "workspaceDirectories.create($techCode,$superCode)"
             ensureShareDirectories(db, wsId, uid, safeCompany, techCode, superCode)
 
             Result.success(
@@ -428,14 +435,20 @@ class CloudSyncRepository(private val context: Context) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.CREATE, "workspaces")
-            val wrapped = if (isAppCheckError(e)) {
-                IllegalStateException(
+            handleFirestoreError(e, OperationType.CREATE, currentStep)
+            val dbId = runCatching { context.getString(R.string.firestore_database_id) }.getOrDefault("(default)")
+            val fsEx = e as? FirebaseFirestoreException ?: (e.cause as? FirebaseFirestoreException)
+            val wrapped = when {
+                isAppCheckError(e) -> IllegalStateException(
                     formatFirebaseErrorWithAppCheckHint(context, e, "App Check verification failed."),
                     e
                 )
-            } else {
-                e
+                fsEx?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED ||
+                    e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true -> IllegalStateException(
+                    "Firestore PERMISSION_DENIED at '$currentStep' on database '$dbId'. Publish the latest firestore.rules to Firestore database '$dbId' in Firebase Console -> Firestore Database -> Rules, then tap Continue again.",
+                    e
+                )
+                else -> e
             }
             Result.failure(wrapped)
         }

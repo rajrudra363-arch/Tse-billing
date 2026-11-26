@@ -15,9 +15,9 @@ service cloud.firestore {
 
     function isBootstrappedAdmin() {
       return isSignedIn() && (
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
         (request.auth.token.email == 'rajrudra363@gmail.com' &&
-         request.auth.token.email_verified == true)
+         request.auth.token.email_verified == true) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
 

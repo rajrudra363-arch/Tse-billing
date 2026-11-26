@@ -20,7 +20,9 @@ import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
-import com.example.util.getLocalAppCheckDebugToken
+import com.example.util.configureAppCheck
+import com.example.util.formatFirebaseErrorWithAppCheckHint
+import com.example.util.isAppCheckError
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.auth.api.signin.GoogleSignInStatusCodes
@@ -72,8 +74,8 @@ object GoogleAuthHelper {
         if (id.isNotEmpty()) {
             return id
         }
-        // Fallback to client ID configured in google-services.json
-        return "760882645284-h3fggvajhb7p2ebhb707hnjtlp16p266.apps.googleusercontent.com"
+        // Fallback to Web OAuth client ID (client_type: 3) configured in google-services.json
+        return "760882645284-ha4304oiq1ql4fobu04lmben27c32lgk.apps.googleusercontent.com"
     }
 
     private fun getAppSha1Fingerprint(context: Context): String {
@@ -101,6 +103,7 @@ object GoogleAuthHelper {
             if (FirebaseApp.getApps(context).isEmpty()) {
                 FirebaseApp.initializeApp(context)
             }
+            configureAppCheck(context)
             val u = FirebaseAuth.getInstance().currentUser ?: return null
             CloudAuthUser(
                 uid = u.uid,
@@ -115,6 +118,7 @@ object GoogleAuthHelper {
             if (FirebaseApp.getApps(context).isEmpty()) {
                 FirebaseApp.initializeApp(context)
             }
+            configureAppCheck(context)
             val auth = FirebaseAuth.getInstance()
             val existing = auth.currentUser
             if (existing != null) {
@@ -176,6 +180,7 @@ object GoogleAuthHelper {
             if (FirebaseApp.getApps(activityContext).isEmpty()) {
                 FirebaseApp.initializeApp(activityContext)
             }
+            configureAppCheck(activityContext)
             val auth = FirebaseAuth.getInstance()
             val existing = auth.currentUser
             if (existing != null) {
@@ -418,29 +423,18 @@ object GoogleAuthHelper {
     }
 
     private fun formatFirebaseAuthError(context: Context, e: FirebaseAuthException): String {
-        val raw = e.localizedMessage ?: e.message.orEmpty()
-        if (raw.contains("App Check", ignoreCase = true) || raw.contains("appcheck", ignoreCase = true)) {
-            val token = getLocalAppCheckDebugToken(context)
-            return if (!token.isNullOrBlank()) {
-                "Firebase App Check rejected sign-in. In Firebase Console -> App Check -> APIs -> Authentication, either click Unenforce (for all team phones) OR add this phone's Debug Token under Manage debug tokens: $token"
-            } else {
-                "Firebase App Check rejected sign-in ($raw). In Firebase Console -> App Check -> APIs -> Authentication, click Unenforce or register this app's App Check provider."
-            }
+        if (isAppCheckError(e)) {
+            return formatFirebaseErrorWithAppCheckHint(context, e, "Firebase App Check rejected sign-in.")
         }
+        val raw = e.localizedMessage ?: e.message.orEmpty()
         return "Firebase Auth failed (${e.errorCode}): $raw"
     }
 
     private fun formatFirebaseThrowableError(context: Context, t: Throwable): String {
-        val raw = t.message.orEmpty()
-        if (raw.contains("App Check", ignoreCase = true) || raw.contains("appcheck", ignoreCase = true)) {
-            val token = getLocalAppCheckDebugToken(context)
-            return if (!token.isNullOrBlank()) {
-                "Firebase App Check rejected sign-in. In Firebase Console -> App Check -> APIs -> Authentication, either click Unenforce (for all team phones) OR add this phone's Debug Token under Manage debug tokens: $token"
-            } else {
-                "Firebase App Check rejected sign-in ($raw). Check Firebase Console -> App Check -> APIs -> Authentication."
-            }
+        if (isAppCheckError(t)) {
+            return formatFirebaseErrorWithAppCheckHint(context, t, "Firebase App Check rejected sign-in.")
         }
-        return raw.ifBlank { "Google Sign-In failed." }
+        return t.message.orEmpty().ifBlank { "Google Sign-In failed." }
     }
 
     private suspend fun exchangeIdTokenWithFirebase(

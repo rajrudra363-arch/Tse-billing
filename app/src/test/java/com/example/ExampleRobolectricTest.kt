@@ -2317,6 +2317,15 @@ class ExampleRobolectricTest {
     @Test
     fun configureAppCheck_persistsDebugTokenFromIntentSynchronously() {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        assertTrue(context.applicationContext is TseBillingApplication)
+        assertEquals("com.aistudio.cctvbilling.tsekmp", context.packageName)
+
+        // Application.onCreate() pre-seeds a valid persistent UUID debug token for debug builds
+        com.example.util.configureAppCheck(context)
+        val initialToken = com.example.util.getLocalAppCheckDebugToken(context)
+        assertFalse(initialToken.isNullOrBlank())
+
+        // Explicit FIREBASE_APPCHECK_DEBUG_TOKEN intent override is persisted synchronously
         val testToken = "11111111-2222-3333-4444-555555555555"
         val intent = android.content.Intent().apply {
             putExtra("FIREBASE_APPCHECK_DEBUG_TOKEN", testToken)
@@ -2324,6 +2333,29 @@ class ExampleRobolectricTest {
         com.example.util.configureAppCheck(context, intent)
         val stored = com.example.util.getLocalAppCheckDebugToken(context)
         assertEquals(testToken, stored)
+    }
+
+    @Test
+    fun appCheckErrorFormatter_surfacesDebugTokenOnlyForAppCheckErrors() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val testToken = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        val intent = android.content.Intent().apply {
+            putExtra("FIREBASE_APPCHECK_DEBUG_TOKEN", testToken)
+        }
+        com.example.util.configureAppCheck(context, intent)
+
+        val appCheckException = IllegalStateException("An internal error has occurred. [Firebase App Check token is invalid.]")
+        assertTrue(com.example.util.isAppCheckError(appCheckException))
+        val formatted = com.example.util.formatFirebaseErrorWithAppCheckHint(context, appCheckException, "Fallback")
+        assertTrue(formatted.contains("Manage debug tokens"))
+        assertTrue(formatted.contains(testToken))
+
+        val normalException = IllegalStateException("Password is wrong")
+        assertFalse(com.example.util.isAppCheckError(normalException))
+        assertEquals(
+            "Password is wrong",
+            com.example.util.formatFirebaseErrorWithAppCheckHint(context, normalException, "Fallback")
+        )
     }
 
     @Test

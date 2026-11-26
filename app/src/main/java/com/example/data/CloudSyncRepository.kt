@@ -3,6 +3,9 @@ package com.example.data
 import android.content.Context
 import android.util.Log
 import com.example.R
+import com.example.util.configureAppCheck
+import com.example.util.formatFirebaseErrorWithAppCheckHint
+import com.example.util.isAppCheckError
 import com.google.android.gms.tasks.Task
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseTooManyRequestsException
@@ -203,24 +206,26 @@ class CloudSyncRepository(private val context: Context) {
     @Volatile
     private var cacheConfigured = false
 
-    private fun getAuth(): FirebaseAuth? = runCatching {
-        if (FirebaseApp.getApps(context).isEmpty()) {
-            FirebaseApp.initializeApp(context)
+    private fun ensureFirebaseWithAppCheck() {
+        val appContext = context.applicationContext ?: context
+        if (FirebaseApp.getApps(appContext).isEmpty()) {
+            FirebaseApp.initializeApp(appContext)
         }
+        configureAppCheck(appContext)
+    }
+
+    private fun getAuth(): FirebaseAuth? = runCatching {
+        ensureFirebaseWithAppCheck()
         FirebaseAuth.getInstance()
     }.getOrNull()
 
     private fun getFunctions(): FirebaseFunctions? = runCatching {
-        if (FirebaseApp.getApps(context).isEmpty()) {
-            FirebaseApp.initializeApp(context)
-        }
+        ensureFirebaseWithAppCheck()
         FirebaseFunctions.getInstance(FUNCTIONS_REGION)
     }.getOrNull()
 
     private fun getFirestore(): FirebaseFirestore? = runCatching {
-        if (FirebaseApp.getApps(context).isEmpty()) {
-            FirebaseApp.initializeApp(context)
-        }
+        ensureFirebaseWithAppCheck()
         val dbId = context.getString(R.string.firestore_database_id)
         val instance = FirebaseFirestore.getInstance(dbId)
         if (!cacheConfigured) {
@@ -424,7 +429,15 @@ class CloudSyncRepository(private val context: Context) {
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.CREATE, "workspaces")
-            Result.failure(e)
+            val wrapped = if (isAppCheckError(e)) {
+                IllegalStateException(
+                    formatFirebaseErrorWithAppCheckHint(context, e, "App Check verification failed."),
+                    e
+                )
+            } else {
+                e
+            }
+            Result.failure(wrapped)
         }
     }
 
@@ -967,8 +980,16 @@ class CloudSyncRepository(private val context: Context) {
             } catch (sendErr: Exception) {
                 Log.w(TAG, "Initial sendEmailVerification failed for $cleanEmail", sendErr)
                 emailSent = false
-                warning = sendErr.message?.takeIf { it.isNotBlank() }
-                    ?: "Account created, but verification email could not be sent right now. Tap Resend Verification Email."
+                warning = if (isAppCheckError(sendErr)) {
+                    formatFirebaseErrorWithAppCheckHint(
+                        context,
+                        sendErr,
+                        "Account created, but App Check blocked verification email delivery."
+                    )
+                } else {
+                    sendErr.message?.takeIf { it.isNotBlank() }
+                        ?: "Account created, but verification email could not be sent right now. Tap Resend Verification Email."
+                }
             }
             Result.success(
                 AdminVerificationPendingResult(
@@ -989,11 +1010,12 @@ class CloudSyncRepository(private val context: Context) {
                 )
             )
         } catch (e: FirebaseAuthException) {
-            val msg = when (e.errorCode) {
-                "ERROR_EMAIL_ALREADY_IN_USE" ->
+            val msg = when {
+                isAppCheckError(e) -> formatFirebaseErrorWithAppCheckHint(context, e, "Admin Sign Up blocked by App Check.")
+                e.errorCode == "ERROR_EMAIL_ALREADY_IN_USE" ->
                     "An Admin account with this email already exists. Please use Admin Login (you can also resend your verification email there)."
-                "ERROR_INVALID_EMAIL" -> "Please enter a valid Email Address."
-                "ERROR_WEAK_PASSWORD" -> "Password is too weak. Choose a stronger password."
+                e.errorCode == "ERROR_INVALID_EMAIL" -> "Please enter a valid Email Address."
+                e.errorCode == "ERROR_WEAK_PASSWORD" -> "Password is too weak. Choose a stronger password."
                 else -> e.message?.takeIf { it.isNotBlank() } ?: "Admin Sign Up failed."
             }
             Result.failure(IllegalStateException(msg, e))
@@ -1003,7 +1025,12 @@ class CloudSyncRepository(private val context: Context) {
             )
         } catch (e: Exception) {
             Log.e(TAG, "registerAdminWithEmailVerification failed", e)
-            Result.failure(IllegalStateException(e.message?.takeIf { it.isNotBlank() } ?: "Admin Sign Up failed.", e))
+            val msg = if (isAppCheckError(e)) {
+                formatFirebaseErrorWithAppCheckHint(context, e, "Admin Sign Up blocked by App Check.")
+            } else {
+                e.message?.takeIf { it.isNotBlank() } ?: "Admin Sign Up failed."
+            }
+            Result.failure(IllegalStateException(msg, e))
         }
     }
 
@@ -1027,10 +1054,11 @@ class CloudSyncRepository(private val context: Context) {
             throw e
         } catch (e: Exception) {
             Log.w(TAG, "reloadAndCheckCurrentUserEmailVerified failed", e)
-            val msg = if (e.message?.contains("network", ignoreCase = true) == true) {
-                "Network unavailable. Check your internet connection and tap Continue again."
-            } else {
-                e.message?.takeIf { it.isNotBlank() } ?: "Unable to check verification status."
+            val msg = when {
+                isAppCheckError(e) -> formatFirebaseErrorWithAppCheckHint(context, e, "Unable to check verification status.")
+                e.message?.contains("network", ignoreCase = true) == true ->
+                    "Network unavailable. Check your internet connection and tap Continue again."
+                else -> e.message?.takeIf { it.isNotBlank() } ?: "Unable to check verification status."
             }
             Result.failure(IllegalStateException(msg, e))
         }
@@ -1061,12 +1089,12 @@ class CloudSyncRepository(private val context: Context) {
         } catch (e: Exception) {
             Log.w(TAG, "resendCurrentAdminVerificationEmail failed", e)
             val raw = e.message.orEmpty()
-            val msg = if (raw.contains("too-many-requests", ignoreCase = true) ||
-                raw.contains("blocked all requests", ignoreCase = true)
-            ) {
-                "Too many verification emails requested. Please wait a few minutes and check your inbox/spam folder."
-            } else {
-                raw.ifBlank { "Failed to send verification email." }
+            val msg = when {
+                isAppCheckError(e) -> formatFirebaseErrorWithAppCheckHint(context, e, "Failed to send verification email.")
+                raw.contains("too-many-requests", ignoreCase = true) ||
+                    raw.contains("blocked all requests", ignoreCase = true) ->
+                    "Too many verification emails requested. Please wait a few minutes and check your inbox/spam folder."
+                else -> raw.ifBlank { "Failed to send verification email." }
             }
             Result.failure(IllegalStateException(msg, e))
         }
@@ -1171,13 +1199,13 @@ class CloudSyncRepository(private val context: Context) {
             throw e
         } catch (e: Exception) {
             val rawMsg = e.message.orEmpty()
-            val mappedMsg = if (rawMsg.contains("USER_DISABLED", ignoreCase = true) ||
-                rawMsg.contains("disabled by an administrator", ignoreCase = true) ||
-                rawMsg.contains(AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE, ignoreCase = true)
-            ) {
-                AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE
-            } else {
-                rawMsg.ifBlank { "Invalid email or password." }
+            val mappedMsg = when {
+                isAppCheckError(e) -> formatFirebaseErrorWithAppCheckHint(context, e, "Sign-in blocked by App Check.")
+                rawMsg.contains("USER_DISABLED", ignoreCase = true) ||
+                    rawMsg.contains("disabled by an administrator", ignoreCase = true) ||
+                    rawMsg.contains(AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE, ignoreCase = true) ->
+                    AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE
+                else -> rawMsg.ifBlank { "Invalid email or password." }
             }
             Result.failure(IllegalStateException(mappedMsg, e))
         }
@@ -1580,12 +1608,12 @@ class CloudSyncRepository(private val context: Context) {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Email/Password sign-in failed for $cleanEmail", e)
-            Result.failure(
-                IllegalStateException(
-                    e.message ?: "Invalid email or password, or Email/Password login is disabled.",
-                    e
-                )
-            )
+            val msg = if (isAppCheckError(e)) {
+                formatFirebaseErrorWithAppCheckHint(context, e, "Technician login blocked by App Check.")
+            } else {
+                e.message ?: "Invalid email or password, or Email/Password login is disabled."
+            }
+            Result.failure(IllegalStateException(msg, e))
         }
     }
 

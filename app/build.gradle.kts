@@ -45,11 +45,26 @@ android {
       isCrunchPngs = false
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      buildConfigField("String", "APPCHECK_DEBUG_TOKEN", "\"\"")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
       signingConfig = signingConfigs.getByName("release")
     }
     debug {
+      val localEnvFile = rootProject.file(".env")
+      val envTokenFromFile = if (localEnvFile.exists()) {
+        localEnvFile.readLines()
+          .firstOrNull { it.trim().startsWith("FIREBASE_APPCHECK_DEBUG_TOKEN=") }
+          ?.substringAfter("=")
+          ?.trim()
+          ?.removeSurrounding("\"")
+          ?.removeSurrounding("'")
+          .orEmpty()
+      } else ""
+      val debugAppCheckToken = (System.getenv("FIREBASE_APPCHECK_DEBUG_TOKEN") ?: envTokenFromFile)
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+      buildConfigField("String", "APPCHECK_DEBUG_TOKEN", "\"$debugAppCheckToken\"")
       // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
       // AI Studio.
       signingConfig = signingConfigs.getByName("debugConfig")
@@ -115,8 +130,8 @@ dependencies {
   implementation(libs.androidx.credentials.play.services)
   implementation(libs.googleid)
   implementation(libs.play.services.auth)
-  implementation(libs.firebase.appcheck.recaptcha)
-  implementation(libs.firebase.appcheck.debug)
+  implementation(libs.firebase.appcheck.playintegrity)
+  debugImplementation(libs.firebase.appcheck.debug)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   // implementation(libs.logging.interceptor)

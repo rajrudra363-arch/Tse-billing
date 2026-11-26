@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.example.R
+import com.example.data.AppIdentity
 import com.example.ui.theme.GoldAccent
 import com.example.ui.theme.NavyDeep
 import com.example.ui.theme.TealAccent
@@ -86,7 +87,7 @@ fun TseShieldLogo(
         } else {
             Image(
                 painter = painterResource(id = R.drawable.img_tse_logo),
-                contentDescription = "Total Solution Enterprises Logo",
+                contentDescription = "${AppIdentity.OFFICIAL_COMPANY_NAME} Logo",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )

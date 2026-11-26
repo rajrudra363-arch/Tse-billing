@@ -45,6 +45,10 @@ class BillingRepository(
     private val expenseDao = db.expenseDao()
     private val trashDao = db.trashItemDao()
     private val auditDao = db.auditLogDao()
+    private val comboFileDao = db.productComboFileDao()
+    private val upiTxDao = db.upiTransactionDao()
+    private val employeeDao = db.employeeDao()
+    private val salaryPaymentDao = db.salaryPaymentDao()
 
     private val _volatileCloudActive = MutableStateFlow(false)
     val isVolatileCloudMode: StateFlow<Boolean> = _volatileCloudActive.asStateFlow()
@@ -60,6 +64,10 @@ class BillingRepository(
     private val _volatileExpenses = MutableStateFlow<List<ExpenseEntity>>(emptyList())
     private val _volatileTrashItems = MutableStateFlow<List<TrashItemEntity>>(emptyList())
     private val _volatileAuditLogs = MutableStateFlow<List<AuditLogEntity>>(emptyList())
+    private val _volatileComboFiles = MutableStateFlow<List<ProductComboFileEntity>>(emptyList())
+    private val _volatileUpiTransactions = MutableStateFlow<List<UpiTransactionEntity>>(emptyList())
+    private val _volatileEmployees = MutableStateFlow<List<EmployeeEntity>>(emptyList())
+    private val _volatileSalaryPayments = MutableStateFlow<List<SalaryPaymentEntity>>(emptyList())
     private val _volatileCompany = MutableStateFlow<CompanySettings?>(null)
     private val _volatileUpi = MutableStateFlow<UpiSettings?>(null)
     private val _volatileVoice = MutableStateFlow<VoiceAndNoteSettings?>(null)
@@ -160,6 +168,83 @@ class BillingRepository(
         m[KEY_PREFILL_INVITE_CODE].orEmpty()
     }
 
+    val productComboFiles: Flow<List<ProductComboFile>> = combine(
+        comboFileDao.observeAll(),
+        rawProducts,
+        _volatileCloudActive,
+        _volatileComboFiles
+    ) { localCombos, rawList, volatile, cloudCombos ->
+        val primary = (if (volatile) cloudCombos else localCombos).map { ProductComboFileJson.fromEntity(it) }
+        if (primary.isNotEmpty() || volatile) {
+            primary.sortedByDescending { it.updatedAt }
+        } else {
+            // Fallback display for unmigrated legacy combos until migration completes
+            rawList
+                .filter { it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
+                .mapNotNull { row ->
+                    ComboPackageJson.fromSingleJson(row.unit)?.let { pkg ->
+                        ProductComboFile(
+                            comboFileId = pkg.id,
+                            companyId = "",
+                            name = row.name,
+                            description = pkg.description,
+                            items = pkg.items.map { itm ->
+                                ProductComboItem(
+                                    productId = itm.productId,
+                                    productName = itm.productName,
+                                    unit = itm.unit,
+                                    qty = itm.qty,
+                                    catalogRate = itm.rate,
+                                    folder = itm.folder
+                                )
+                            },
+                            comboPrice = pkg.totalAmount,
+                            createdAt = pkg.createdAt,
+                            updatedAt = pkg.createdAt
+                        )
+                    }
+                }
+                .sortedByDescending { it.updatedAt }
+        }
+    }
+
+    val upiTransactions: Flow<List<UpiTransactionEntity>> = combine(
+        upiTxDao.observeAll(),
+        _volatileCloudActive,
+        _volatileUpiTransactions
+    ) { local, volatile, cloud ->
+        (if (volatile) cloud else local).sortedByDescending { it.updatedAt }
+    }
+
+    // Super Admin ONLY: cleared/empty for Admin and Technician
+    val employees: Flow<List<EmployeeEntity>> = combine(
+        employeeDao.observeAll(),
+        _volatileCloudActive,
+        _volatileDeviceRole,
+        _volatileEmployees
+    ) { local, volatile, role, cloud ->
+        val norm = normalizeRole(role)
+        when {
+            volatile && norm == "super_admin" -> cloud.sortedBy { it.name.lowercase(Locale.ROOT) }
+            volatile -> emptyList()
+            else -> local
+        }
+    }
+
+    val salaryPayments: Flow<List<SalaryPaymentEntity>> = combine(
+        salaryPaymentDao.observeAll(),
+        _volatileCloudActive,
+        _volatileDeviceRole,
+        _volatileSalaryPayments
+    ) { local, volatile, role, cloud ->
+        val norm = normalizeRole(role)
+        when {
+            volatile && norm == "super_admin" -> cloud.sortedByDescending { it.createdAt }
+            volatile -> emptyList()
+            else -> local
+        }
+    }
+
     val comboPackages: Flow<List<ComboPackage>> = combine(
         rawProducts,
         configMap,
@@ -186,13 +271,13 @@ class BillingRepository(
             techShareCode = m[KEY_CLOUD_TECH_CODE].orEmpty(),
             superShareCode = m[KEY_CLOUD_SUPER_CODE].orEmpty(),
             deviceRole = m[KEY_CLOUD_DEVICE_ROLE].orEmpty().ifBlank { "admin" },
-            companyName = m[KEY_COMPANY_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_NAME
+            companyName = AppIdentity.OFFICIAL_COMPANY_NAME
         )
     }
 
     private val localCompanySettings: Flow<CompanySettings> = configMap.map { m ->
         CompanySettings(
-            companyName = m[KEY_COMPANY_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_NAME,
+            companyName = AppIdentity.OFFICIAL_COMPANY_NAME,
             mobile = m[KEY_COMPANY_MOBILE]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_MOBILE,
             email = m[KEY_COMPANY_EMAIL]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_EMAIL,
             address = m[KEY_COMPANY_ADDRESS]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_ADDRESS,
@@ -206,7 +291,8 @@ class BillingRepository(
         _volatileCloudActive,
         _volatileCompany
     ) { local, volatile, cloud ->
-        if (volatile && cloud != null) cloud else local
+        val base = if (volatile && cloud != null) cloud else local
+        base.copy(companyName = AppIdentity.OFFICIAL_COMPANY_NAME)
     }
 
     private val localVoiceSettings: Flow<VoiceAndNoteSettings> = configMap.map { m ->
@@ -294,7 +380,10 @@ class BillingRepository(
             username = m[KEY_TECH_VERIFIED_USERNAME].orEmpty().trim(),
             name = m[KEY_TECH_VERIFIED_NAME].orEmpty().trim(),
             workspaceId = m[KEY_TECH_VERIFIED_WORKSPACE_ID].orEmpty().trim(),
-            companyName = m[KEY_TECH_VERIFIED_COMPANY].orEmpty().trim()
+            companyName = AppIdentity.OFFICIAL_COMPANY_NAME,
+            techId = m[KEY_TECH_VERIFIED_TECH_ID].orEmpty().trim(),
+            phone = m[KEY_TECH_VERIFIED_PHONE].orEmpty().trim(),
+            mustChangePassword = m[KEY_TECH_MUST_CHANGE_PASSWORD] == "1"
         )
     }
 
@@ -305,7 +394,10 @@ class BillingRepository(
                 AppConfigEntity(KEY_TECH_VERIFIED_USERNAME, state.username.trim()),
                 AppConfigEntity(KEY_TECH_VERIFIED_NAME, state.name.trim()),
                 AppConfigEntity(KEY_TECH_VERIFIED_WORKSPACE_ID, state.workspaceId.trim()),
-                AppConfigEntity(KEY_TECH_VERIFIED_COMPANY, state.companyName.trim())
+                AppConfigEntity(KEY_TECH_VERIFIED_COMPANY, AppIdentity.OFFICIAL_COMPANY_NAME),
+                AppConfigEntity(KEY_TECH_VERIFIED_TECH_ID, state.techId.trim()),
+                AppConfigEntity(KEY_TECH_VERIFIED_PHONE, state.phone.trim()),
+                AppConfigEntity(KEY_TECH_MUST_CHANGE_PASSWORD, if (state.mustChangePassword) "1" else "0")
             )
         )
     }
@@ -317,7 +409,10 @@ class BillingRepository(
                 AppConfigEntity(KEY_TECH_VERIFIED_USERNAME, ""),
                 AppConfigEntity(KEY_TECH_VERIFIED_NAME, ""),
                 AppConfigEntity(KEY_TECH_VERIFIED_WORKSPACE_ID, ""),
-                AppConfigEntity(KEY_TECH_VERIFIED_COMPANY, "")
+                AppConfigEntity(KEY_TECH_VERIFIED_COMPANY, ""),
+                AppConfigEntity(KEY_TECH_VERIFIED_TECH_ID, ""),
+                AppConfigEntity(KEY_TECH_VERIFIED_PHONE, ""),
+                AppConfigEntity(KEY_TECH_MUST_CHANGE_PASSWORD, "0")
             )
         )
     }
@@ -391,29 +486,45 @@ class BillingRepository(
     }
 
     suspend fun authenticate(username: String, password: String): UserSession? {
+        return authenticateChecked(username, password).getOrNull()
+    }
+
+    suspend fun authenticateChecked(username: String, password: String): Result<UserSession> {
         val clean = username.trim()
         val list = if (_volatileCloudActive.value) _volatileAccounts.value else userDao.getAll()
-        val account = list.firstOrNull { it.username.equals(clean, ignoreCase = true) }
-            ?: if (clean.equals(AuthPolicy.CANONICAL_ADMIN_USERNAME, ignoreCase = true) ||
-                clean.equals("TotalSolutionEnterprises", ignoreCase = true)
-            ) {
-                list.firstOrNull { normalizeRole(it.role) == "admin" }
-            } else {
-                null
-            }
-            ?: userDao.findByUsername(clean)
-            ?: return null
-        val hash = AuthHasher.sha256(password)
-        return if (account.passwordHash == hash) {
-            UserSession(
-                username = account.username,
-                displayName = account.displayName.ifBlank { account.username },
-                role = normalizeRole(account.role),
-                phone = account.phone,
-                photoBase64 = account.photoBase64
-            )
+        val account = list.firstOrNull {
+            it.username.equals(clean, ignoreCase = true) ||
+                (it.email.isNotBlank() && it.email.equals(clean, ignoreCase = true))
+        } ?: if (clean.equals(AuthPolicy.CANONICAL_ADMIN_USERNAME, ignoreCase = true) ||
+            clean.equals("TotalSolutionEnterprises", ignoreCase = true)
+        ) {
+            list.firstOrNull { normalizeRole(it.role) == "admin" }
         } else {
             null
+        } ?: userDao.findByUsername(clean)
+            ?: return Result.failure(IllegalArgumentException("Invalid username or password."))
+
+        val normRole = normalizeRole(account.role)
+        if (normRole == "technician" && !account.loginEnabled) {
+            return Result.failure(IllegalStateException(AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE))
+        }
+        val hash = AuthHasher.sha256(password)
+        return if (account.passwordHash == hash) {
+            Result.success(
+                UserSession(
+                    username = account.username,
+                    displayName = account.displayName.ifBlank { account.username },
+                    role = normRole,
+                    phone = account.phone,
+                    photoBase64 = account.photoBase64,
+                    email = account.email,
+                    uid = account.uid,
+                    techId = account.techId,
+                    companyId = account.companyId
+                )
+            )
+        } else {
+            Result.failure(IllegalArgumentException("Invalid username or password."))
         }
     }
 
@@ -890,21 +1001,47 @@ class BillingRepository(
         val wsId = getActiveWorkspaceId()
         val docType = DocumentType.fromString(bill.documentType)
         val parsedItems = InvoiceItemJson.fromJson(bill.itemsJson)
-        val stockValidation = validateStockForBill(parsedItems, bill.id, docType)
-        if (stockValidation.isFailure) {
-            return Result.failure(stockValidation.exceptionOrNull()!!)
+        val existingBeforeSave = if (_volatileCloudActive.value) {
+            _volatileBills.value.firstOrNull { it.id == bill.id }
+        } else {
+            billDao.findById(bill.id)
         }
-        val docDeltas = stockValidation.getOrDefault(emptyMap())
+        val skipStockValidation = existingBeforeSave == null && bill.stockDeducted
+        val docDeltas = if (skipStockValidation) {
+            emptyMap()
+        } else {
+            val stockValidation = validateStockForBill(parsedItems, bill.id, docType)
+            if (stockValidation.isFailure) {
+                return Result.failure(stockValidation.exceptionOrNull()!!)
+            }
+            stockValidation.getOrDefault(emptyMap())
+        }
+
+        val normalizedPaid = bill.paidAmount.coerceAtLeast(0.0)
+        val normalizedDue = (bill.grandTotal.coerceAtLeast(0.0) - normalizedPaid).coerceAtLeast(0.0)
+        val computedPayStatus = if (bill.paymentStatus.isNotBlank()) {
+            bill.paymentStatus
+        } else {
+            BillPaymentStatus.compute(bill.grandTotal, normalizedPaid).code
+        }
+        val targetStockDeducted = docType == DocumentType.BILL
 
         if (_volatileCloudActive.value) {
             // Technician / non-Admin cloud device: NEVER write company/customer/bill data to Room SQLite!
             val existing = _volatileBills.value.firstOrNull { it.id == bill.id }
+            val prepped = bill.copy(
+                paidAmount = normalizedPaid,
+                dueAmount = normalizedDue,
+                paymentStatus = computedPayStatus,
+                stockDeducted = existing?.stockDeducted == true || bill.stockDeducted || targetStockDeducted
+            )
             val safeBill = if (existing != null && existing.staffRating in 1..5) {
-                bill.copy(staffRating = existing.staffRating, staffReviewNote = existing.staffReviewNote)
+                prepped.copy(staffRating = existing.staffRating, staffReviewNote = existing.staffReviewNote)
             } else {
-                bill
+                prepped
             }
-            if (wsId.isNotBlank() && cloudSync != null && docType == DocumentType.BILL && docDeltas.isNotEmpty()) {
+            val shouldDeductLocally = !(existing == null && bill.stockDeducted)
+            if (wsId.isNotBlank() && cloudSync != null && docType == DocumentType.BILL && docDeltas.isNotEmpty() && shouldDeductLocally) {
                 val txRes = cloudSync.commitBillWithAtomicStockTransaction(wsId, safeBill, docDeltas)
                 if (txRes.isFailure) {
                     return txRes
@@ -912,7 +1049,9 @@ class BillingRepository(
             } else if (wsId.isNotBlank()) {
                 cloudSync?.pushBill(wsId, safeBill)
             }
-            adjustVolatileStockForBillChange(existing, safeBill, wsId, pushToCloud = docDeltas.isEmpty())
+            if (shouldDeductLocally) {
+                adjustVolatileStockForBillChange(existing, safeBill, wsId, pushToCloud = docDeltas.isEmpty())
+            }
             _volatileBills.value = (listOf(safeBill) + _volatileBills.value.filterNot { it.id == safeBill.id })
                 .sortedByDescending { it.updatedAt }
 
@@ -948,29 +1087,40 @@ class BillingRepository(
                 })
             }
             if (safeBill.helpRequestId > 0L) {
-                linkBillToHelpRequest(safeBill.helpRequestId, safeBill.id)
+                linkBillToHelpRequest(safeBill.helpRequestId, safeBill.id, docType)
             }
             return Result.success(Unit)
         }
 
         val existing = billDao.findById(bill.id)
+        val alreadyServerDeductedOnWebhook = existing == null && bill.stockDeducted
+        val prepped = bill.copy(
+            paidAmount = normalizedPaid,
+            dueAmount = normalizedDue,
+            paymentStatus = computedPayStatus,
+            stockDeducted = existing?.stockDeducted == true || bill.stockDeducted || targetStockDeducted
+        )
         val safeBill = if (existing != null && existing.staffRating in 1..5) {
-            bill.copy(
+            prepped.copy(
                 staffRating = existing.staffRating,
                 staffReviewNote = existing.staffReviewNote
             )
         } else {
-            bill
+            prepped
         }
         var atomicCloudDone = false
-        if (wsId.isNotBlank() && cloudSync != null && docType == DocumentType.BILL && docDeltas.isNotEmpty()) {
+        if (!alreadyServerDeductedOnWebhook && wsId.isNotBlank() && cloudSync != null && docType == DocumentType.BILL && docDeltas.isNotEmpty()) {
             val txRes = cloudSync.commitBillWithAtomicStockTransaction(wsId, safeBill, docDeltas)
             if (txRes.isFailure) {
                 return txRes
             }
             atomicCloudDone = true
         }
-        val modifiedProducts = adjustLocalStockForBillChange(existing, safeBill)
+        val modifiedProducts = if (!alreadyServerDeductedOnWebhook) {
+            adjustLocalStockForBillChange(existing, safeBill)
+        } else {
+            emptyList()
+        }
         billDao.upsert(safeBill)
         if (wsId.isNotBlank() && !atomicCloudDone) {
             cloudSync?.pushBill(wsId, safeBill)
@@ -1006,7 +1156,7 @@ class BillingRepository(
             }
         }
         if (safeBill.helpRequestId > 0L) {
-            linkBillToHelpRequest(safeBill.helpRequestId, safeBill.id)
+            linkBillToHelpRequest(safeBill.helpRequestId, safeBill.id, docType)
         }
         return Result.success(Unit)
     }
@@ -1108,6 +1258,10 @@ class BillingRepository(
         forceAdmin: Boolean = false,
         nowMillis: Long = System.currentTimeMillis()
     ): Boolean {
+        // Strict Admin-only bill deletion guard (Technicians and Super Admins cannot delete bills)
+        if (normalizeRole(actorRole) != "admin" && !forceAdmin) {
+            return false
+        }
         val existing = billDao.findById(id) ?: return true
         if (existing.staffRating in 1..5 && !forceAdmin) {
             return false
@@ -1170,11 +1324,15 @@ class BillingRepository(
     ): BillEntity? {
         val existing = billDao.findById(billId) ?: return null
         val lockedRating = existing.staffRating in 1..5
+        val safeGrand = grandTotal.coerceAtLeast(0.0)
+        val safePaid = paidAmount.coerceAtLeast(0.0)
+        val safeDue = dueAmount.coerceAtLeast(0.0)
         val updated = existing.copy(
             discount = discount.coerceAtLeast(0.0),
-            grandTotal = grandTotal.coerceAtLeast(0.0),
-            paidAmount = paidAmount.coerceAtLeast(0.0),
-            dueAmount = dueAmount.coerceAtLeast(0.0),
+            grandTotal = safeGrand,
+            paidAmount = safePaid,
+            dueAmount = safeDue,
+            paymentStatus = BillPaymentStatus.compute(safeGrand, safePaid).code,
             staffRating = if (lockedRating) existing.staffRating else staffRating.coerceIn(0, 5),
             staffReviewNote = if (lockedRating) existing.staffReviewNote else staffReviewNote.trim(),
             updatedAt = System.currentTimeMillis()
@@ -1433,11 +1591,18 @@ class BillingRepository(
         return saved
     }
 
+    private fun generateHelpTokenId(requestId: Long, nowMillis: Long = System.currentTimeMillis()): String {
+        val suffix = ((requestId * 37L + (nowMillis % 10000L)) % 900000L + 100000L)
+        return "TS-HT-$suffix"
+    }
+
     suspend fun approveQuotationWithInstallationDate(
         requestId: Long,
         installationDate: String,
         assignedTechnician: String = "",
-        nowMillis: Long = System.currentTimeMillis()
+        nowMillis: Long = System.currentTimeMillis(),
+        quotationId: String = "",
+        approvedQuotationJson: String = ""
     ): Result<CustomerHelpEntity> {
         val cleanDate = installationDate.trim()
         if (!Regex("\\d{4}-\\d{2}-\\d{2}").matches(cleanDate)) {
@@ -1449,13 +1614,19 @@ class BillingRepository(
             helpDao.findById(requestId)
         } ?: return Result.failure(IllegalStateException("Quotation request not found."))
 
+        val cleanToken = current.helpTokenId.ifBlank { generateHelpTokenId(current.id, nowMillis) }
+        val cleanQuotationId = quotationId.trim().ifBlank { current.quotationId.ifBlank { "QT-${current.id}" } }
+        val cleanQuotationJson = approvedQuotationJson.trim().ifBlank { current.approvedQuotationJson }
         val updated = current.copy(
             category = HelpCategory.INSTALLATION.code,
             quotationStatus = "APPROVED",
             installationDate = cleanDate,
             installationReminderSent = false,
             assignedTechnician = assignedTechnician.trim().ifBlank { current.assignedTechnician },
-            status = "OPEN",
+            helpTokenId = cleanToken,
+            quotationId = cleanQuotationId,
+            approvedQuotationJson = cleanQuotationJson,
+            status = HelpWorkflowStatus.OPEN,
             updatedAt = nowMillis
         )
         if (_volatileCloudActive.value) {
@@ -1466,6 +1637,106 @@ class BillingRepository(
         val wsId = getActiveWorkspaceId()
         if (wsId.isNotBlank()) {
             cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = false)
+        }
+        return Result.success(updated)
+    }
+
+    suspend fun postponeHelpRequest(
+        requestId: Long,
+        technicianUsername: String,
+        reason: String,
+        newInstallationDate: String = "",
+        nowMillis: Long = System.currentTimeMillis()
+    ): Result<CustomerHelpEntity> {
+        val current = if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value.firstOrNull { it.id == requestId }
+        } else {
+            helpDao.findById(requestId)
+        } ?: return Result.failure(IllegalStateException("Service request not found."))
+
+        val updated = current.copy(
+            status = HelpWorkflowStatus.POSTPONED,
+            rejectedReason = reason.trim().ifBlank { "Postponed by ${technicianUsername.ifBlank { "Technician" }}" },
+            installationDate = newInstallationDate.trim().ifBlank { current.installationDate },
+            updatedAt = nowMillis
+        )
+        if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value = _volatileHelpRequests.value.map { if (it.id == updated.id) updated else it }
+        } else {
+            helpDao.upsert(updated)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = true)
+        }
+        return Result.success(updated)
+    }
+
+    suspend fun startInstallationWork(
+        requestId: Long,
+        technicianUsername: String,
+        isAdmin: Boolean = false,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Result<CustomerHelpEntity> {
+        val current = if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value.firstOrNull { it.id == requestId }
+        } else {
+            helpDao.findById(requestId)
+        } ?: return Result.failure(IllegalStateException("Installation request not found."))
+
+        if (!isAdmin && current.acceptedBy.isNotBlank() &&
+            !current.acceptedBy.equals(technicianUsername, ignoreCase = true)
+        ) {
+            return Result.failure(IllegalStateException("Only the assigned technician can start installation."))
+        }
+        val updated = current.copy(
+            status = HelpWorkflowStatus.INSTALLATION_IN_PROGRESS,
+            acceptedBy = current.acceptedBy.ifBlank { technicianUsername },
+            acceptedAt = if (current.acceptedAt > 0L) current.acceptedAt else nowMillis,
+            updatedAt = nowMillis
+        )
+        if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value = _volatileHelpRequests.value.map { if (it.id == updated.id) updated else it }
+        } else {
+            helpDao.upsert(updated)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = !isAdmin)
+        }
+        return Result.success(updated)
+    }
+
+    suspend fun completeInstallationWork(
+        requestId: Long,
+        technicianUsername: String,
+        isAdmin: Boolean = false,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Result<CustomerHelpEntity> {
+        val current = if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value.firstOrNull { it.id == requestId }
+        } else {
+            helpDao.findById(requestId)
+        } ?: return Result.failure(IllegalStateException("Installation request not found."))
+
+        if (!isAdmin && current.acceptedBy.isNotBlank() &&
+            !current.acceptedBy.equals(technicianUsername, ignoreCase = true)
+        ) {
+            return Result.failure(IllegalStateException("Only the assigned technician can complete installation."))
+        }
+        val updated = current.copy(
+            status = HelpWorkflowStatus.INSTALLATION_COMPLETED,
+            solvedAt = if (current.solvedAt == 0L) nowMillis else current.solvedAt,
+            updatedAt = nowMillis
+        )
+        if (_volatileCloudActive.value) {
+            _volatileHelpRequests.value = _volatileHelpRequests.value.map { if (it.id == updated.id) updated else it }
+        } else {
+            helpDao.upsert(updated)
+        }
+        val wsId = getActiveWorkspaceId()
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushHelpRequest(wsId, updated, isTechnicianStatusUpdate = !isAdmin)
         }
         return Result.success(updated)
     }
@@ -1483,7 +1754,7 @@ class BillingRepository(
 
         val updated = current.copy(
             quotationStatus = "REJECTED",
-            status = "REJECTED",
+            status = HelpWorkflowStatus.REJECTED,
             rejectedReason = reason.trim(),
             updatedAt = nowMillis
         )
@@ -1513,7 +1784,7 @@ class BillingRepository(
         } ?: return Result.failure(IllegalStateException("Request not found."))
 
         val updated = current.copy(
-            status = "REJECTED",
+            status = HelpWorkflowStatus.REJECTED,
             rejectedReason = reason.trim().ifBlank { "Rejected by ${actorUsername.ifBlank { "Technician" }}" },
             updatedAt = nowMillis
         )
@@ -1574,7 +1845,7 @@ class BillingRepository(
         }
         val techPhone = account?.phone?.takeIf { it.isNotBlank() } ?: technician.phone
         val updated = current.copy(
-            status = "ACCEPTED",
+            status = HelpWorkflowStatus.ACCEPTED,
             acceptedBy = technician.username,
             acceptedByName = technician.displayName.ifBlank { technician.username },
             acceptedByPhone = techPhone,
@@ -1619,7 +1890,7 @@ class BillingRepository(
             }
         }
         val updated = current.copy(
-            status = "SOLVED",
+            status = HelpWorkflowStatus.SOLVED,
             solvedAt = nowMillis,
             updatedAt = nowMillis
         )
@@ -1661,7 +1932,7 @@ class BillingRepository(
             }
         }
         val updated = current.copy(
-            status = "NOT_SOLVED",
+            status = HelpWorkflowStatus.NOT_SOLVED,
             updatedAt = nowMillis
         )
         if (_volatileCloudActive.value) {
@@ -1676,16 +1947,32 @@ class BillingRepository(
         return Result.success(updated)
     }
 
-    suspend fun linkBillToHelpRequest(helpRequestId: Long, billId: String) {
+    suspend fun linkBillToHelpRequest(
+        helpRequestId: Long,
+        billId: String,
+        docType: DocumentType = DocumentType.BILL
+    ) {
         val current = if (_volatileCloudActive.value) {
             _volatileHelpRequests.value.firstOrNull { it.id == helpRequestId }
         } else {
             helpDao.findById(helpRequestId)
         } ?: return
+        val nextStatus = if (docType == DocumentType.BILL) {
+            if (current.category == HelpCategory.INSTALLATION.code || current.helpTokenId.isNotBlank()) {
+                HelpWorkflowStatus.BILLED
+            } else if (current.status == HelpWorkflowStatus.OPEN || current.status == HelpWorkflowStatus.ACCEPTED) {
+                HelpWorkflowStatus.SOLVED
+            } else {
+                current.status
+            }
+        } else {
+            current.status
+        }
         val updated = current.copy(
-            billId = billId,
-            status = if (current.status == "OPEN" || current.status == "ACCEPTED") "SOLVED" else current.status,
-            solvedAt = if (current.solvedAt == 0L) System.currentTimeMillis() else current.solvedAt,
+            billId = if (docType == DocumentType.BILL) billId else current.billId,
+            quotationId = if (docType == DocumentType.QUOTATION) billId else current.quotationId,
+            status = nextStatus,
+            solvedAt = if (docType == DocumentType.BILL && current.solvedAt == 0L) System.currentTimeMillis() else current.solvedAt,
             updatedAt = System.currentTimeMillis()
         )
         if (_volatileCloudActive.value) {
@@ -1764,22 +2051,61 @@ class BillingRepository(
         rate: Double,
         folder: String = "General",
         stockQty: Double = 0.0,
-        minStockAlert: Double = 0.0
+        minStockAlert: Double = 0.0,
+        purchasePrice: Double = 0.0,
+        sku: String = "",
+        barcode: String = ""
     ) {
+        addProductValidated(name, unit, rate, folder, stockQty, minStockAlert, purchasePrice, sku, barcode)
+    }
+
+    suspend fun addProductValidated(
+        name: String,
+        unit: String,
+        rate: Double,
+        folder: String = "General",
+        stockQty: Double = 0.0,
+        minStockAlert: Double = 0.0,
+        purchasePrice: Double = 0.0,
+        sku: String = "",
+        barcode: String = ""
+    ): Result<ProductEntity> {
+        val cleanName = name.trim()
+        val cleanSku = sku.trim()
+        val cleanBarcode = barcode.trim()
+        if (cleanName.isBlank()) {
+            return Result.failure(IllegalArgumentException("Enter product name"))
+        }
+        val existingList = (if (_volatileCloudActive.value) _volatileProducts.value else productDao.getAll())
+            .filter { !it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
+        if (existingList.any { it.name.trim().equals(cleanName, ignoreCase = true) }) {
+            return Result.failure(IllegalStateException("Product '$cleanName' already exists"))
+        }
+        if (cleanSku.isNotBlank() && existingList.any { it.sku.trim().equals(cleanSku, ignoreCase = true) }) {
+            return Result.failure(IllegalStateException("Duplicate SKU '$cleanSku' already assigned to another product"))
+        }
+        if (cleanBarcode.isNotBlank() && existingList.any { it.barcode.trim().equals(cleanBarcode, ignoreCase = true) }) {
+            return Result.failure(IllegalStateException("Duplicate Barcode '$cleanBarcode' already assigned to another product"))
+        }
         val entity = ProductEntity(
-            name = name.trim(),
+            name = cleanName,
             unit = unit.trim().ifEmpty { "Nos" },
             defaultRate = rate.coerceAtLeast(0.0),
             folder = folder.trim().ifEmpty { "General" },
             stockQty = stockQty.coerceAtLeast(0.0),
-            minStockAlert = minStockAlert.coerceAtLeast(0.0)
+            minStockAlert = minStockAlert.coerceAtLeast(0.0),
+            purchasePrice = purchasePrice.coerceAtLeast(0.0),
+            sku = cleanSku,
+            barcode = cleanBarcode
         )
         val rowId = productDao.upsert(entity)
         markStockTrackedIfNeeded(entity)
+        val saved = entity.copy(id = rowId)
         val wsId = getActiveWorkspaceId()
         if (wsId.isNotBlank()) {
-            cloudSync?.pushProduct(wsId, entity.copy(id = rowId))
+            cloudSync?.pushProduct(wsId, saved)
         }
+        return Result.success(saved)
     }
 
     suspend fun updateProduct(
@@ -1789,17 +2115,55 @@ class BillingRepository(
         rate: Double,
         folder: String = "General",
         stockQty: Double? = null,
-        minStockAlert: Double? = null
+        minStockAlert: Double? = null,
+        purchasePrice: Double? = null,
+        sku: String? = null,
+        barcode: String? = null
     ) {
+        updateProductValidated(id, name, unit, rate, folder, stockQty, minStockAlert, purchasePrice, sku, barcode)
+    }
+
+    suspend fun updateProductValidated(
+        id: Long,
+        name: String,
+        unit: String,
+        rate: Double,
+        folder: String = "General",
+        stockQty: Double? = null,
+        minStockAlert: Double? = null,
+        purchasePrice: Double? = null,
+        sku: String? = null,
+        barcode: String? = null
+    ): Result<Unit> {
+        val cleanName = name.trim()
+        if (cleanName.isBlank()) {
+            return Result.failure(IllegalArgumentException("Enter product name"))
+        }
         val old = productDao.findById(id)
+        val finalSku = (sku ?: old?.sku ?: "").trim()
+        val finalBarcode = (barcode ?: old?.barcode ?: "").trim()
+        val existingList = (if (_volatileCloudActive.value) _volatileProducts.value else productDao.getAll())
+            .filter { it.id != id && !it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
+        if (existingList.any { it.name.trim().equals(cleanName, ignoreCase = true) }) {
+            return Result.failure(IllegalStateException("Another product named '$cleanName' already exists"))
+        }
+        if (finalSku.isNotBlank() && existingList.any { it.sku.trim().equals(finalSku, ignoreCase = true) }) {
+            return Result.failure(IllegalStateException("Duplicate SKU '$finalSku' already assigned"))
+        }
+        if (finalBarcode.isNotBlank() && existingList.any { it.barcode.trim().equals(finalBarcode, ignoreCase = true) }) {
+            return Result.failure(IllegalStateException("Duplicate Barcode '$finalBarcode' already assigned"))
+        }
         val entity = ProductEntity(
             id = id,
-            name = name.trim(),
+            name = cleanName,
             unit = unit.trim().ifEmpty { "Nos" },
             defaultRate = rate.coerceAtLeast(0.0),
             folder = folder.trim().ifEmpty { "General" },
             stockQty = (stockQty ?: old?.stockQty ?: 0.0).coerceAtLeast(0.0),
-            minStockAlert = (minStockAlert ?: old?.minStockAlert ?: 0.0).coerceAtLeast(0.0)
+            minStockAlert = (minStockAlert ?: old?.minStockAlert ?: 0.0).coerceAtLeast(0.0),
+            purchasePrice = (purchasePrice ?: old?.purchasePrice ?: 0.0).coerceAtLeast(0.0),
+            sku = finalSku,
+            barcode = finalBarcode
         )
         productDao.upsert(entity)
         markStockTrackedIfNeeded(entity)
@@ -1807,6 +2171,7 @@ class BillingRepository(
         if (wsId.isNotBlank()) {
             cloudSync?.pushProduct(wsId, entity)
         }
+        return Result.success(Unit)
     }
 
     suspend fun deleteProduct(
@@ -1856,45 +2221,132 @@ class BillingRepository(
         }
     }
 
-    suspend fun saveComboPackage(pkg: ComboPackage) {
-        val cleanName = pkg.name.trim()
-        if (cleanName.isBlank() || pkg.items.isEmpty()) return
-        val cleanItems = pkg.items
-            .filter { it.productName.isNotBlank() }
+    /**
+     * Part 11: PRODUCT COMBO FILE CRUD — NEVER modifies original product prices, purchase prices, or stock.
+     */
+    suspend fun saveProductComboFile(combo: ProductComboFile): Result<ProductComboFile> {
+        val cleanName = combo.name.trim()
+        if (cleanName.length < 2) {
+            return Result.failure(IllegalArgumentException("Enter a Combo File Name (at least 2 characters)"))
+        }
+        val cleanItems = combo.items
+            .filter { it.productName.isNotBlank() && it.qty > 0.0 }
             .map {
                 it.copy(
                     productName = it.productName.trim(),
                     unit = it.unit.trim().ifBlank { "Nos" },
                     qty = it.qty.coerceAtLeast(0.01),
-                    rate = it.rate.coerceAtLeast(0.0)
+                    catalogRate = it.catalogRate.coerceAtLeast(0.0)
                 )
             }
-        if (cleanItems.isEmpty()) return
-        val cleanPkg = pkg.copy(name = cleanName, description = pkg.description.trim(), items = cleanItems)
-        val existingCombos = productDao.getAll().filter { it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
-        val existingMatch = existingCombos.firstOrNull { row ->
-            ComboPackageJson.fromSingleJson(row.unit)?.id == cleanPkg.id ||
-                row.name.trim().equals(cleanName, ignoreCase = true)
+        if (cleanItems.isEmpty()) {
+            return Result.failure(IllegalArgumentException("Select at least 1 product for the Combo File"))
         }
-        val entity = ProductEntity(
-            id = existingMatch?.id ?: 0L,
+        if (combo.comboPrice < 0.0) {
+            return Result.failure(IllegalArgumentException("Combo price cannot be negative"))
+        }
+        val wsId = getActiveWorkspaceId()
+        val now = System.currentTimeMillis()
+        val finalCombo = combo.copy(
+            comboFileId = combo.comboFileId.ifBlank { "combo_$now" },
+            companyId = combo.companyId.ifBlank { wsId },
             name = cleanName,
-            unit = ComboPackageJson.toSingleJson(cleanPkg),
-            defaultRate = cleanPkg.totalAmount.coerceAtLeast(0.0),
-            folder = COMBO_STORAGE_FOLDER,
-            stockQty = 0.0,
-            minStockAlert = 0.0
+            description = combo.description.trim(),
+            items = cleanItems,
+            comboPrice = combo.comboPrice.coerceAtLeast(0.0),
+            updatedAt = now
         )
-        val rowId = productDao.upsert(entity)
-        val persistedId = if (entity.id > 0L) entity.id else rowId
-        val savedEntity = entity.copy(id = persistedId)
+        val entity = ProductComboFileJson.toEntity(finalCombo)
+        if (_volatileCloudActive.value) {
+            _volatileComboFiles.value = (listOf(entity) + _volatileComboFiles.value.filterNot { it.comboFileId == entity.comboFileId })
+                .sortedByDescending { it.updatedAt }
+        } else {
+            comboFileDao.upsert(entity)
+        }
+        if (wsId.isNotBlank()) {
+            cloudSync?.pushProductComboFile(wsId, entity)
+        }
+        return Result.success(finalCombo)
+    }
+
+    suspend fun deleteProductComboFile(comboFileId: String) {
+        if (_volatileCloudActive.value) {
+            _volatileComboFiles.value = _volatileComboFiles.value.filterNot { it.comboFileId == comboFileId }
+        } else {
+            comboFileDao.deleteById(comboFileId)
+        }
         val wsId = getActiveWorkspaceId()
         if (wsId.isNotBlank()) {
-            cloudSync?.pushProduct(wsId, savedEntity)
+            cloudSync?.deleteProductComboFile(wsId, comboFileId)
         }
     }
 
+    suspend fun migrateLegacyComboPackagesIfNeeded() {
+        if (_volatileCloudActive.value) return
+        val existingCombos = comboFileDao.getAll()
+        if (existingCombos.isNotEmpty()) return
+        val legacyRows = productDao.getAll().filter { it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
+        val fromCfg = configDao.getValue(KEY_COMBO_PACKAGES).orEmpty()
+        val wsId = getActiveWorkspaceId()
+        val migrated = buildList {
+            legacyRows.forEach { row ->
+                ComboPackageJson.fromSingleJson(row.unit)?.let { pkg ->
+                    add(
+                        ProductComboFile(
+                            comboFileId = pkg.id,
+                            companyId = wsId,
+                            name = row.name,
+                            description = pkg.description,
+                            items = pkg.items.map {
+                                ProductComboItem(it.productId, it.productName, it.unit, it.qty, it.rate, it.folder)
+                            },
+                            comboPrice = pkg.totalAmount,
+                            createdAt = pkg.createdAt,
+                            updatedAt = pkg.createdAt
+                        )
+                    )
+                }
+            }
+            if (isEmpty() && fromCfg.isNotBlank()) {
+                ComboPackageJson.fromJson(fromCfg).forEach { pkg ->
+                    add(
+                        ProductComboFile(
+                            comboFileId = pkg.id,
+                            companyId = wsId,
+                            name = pkg.name,
+                            description = pkg.description,
+                            items = pkg.items.map {
+                                ProductComboItem(it.productId, it.productName, it.unit, it.qty, it.rate, it.folder)
+                            },
+                            comboPrice = pkg.totalAmount,
+                            createdAt = pkg.createdAt,
+                            updatedAt = pkg.createdAt
+                        )
+                    )
+                }
+            }
+        }
+        migrated.forEach { saveProductComboFile(it) }
+    }
+
+    suspend fun saveComboPackage(pkg: ComboPackage) {
+        val converted = ProductComboFile(
+            comboFileId = pkg.id,
+            companyId = getActiveWorkspaceId(),
+            name = pkg.name,
+            description = pkg.description,
+            items = pkg.items.map {
+                ProductComboItem(it.productId, it.productName, it.unit, it.qty, it.rate, it.folder)
+            },
+            comboPrice = pkg.totalAmount,
+            createdAt = pkg.createdAt,
+            updatedAt = System.currentTimeMillis()
+        )
+        saveProductComboFile(converted)
+    }
+
     suspend fun deleteComboPackage(id: String) {
+        deleteProductComboFile(id)
         val existingCombos = productDao.getAll().filter { it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
         val matched = existingCombos.filter { row ->
             ComboPackageJson.fromSingleJson(row.unit)?.id == id
@@ -1914,6 +2366,21 @@ class BillingRepository(
     }
 
     suspend fun getComboPackagesList(): List<ComboPackage> {
+        val comboFiles = comboFileDao.getAll()
+        if (comboFiles.isNotEmpty()) {
+            return comboFiles.map { cf ->
+                val model = ProductComboFileJson.fromEntity(cf)
+                ComboPackage(
+                    id = model.comboFileId,
+                    name = model.name,
+                    description = model.description,
+                    items = model.items.map {
+                        ComboPackageItem(it.productId, it.productName, it.unit, it.qty, it.catalogRate, it.folder)
+                    },
+                    createdAt = model.createdAt
+                )
+            }
+        }
         val synced = productDao.getAll()
             .filter { it.folder.equals(COMBO_STORAGE_FOLDER, ignoreCase = true) }
             .mapNotNull { row -> ComboPackageJson.fromSingleJson(row.unit)?.copy(name = row.name) }
@@ -2156,7 +2623,7 @@ class BillingRepository(
 
     suspend fun saveCompanySettings(settings: CompanySettings, syncCloud: Boolean = true) {
         val entries = mutableListOf(
-            AppConfigEntity(KEY_COMPANY_NAME, settings.companyName.trim().ifEmpty { DEFAULT_COMPANY_NAME }),
+            AppConfigEntity(KEY_COMPANY_NAME, AppIdentity.OFFICIAL_COMPANY_NAME),
             AppConfigEntity(KEY_COMPANY_MOBILE, settings.mobile.trim().ifEmpty { DEFAULT_COMPANY_MOBILE }),
             AppConfigEntity(KEY_COMPANY_EMAIL, settings.email.trim().ifEmpty { DEFAULT_COMPANY_EMAIL }),
             AppConfigEntity(KEY_COMPANY_ADDRESS, settings.address.trim().ifEmpty { DEFAULT_COMPANY_ADDRESS })
@@ -2295,15 +2762,31 @@ class BillingRepository(
         val expenseList = if (useVolatile) _volatileExpenses.value else expenseDao.getAll()
         val trashList = if (useVolatile) _volatileTrashItems.value else trashDao.getAll()
         val auditList = if (useVolatile) _volatileAuditLogs.value else auditDao.getAll()
+        val comboList = if (useVolatile) _volatileComboFiles.value else comboFileDao.getAll()
 
         val root = JSONObject()
-        root.put("schemaVersion", 7)
+        root.put("schemaVersion", 8)
+        root.put("appName", AppIdentity.OFFICIAL_APP_NAME)
         root.put("exportedAt", System.currentTimeMillis())
         root.put("bills", JSONArray().apply { bills.forEach { put(billToJson(it)) } })
         root.put("customers", JSONArray().apply { customers.forEach { put(customerToJson(it)) } })
         root.put("products", JSONArray().apply { products.forEach { put(productToJson(it)) } })
+        root.put("productComboFiles", JSONArray().apply {
+            comboList.forEach { c ->
+                put(JSONObject().apply {
+                    put("comboFileId", c.comboFileId)
+                    put("companyId", c.companyId)
+                    put("name", c.name)
+                    put("description", c.description)
+                    put("itemsJson", c.itemsJson)
+                    put("comboPrice", c.comboPrice)
+                    put("createdAt", c.createdAt)
+                    put("updatedAt", c.updatedAt)
+                })
+            }
+        })
         root.put("settings", JSONObject().apply {
-            put("company", cfgMap[KEY_COMPANY_NAME] ?: DEFAULT_COMPANY_NAME)
+            put("company", AppIdentity.OFFICIAL_COMPANY_NAME)
             put("mobile", cfgMap[KEY_COMPANY_MOBILE] ?: DEFAULT_COMPANY_MOBILE)
             put("email", cfgMap[KEY_COMPANY_EMAIL] ?: DEFAULT_COMPANY_EMAIL)
             put("address", cfgMap[KEY_COMPANY_ADDRESS] ?: DEFAULT_COMPANY_ADDRESS)
@@ -2329,6 +2812,11 @@ class BillingRepository(
                     put("role", normalizeRole(u.role))
                     put("phone", u.phone)
                     put("photoBase64", u.photoBase64)
+                    put("email", u.email)
+                    put("uid", u.uid)
+                    put("techId", u.techId)
+                    put("companyId", u.companyId)
+                    put("loginEnabled", u.loginEnabled)
                 })
             }
         })
@@ -2351,7 +2839,7 @@ class BillingRepository(
                 root.has("helpRequests") ||
                 root.has("expenses")
             if (!hasRecognizedSection) {
-                return@withContext Result.failure(IllegalArgumentException("Not a valid TSE Billing backup file"))
+                return@withContext Result.failure(IllegalArgumentException("Not a valid TS – TOTAL SOLUTION backup file"))
             }
             val billsArr = root.optJSONArray("bills") ?: JSONArray()
             val productsArr = root.optJSONArray("products") ?: JSONArray()
@@ -2374,6 +2862,9 @@ class BillingRepository(
                     val grand = if (obj.has("grandTotal")) obj.optDouble("grandTotal", 0.0) else maxOf(0.0, sub - disc)
                     val paid = if (obj.has("paid")) obj.optDouble("paid", 0.0) else obj.optDouble("advance", 0.0)
                     val due = if (obj.has("due")) obj.optDouble("due", 0.0) else maxOf(0.0, grand - paid)
+                    val payStatus = obj.optString("paymentStatus", "").ifBlank {
+                        BillPaymentStatus.compute(grand, paid).code
+                    }
                     billDao.upsert(
                         BillEntity(
                             id = obj.optString("id", "b${System.currentTimeMillis()}_$i"),
@@ -2401,7 +2892,10 @@ class BillingRepository(
                             documentType = obj.optString("documentType", DocumentType.BILL.name),
                             isHelpBill = obj.optBoolean("isHelpBill", false),
                             helpRequestId = obj.optLong("helpRequestId", 0L),
-                            quotationNote = obj.optString("quotationNote", "")
+                            quotationNote = obj.optString("quotationNote", ""),
+                            paymentStatus = payStatus,
+                            linkedPaymentId = obj.optString("linkedPaymentId", ""),
+                            stockDeducted = obj.optBoolean("stockDeducted", obj.optString("documentType", DocumentType.BILL.name) == DocumentType.BILL.name)
                         )
                     )
                     billsCount++
@@ -2572,6 +3066,28 @@ class BillingRepository(
                         auditDao.insert(auditFromJson(logArr.getJSONObject(i)))
                     }
                 }
+                root.optJSONArray("productComboFiles")?.let { comboArr ->
+                    comboFileDao.deleteAll()
+                    for (i in 0 until comboArr.length()) {
+                        val c = comboArr.getJSONObject(i)
+                        val cid = c.optString("comboFileId", "").trim()
+                        val cname = c.optString("name", "").trim()
+                        if (cid.isNotBlank() && cname.isNotBlank()) {
+                            comboFileDao.upsert(
+                                ProductComboFileEntity(
+                                    comboFileId = cid,
+                                    companyId = c.optString("companyId", ""),
+                                    name = cname,
+                                    description = c.optString("description", ""),
+                                    itemsJson = c.optString("itemsJson", "[]"),
+                                    comboPrice = c.optDouble("comboPrice", 0.0).coerceAtLeast(0.0),
+                                    createdAt = c.optLong("createdAt", System.currentTimeMillis()),
+                                    updatedAt = c.optLong("updatedAt", System.currentTimeMillis())
+                                )
+                            )
+                        }
+                    }
+                }
             }
 
             Result.success(
@@ -2602,7 +3118,8 @@ class BillingRepository(
                 AppConfigEntity(KEY_CLOUD_OWNER_UID, info.ownerUid),
                 AppConfigEntity(KEY_CLOUD_TECH_CODE, info.techShareCode),
                 AppConfigEntity(KEY_CLOUD_SUPER_CODE, info.superShareCode),
-                AppConfigEntity(KEY_CLOUD_DEVICE_ROLE, info.deviceRole)
+                AppConfigEntity(KEY_CLOUD_DEVICE_ROLE, info.deviceRole),
+                AppConfigEntity(KEY_COMPANY_NAME, AppIdentity.OFFICIAL_COMPANY_NAME)
             )
         )
     }
@@ -2629,6 +3146,10 @@ class BillingRepository(
         _volatileExpenses.value = emptyList()
         _volatileTrashItems.value = emptyList()
         _volatileAuditLogs.value = emptyList()
+        _volatileComboFiles.value = emptyList()
+        _volatileUpiTransactions.value = emptyList()
+        _volatileEmployees.value = emptyList()
+        _volatileSalaryPayments.value = emptyList()
         if (_volatileCloudActive.value && _volatileDeviceRole.value.equals("technician", ignoreCase = true)) {
             wipeNonAdminLocalCompanyData()
         }
@@ -2645,6 +3166,10 @@ class BillingRepository(
             expenseDao.deleteAll()
             trashDao.deleteAll()
             auditDao.deleteAll()
+            comboFileDao.deleteAll()
+            upiTxDao.deleteAll()
+            employeeDao.deleteAll()
+            salaryPaymentDao.deleteAll()
         }
     }
 
@@ -2667,6 +3192,11 @@ class BillingRepository(
             mergeCloudExpensesIntoAdmin(snapshot.expenses)
             mergeCloudTrashIntoAdmin(snapshot.trashItems)
             mergeCloudAuditLogsIntoAdmin(snapshot.auditLogs)
+            mergeCloudComboFiles(snapshot.comboFiles)
+            mergeCloudUpiTransactions(snapshot.upiTransactions)
+            // Admin MUST NEVER receive Super Admin employee/salary records
+            _volatileEmployees.value = emptyList()
+            _volatileSalaryPayments.value = emptyList()
         } else {
             enableVolatileCloudMode(role, snapshot.workspace.workspaceId)
             _volatileCompany.value = snapshot.companySettings
@@ -2681,6 +3211,10 @@ class BillingRepository(
             _volatileExpenses.value = if (role == "super_admin") snapshot.expenses else emptyList()
             _volatileTrashItems.value = emptyList()
             _volatileAuditLogs.value = if (role == "super_admin") snapshot.auditLogs else emptyList()
+            _volatileComboFiles.value = snapshot.comboFiles
+            _volatileUpiTransactions.value = snapshot.upiTransactions
+            _volatileEmployees.value = if (role == "super_admin") snapshot.employees else emptyList()
+            _volatileSalaryPayments.value = if (role == "super_admin") snapshot.salaryPayments else emptyList()
         }
     }
 
@@ -2851,11 +3385,197 @@ class BillingRepository(
         }
     }
 
+    suspend fun mergeCloudComboFiles(cloudCombos: List<ProductComboFileEntity>) {
+        if (_volatileCloudActive.value) {
+            _volatileComboFiles.value = cloudCombos
+            return
+        }
+        cloudCombos.forEach { cf ->
+            val old = comboFileDao.findById(cf.comboFileId)
+            if (old == null || cf.updatedAt >= old.updatedAt) {
+                comboFileDao.upsert(cf)
+            }
+        }
+    }
+
+    suspend fun mergeCloudUpiTransactions(cloudTx: List<UpiTransactionEntity>) {
+        if (_volatileCloudActive.value) {
+            _volatileUpiTransactions.value = cloudTx
+            return
+        }
+        cloudTx.forEach { tx ->
+            val old = upiTxDao.findById(tx.paymentId)
+            if (old == null || tx.updatedAt >= old.updatedAt) {
+                upiTxDao.upsert(tx)
+            }
+        }
+    }
+
+    suspend fun mergeCloudEmployees(cloudEmployees: List<EmployeeEntity>) {
+        if (!normalizeRole(_volatileDeviceRole.value).equals("super_admin", ignoreCase = true)) {
+            _volatileEmployees.value = emptyList()
+            return
+        }
+        if (_volatileCloudActive.value) {
+            _volatileEmployees.value = cloudEmployees
+            return
+        }
+        cloudEmployees.forEach { emp ->
+            employeeDao.upsert(emp)
+        }
+    }
+
+    suspend fun mergeCloudSalaryPayments(cloudPayments: List<SalaryPaymentEntity>) {
+        if (!normalizeRole(_volatileDeviceRole.value).equals("super_admin", ignoreCase = true)) {
+            _volatileSalaryPayments.value = emptyList()
+            return
+        }
+        if (_volatileCloudActive.value) {
+            _volatileSalaryPayments.value = cloudPayments
+            return
+        }
+        cloudPayments.forEach { pay ->
+            salaryPaymentDao.upsert(pay)
+        }
+    }
+
+    suspend fun saveLocalUpiTransaction(tx: UpiTransactionEntity) {
+        if (_volatileCloudActive.value) {
+            _volatileUpiTransactions.value = (listOf(tx) + _volatileUpiTransactions.value.filterNot { it.paymentId == tx.paymentId })
+                .sortedByDescending { it.updatedAt }
+        } else {
+            upiTxDao.upsert(tx)
+        }
+    }
+
+    /**
+     * Parts 16–17: Super Admin ONLY Employee Management. Admin and Technician are strictly denied.
+     */
+    suspend fun saveEmployee(
+        actorRole: String,
+        actorUid: String,
+        companyId: String,
+        employee: EmployeeEntity
+    ): Result<EmployeeEntity> {
+        if (normalizeRole(actorRole) != "super_admin") {
+            return Result.failure(SecurityException("Employee Management is restricted to Super Admin only."))
+        }
+        val cleanName = employee.name.trim()
+        if (cleanName.length < 2) {
+            return Result.failure(IllegalArgumentException("Enter employee full name."))
+        }
+        if (employee.monthlySalary <= 0.0) {
+            return Result.failure(IllegalArgumentException("Enter monthly salary greater than 0."))
+        }
+        if (SalaryCalculationEngine.parseUtcCalendar(employee.hiringDate) == null) {
+            return Result.failure(IllegalArgumentException("Enter valid Hiring Date (yyyy-MM-dd)."))
+        }
+        if (SalaryCalculationEngine.parseUtcCalendar(employee.workStartDate) == null) {
+            return Result.failure(IllegalArgumentException("Enter valid Work Start Date (yyyy-MM-dd)."))
+        }
+        if (employee.workStopDate.isNotBlank() && SalaryCalculationEngine.parseUtcCalendar(employee.workStopDate) == null) {
+            return Result.failure(IllegalArgumentException("Enter valid Work Stop Date (yyyy-MM-dd) or leave empty."))
+        }
+        val now = System.currentTimeMillis()
+        val finalId = employee.employeeId.ifBlank { "emp_$now" }
+        val finalCode = employee.employeeCode.ifBlank {
+            "TS-EMP-${((now % 9000L) + 1000L)}"
+        }
+        val wsId = companyId.ifBlank { getActiveWorkspaceId() }
+        val saved = employee.copy(
+            employeeId = finalId,
+            employeeCode = finalCode,
+            companyId = wsId,
+            name = cleanName,
+            mobile = employee.mobile.trim(),
+            hiringDate = employee.hiringDate.trim(),
+            workStartDate = employee.workStartDate.trim(),
+            workStopDate = employee.workStopDate.trim(),
+            address = employee.address.trim(),
+            notes = employee.notes.trim(),
+            createdByUid = employee.createdByUid.ifBlank { actorUid },
+            updatedAt = now
+        )
+        if (_volatileCloudActive.value) {
+            _volatileEmployees.value = (listOf(saved) + _volatileEmployees.value.filterNot { it.employeeId == saved.employeeId })
+                .sortedBy { it.name.lowercase(Locale.ROOT) }
+        } else {
+            employeeDao.upsert(saved)
+        }
+        cloudSync?.pushEmployee(saved)
+        return Result.success(saved)
+    }
+
+    suspend fun deleteEmployee(actorRole: String, employeeId: String): Result<Unit> {
+        if (normalizeRole(actorRole) != "super_admin") {
+            return Result.failure(SecurityException("Employee Management is restricted to Super Admin only."))
+        }
+        if (_volatileCloudActive.value) {
+            _volatileEmployees.value = _volatileEmployees.value.filterNot { it.employeeId == employeeId }
+        } else {
+            employeeDao.deleteById(employeeId)
+        }
+        cloudSync?.deleteEmployee(employeeId)
+        return Result.success(Unit)
+    }
+
+    suspend fun recordSalaryPayment(
+        actorRole: String,
+        actorUid: String,
+        companyId: String,
+        employeeId: String,
+        amount: Double,
+        paymentDate: String,
+        method: String,
+        referenceNo: String,
+        notes: String,
+        cycleStart: String,
+        cycleEnd: String
+    ): Result<SalaryPaymentEntity> {
+        if (normalizeRole(actorRole) != "super_admin") {
+            return Result.failure(SecurityException("Salary recording is restricted to Super Admin only."))
+        }
+        if (amount <= 0.0) {
+            return Result.failure(IllegalArgumentException("Enter salary payment amount greater than 0."))
+        }
+        if (SalaryCalculationEngine.parseUtcCalendar(paymentDate) == null) {
+            return Result.failure(IllegalArgumentException("Enter valid payment date (yyyy-MM-dd)."))
+        }
+        val existingList = if (_volatileCloudActive.value) _volatileSalaryPayments.value else salaryPaymentDao.getAll()
+        if (SalaryCalculationEngine.isDuplicatePayment(existingList, employeeId, paymentDate, amount, referenceNo)) {
+            return Result.failure(IllegalStateException("Duplicate salary payment detected for the same date, amount, and reference."))
+        }
+        val now = System.currentTimeMillis()
+        val wsId = companyId.ifBlank { getActiveWorkspaceId() }
+        val payment = SalaryPaymentEntity(
+            paymentId = "sal_${now}_${kotlin.math.abs((employeeId + referenceNo).hashCode()) % 1000}",
+            employeeId = employeeId,
+            companyId = wsId,
+            amount = amount,
+            paymentDate = paymentDate.trim(),
+            method = method.trim().ifBlank { "Cash" },
+            referenceNo = referenceNo.trim(),
+            notes = notes.trim(),
+            cycleStart = cycleStart.trim(),
+            cycleEnd = cycleEnd.trim(),
+            createdAt = now,
+            createdByUid = actorUid
+        )
+        if (_volatileCloudActive.value) {
+            _volatileSalaryPayments.value = (listOf(payment) + _volatileSalaryPayments.value)
+                .sortedByDescending { it.createdAt }
+        } else {
+            salaryPaymentDao.upsert(payment)
+        }
+        cloudSync?.pushSalaryPayment(payment)
+        return Result.success(payment)
+    }
+
     suspend fun pushLocalDatasetToWorkspace(workspaceId: String) {
         val sync = cloudSync ?: return
         val cfgMap = configDao.getAll().associate { it.key to it.value }
         val company = CompanySettings(
-            companyName = cfgMap[KEY_COMPANY_NAME]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_NAME,
+            companyName = AppIdentity.OFFICIAL_COMPANY_NAME,
             mobile = cfgMap[KEY_COMPANY_MOBILE]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_MOBILE,
             email = cfgMap[KEY_COMPANY_EMAIL]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_EMAIL,
             address = cfgMap[KEY_COMPANY_ADDRESS]?.takeIf { it.isNotBlank() } ?: DEFAULT_COMPANY_ADDRESS,
@@ -2891,6 +3611,9 @@ class BillingRepository(
             trashItems = trashDao.getAll(),
             auditLogs = auditDao.getAll()
         )
+        comboFileDao.getAll().forEach { combo ->
+            sync.pushProductComboFile(workspaceId, combo)
+        }
     }
 
     private fun billToJson(b: BillEntity): JSONObject = JSONObject().apply {
@@ -2920,6 +3643,9 @@ class BillingRepository(
         put("isHelpBill", b.isHelpBill)
         put("helpRequestId", b.helpRequestId)
         put("quotationNote", b.quotationNote)
+        put("paymentStatus", b.paymentStatus)
+        put("linkedPaymentId", b.linkedPaymentId)
+        put("stockDeducted", b.stockDeducted)
     }
 
     private fun billFromJson(obj: JSONObject): BillEntity {
@@ -2929,6 +3655,7 @@ class BillingRepository(
         val grand = if (obj.has("grandTotal")) obj.optDouble("grandTotal", 0.0) else maxOf(0.0, sub - disc)
         val paid = if (obj.has("paid")) obj.optDouble("paid", 0.0) else obj.optDouble("advance", 0.0)
         val due = if (obj.has("due")) obj.optDouble("due", 0.0) else maxOf(0.0, grand - paid)
+        val docType = obj.optString("documentType", DocumentType.BILL.name)
         return BillEntity(
             id = obj.optString("id", "b${System.currentTimeMillis()}"),
             invoiceNo = obj.optString("no", "TSE-001"),
@@ -2952,10 +3679,13 @@ class BillingRepository(
             secondaryChargeAmount = obj.optDouble("secondaryChargeAmount", 0.0),
             staffRating = obj.optInt("staffRating", 0).coerceIn(0, 5),
             staffReviewNote = obj.optString("staffReviewNote", ""),
-            documentType = obj.optString("documentType", DocumentType.BILL.name),
+            documentType = docType,
             isHelpBill = obj.optBoolean("isHelpBill", false),
             helpRequestId = obj.optLong("helpRequestId", 0L),
-            quotationNote = obj.optString("quotationNote", "")
+            quotationNote = obj.optString("quotationNote", ""),
+            paymentStatus = obj.optString("paymentStatus", "").ifBlank { BillPaymentStatus.compute(grand, paid).code },
+            linkedPaymentId = obj.optString("linkedPaymentId", ""),
+            stockDeducted = obj.optBoolean("stockDeducted", docType == DocumentType.BILL.name)
         )
     }
 
@@ -2985,6 +3715,9 @@ class BillingRepository(
         put("folder", p.folder)
         put("stockQty", p.stockQty)
         put("minStockAlert", p.minStockAlert)
+        put("purchasePrice", p.purchasePrice)
+        put("sku", p.sku)
+        put("barcode", p.barcode)
     }
 
     private fun productFromJson(obj: JSONObject): ProductEntity {
@@ -2996,7 +3729,10 @@ class BillingRepository(
             defaultRate = obj.optDouble("rate", 0.0),
             folder = obj.optString("folder", "").ifBlank { inferFolderForName(name) },
             stockQty = obj.optDouble("stockQty", 0.0).coerceAtLeast(0.0),
-            minStockAlert = obj.optDouble("minStockAlert", 0.0).coerceAtLeast(0.0)
+            minStockAlert = obj.optDouble("minStockAlert", 0.0).coerceAtLeast(0.0),
+            purchasePrice = obj.optDouble("purchasePrice", 0.0).coerceAtLeast(0.0),
+            sku = obj.optString("sku", ""),
+            barcode = obj.optString("barcode", "")
         )
     }
 
@@ -3022,6 +3758,9 @@ class BillingRepository(
         put("installationReminderSent", h.installationReminderSent)
         put("rejectedReason", h.rejectedReason)
         put("assignedTechnician", h.assignedTechnician)
+        put("helpTokenId", h.helpTokenId)
+        put("quotationId", h.quotationId)
+        put("approvedQuotationJson", h.approvedQuotationJson)
     }
 
     private fun helpFromJson(h: JSONObject): CustomerHelpEntity = CustomerHelpEntity(
@@ -3045,7 +3784,10 @@ class BillingRepository(
         installationDate = h.optString("installationDate", ""),
         installationReminderSent = h.optBoolean("installationReminderSent", false),
         rejectedReason = h.optString("rejectedReason", ""),
-        assignedTechnician = h.optString("assignedTechnician", "")
+        assignedTechnician = h.optString("assignedTechnician", ""),
+        helpTokenId = h.optString("helpTokenId", ""),
+        quotationId = h.optString("quotationId", ""),
+        approvedQuotationJson = h.optString("approvedQuotationJson", "")
     )
 
     private fun settlementToJson(s: TechnicianSettlementEntity): JSONObject = JSONObject().apply {
@@ -3195,13 +3937,16 @@ class BillingRepository(
         const val KEY_TECH_VERIFIED_NAME = "tech_verified_name_v1"
         const val KEY_TECH_VERIFIED_WORKSPACE_ID = "tech_verified_workspace_id_v1"
         const val KEY_TECH_VERIFIED_COMPANY = "tech_verified_company_v1"
+        const val KEY_TECH_VERIFIED_TECH_ID = "tech_verified_tech_id_v1"
+        const val KEY_TECH_VERIFIED_PHONE = "tech_verified_phone_v1"
+        const val KEY_TECH_MUST_CHANGE_PASSWORD = "tech_must_change_password_v1"
 
         const val DEFAULT_ADMIN_RECOVERY_PASSWORD = "Manoj2007"
-        const val DEFAULT_COMPANY_NAME = "TOTAL SOLUTION ENTERPRISES"
+        const val DEFAULT_COMPANY_NAME = AppIdentity.OFFICIAL_COMPANY_NAME
         const val DEFAULT_COMPANY_MOBILE = "7083805120"
         const val DEFAULT_COMPANY_EMAIL = "totalsolution7020@gmail.com"
         const val DEFAULT_COMPANY_ADDRESS = "B1, Santa Anna Holiday Homes, Naika Vaddo, Calangute, North Goa 403516."
-        const val DEFAULT_PAYEE_NAME = "Manoj Kumar Saha"
+        const val DEFAULT_PAYEE_NAME = AppIdentity.OFFICIAL_COMPANY_NAME
 
         fun normalizeRole(raw: String): String {
             return when (raw.trim().lowercase(Locale.ROOT)) {
@@ -3304,12 +4049,19 @@ class BillingRepository(
 
             return products.mapNotNull { prod ->
                 val nameLow = prod.name.lowercase(Locale.ROOT)
+                val skuLow = prod.sku.trim().lowercase(Locale.ROOT)
+                val barcodeLow = prod.barcode.trim().lowercase(Locale.ROOT)
                 val folderLow = prod.folder.ifBlank { "General" }.lowercase(Locale.ROOT)
                 val unitLow = prod.unit.lowercase(Locale.ROOT)
-                val haystack = "$nameLow $folderLow $unitLow"
+                val haystack = "$nameLow $skuLow $barcodeLow $folderLow $unitLow"
                 val words = haystack.split(Regex("[\\s,/+\\-()]+")).filter { it.isNotBlank() }
 
                 var score = 0
+                if (skuLow.isNotEmpty() && skuLow == q) score += 1600
+                else if (skuLow.isNotEmpty() && skuLow.contains(q)) score += 950
+                if (barcodeLow.isNotEmpty() && barcodeLow == q) score += 1600
+                else if (barcodeLow.isNotEmpty() && barcodeLow.contains(q)) score += 950
+
                 if (nameLow.contains(q)) {
                     score += 1000
                     if (nameLow.startsWith(q)) score += 200
@@ -3345,6 +4097,51 @@ class BillingRepository(
                         .thenBy { it.first.name.lowercase(Locale.ROOT) }
                 )
                 .map { it.first }
+        }
+
+        fun filterBillsByPaymentFilter(
+            bills: List<BillEntity>,
+            upiTransactions: List<UpiTransactionEntity>,
+            filter: BillPaymentFilter
+        ): List<BillEntity> {
+            val successBillIds = upiTransactions
+                .filter { PaymentGatewayStatus.fromString(it.status) == PaymentGatewayStatus.SUCCESS }
+                .mapTo(mutableSetOf()) { it.billId }
+            val pendingBillIds = upiTransactions
+                .filter { PaymentGatewayStatus.fromString(it.status) == PaymentGatewayStatus.PENDING }
+                .mapTo(mutableSetOf()) { it.billId }
+            val failedBillIds = upiTransactions
+                .filter {
+                    val s = PaymentGatewayStatus.fromString(it.status)
+                    s == PaymentGatewayStatus.FAILED || s == PaymentGatewayStatus.EXPIRED || s == PaymentGatewayStatus.CANCELLED
+                }
+                .mapTo(mutableSetOf()) { it.billId }
+
+            return when (filter) {
+                BillPaymentFilter.ALL -> bills
+                BillPaymentFilter.SUCCESSFUL_PAYMENTS -> bills.filter { b ->
+                    b.id in successBillIds ||
+                        (b.linkedPaymentId.isNotBlank() && BillPaymentStatus.resolveForBill(b) == BillPaymentStatus.PAID)
+                }
+                BillPaymentFilter.PENDING_PAYMENTS -> bills.filter { b ->
+                    b.id in pendingBillIds && b.id !in successBillIds
+                }
+                BillPaymentFilter.FAILED_PAYMENTS -> bills.filter { b ->
+                    b.id in failedBillIds && b.id !in successBillIds
+                }
+                BillPaymentFilter.PAID_BILLS -> bills.filter { b ->
+                    DocumentType.fromString(b.documentType) == DocumentType.BILL &&
+                        BillPaymentStatus.resolveForBill(b) == BillPaymentStatus.PAID
+                }
+                BillPaymentFilter.UNPAID_BILLS -> bills.filter { b ->
+                    DocumentType.fromString(b.documentType) == DocumentType.BILL &&
+                        BillPaymentStatus.resolveForBill(b) == BillPaymentStatus.UNPAID
+                }
+                BillPaymentFilter.PARTIALLY_PAID_BILLS -> bills.filter { b ->
+                    DocumentType.fromString(b.documentType) == DocumentType.BILL &&
+                        BillPaymentStatus.resolveForBill(b) == BillPaymentStatus.PARTIAL
+                }
+            }
         }
 
         fun findMatchingCustomersByPhone(customers: List<CustomerEntity>, phoneInput: String): List<CustomerEntity> {

@@ -60,7 +60,7 @@ object WhatsAppHelper {
         return try {
             val dir = File(context.cacheDir, "pdfs").apply { mkdirs() }
             val safeNo = payload.invoiceNo.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "Document" }
-            val prefix = if (payload.documentType.name == "QUOTATION") "TSE_Quotation" else "TSE_Invoice"
+            val prefix = if (payload.documentType.name == "QUOTATION") "TS_Quotation" else "TS_Invoice"
             val outFile = File(dir, "${prefix}_$safeNo.pdf")
             FileOutputStream(outFile).use { out ->
                 InvoicePdfPrinter.writePdfToStream(payload, out)
@@ -241,7 +241,7 @@ object WhatsAppHelper {
             val bmp = renderDuePaymentQrCardBitmap(company, upi, bill)
             val dir = File(context.cacheDir, "photos").apply { mkdirs() }
             val safeNo = bill.invoiceNo.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "Bill" }
-            val file = File(dir, "TSE_Due_QR_$safeNo.png")
+            val file = File(dir, "TS_Due_QR_$safeNo.png")
             FileOutputStream(file).use { out ->
                 bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
                 out.flush()
@@ -308,7 +308,7 @@ object WhatsAppHelper {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, fileName)
                 put(MediaStore.Downloads.MIME_TYPE, mimeType)
-                put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/TSE_Billing")
+                put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/TS_TotalSolution")
                 put(MediaStore.Downloads.IS_PENDING, 1)
             }
             val uri: Uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
@@ -322,7 +322,7 @@ object WhatsAppHelper {
             }
             val clearPending = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
             runCatching { resolver.update(uri, clearPending, null, null) }
-            DownloadsSaveResult.Saved("Downloads/TSE_Billing/$fileName", fileName)
+            DownloadsSaveResult.Saved("Downloads/TS_TotalSolution/$fileName", fileName)
         } catch (_: Throwable) {
             DownloadsSaveResult.NeedsPickerFallback(fileName)
         }

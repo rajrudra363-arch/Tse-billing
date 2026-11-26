@@ -1,6 +1,6 @@
 <resources>
-    <string name="app_name">TSE Billing</string>
-    <string name="company_default_name">TOTAL SOLUTION ENTERPRISES</string>
+    <string name="app_name">TS – TOTAL SOLUTION</string>
+    <string name="company_default_name">TOTAL SOLUTION</string>
     <string name="company_tagline">CCTV Security • Sales • Installation • Support</string>
     <string name="company_default_mobile">7083805120</string>
     <string name="company_default_email">totalsolution7020@gmail.com</string>
@@ -13,8 +13,9 @@
     <string name="tab_admin">Admin</string>
     <string name="tab_analytics">Analytics</string>
     <string name="tab_settings">Settings</string>
-    <string name="customer_appreciation_title">Thank you for choosing Total Solution Enterprises!</string>
+    <string name="customer_appreciation_title">Thank you for choosing TOTAL SOLUTION!</string>
     <string name="customer_appreciation_body">We value your trust. Your safety and satisfaction are our priority. Please contact us anytime for CCTV service and support.</string>
-    <string name="quotation_customer_note">We appreciate the opportunity to serve you. All quoted items use genuine manufacturer-warranted hardware installed by certified technicians.</string>
+    <string name="quotation_customer_note">We appreciate the opportunity to serve you. All quoted items use genuine manufacturer-warranted hardware installed by certified technicians of TOTAL SOLUTION.</string>
     <string name="product_disclaimer_text">Product warranty is subject to the respective manufacturer\'s terms and conditions. Physical damage, water damage, voltage fluctuation, improper installation or unauthorised tampering are not covered unless the manufacturer\'s policy states otherwise.</string>
+    <string name="error_tech_login_disabled">Your login has been disabled by Admin. Please contact your Admin.</string>
 </resources>

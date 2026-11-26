@@ -26,7 +26,7 @@ object AdminNotificationHelper {
                 if (nm != null && nm.getNotificationChannel(CHANNEL_ID) == null) {
                     val channel = NotificationChannel(
                         CHANNEL_ID,
-                        "TSE Admin Bill Alerts",
+                        "TOTAL SOLUTION Admin Bill Alerts",
                         NotificationManager.IMPORTANCE_HIGH
                     ).apply {
                         description = "Alerts Admin when a Technician creates a bill to send to the customer."
@@ -65,7 +65,7 @@ object AdminNotificationHelper {
                 if (nm != null && nm.getNotificationChannel(CHANNEL_ID) == null) {
                     val channel = NotificationChannel(
                         CHANNEL_ID,
-                        "TSE Admin & Sync Alerts",
+                        "TOTAL SOLUTION Admin & Sync Alerts",
                         NotificationManager.IMPORTANCE_HIGH
                     ).apply {
                         description = "Live Firebase sync notifications for Billing, Payments, Stock, and Service Requests."

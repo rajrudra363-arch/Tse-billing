@@ -12,6 +12,100 @@
       },
       "required": ["userId", "email", "createdAt", "updatedAt"]
     },
+    "SuperAdminMarker": {
+      "title": "Super Admin Marker",
+      "description": "Authorized system-level Super Admin record keyed by Firebase Auth UID (no public signup).",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "companyId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "email", "createdAt"]
+    },
+    "CompanyProfile": {
+      "title": "Company Profile",
+      "description": "Locked company identity record (TS - TOTAL SOLUTION / TOTAL SOLUTION) scoped by companyId.",
+      "type": "object",
+      "properties": {
+        "companyId": { "type": "string" },
+        "companyName": { "type": "string", "enum": ["TOTAL SOLUTION"] },
+        "officialAppName": { "type": "string", "enum": ["TS – TOTAL SOLUTION"] },
+        "ownerUid": { "type": "string" },
+        "ownerEmail": { "type": "string" },
+        "mobile": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["companyId", "companyName", "officialAppName", "ownerUid", "ownerEmail", "createdAt", "updatedAt"]
+    },
+    "ProductComboFile": {
+      "title": "Product Combo File",
+      "description": "Admin-managed reusable bundle referencing existing products with per-item quantities and separate combo price without mutating original product prices or stock.",
+      "type": "object",
+      "properties": {
+        "comboFileId": { "type": "string" },
+        "companyId": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "itemsJson": { "type": "string" },
+        "comboPrice": { "type": "number" },
+        "createdAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": ["comboFileId", "companyId", "name", "description", "itemsJson", "comboPrice", "createdAt", "updatedAt"]
+    },
+    "Employee": {
+      "title": "Employee Record (Super Admin Only)",
+      "description": "Employee master record strictly accessible only by Super Admin.",
+      "type": "object",
+      "properties": {
+        "employeeId": { "type": "string" },
+        "employeeCode": { "type": "string" },
+        "companyId": { "type": "string" },
+        "name": { "type": "string" },
+        "mobile": { "type": "string" },
+        "hiringDate": { "type": "string" },
+        "workStartDate": { "type": "string" },
+        "workStopDate": { "type": "string" },
+        "monthlySalary": { "type": "number" },
+        "address": { "type": "string" },
+        "notes": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "createdAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" },
+        "createdByUid": { "type": "string" }
+      },
+      "required": [
+        "employeeId", "employeeCode", "companyId", "name", "mobile", "hiringDate",
+        "workStartDate", "workStopDate", "monthlySalary", "address", "notes",
+        "isActive", "createdAt", "updatedAt", "createdByUid"
+      ]
+    },
+    "SalaryPayment": {
+      "title": "Employee Salary Payment (Super Admin Only)",
+      "description": "Append-only partial or full salary disbursement entry accessible strictly by Super Admin.",
+      "type": "object",
+      "properties": {
+        "paymentId": { "type": "string" },
+        "employeeId": { "type": "string" },
+        "companyId": { "type": "string" },
+        "amount": { "type": "number" },
+        "paymentDate": { "type": "string" },
+        "method": { "type": "string" },
+        "referenceNo": { "type": "string" },
+        "notes": { "type": "string" },
+        "cycleStart": { "type": "string" },
+        "cycleEnd": { "type": "string" },
+        "createdAt": { "type": "integer" },
+        "createdByUid": { "type": "string" }
+      },
+      "required": [
+        "paymentId", "employeeId", "companyId", "amount", "paymentDate", "method",
+        "referenceNo", "notes", "cycleStart", "cycleEnd", "createdAt", "createdByUid"
+      ]
+    },
     "WorkspaceDirectory": {
       "title": "Workspace Invite Directory",
       "description": "Maps an unguessable role-specific invite code to its workspace without exposing PII.",
@@ -33,6 +127,7 @@
       "type": "object",
       "properties": {
         "workspaceId": { "type": "string" },
+        "companyId": { "type": "string" },
         "ownerUid": { "type": "string" },
         "ownerEmail": { "type": "string" },
         "techShareCode": { "type": "string" },
@@ -66,10 +161,12 @@
     },
     "WorkspaceMember": {
       "title": "Workspace Member",
-      "description": "Binds a signed-in Firebase Auth UID (Google or Email/Password) to a role inside a workspace.",
+      "description": "Binds a signed-in Firebase Auth UID to a role inside a company workspace with login status control.",
       "type": "object",
       "properties": {
         "userId": { "type": "string" },
+        "uid": { "type": "string" },
+        "techId": { "type": "string" },
         "email": { "type": "string" },
         "displayName": { "type": "string" },
         "name": { "type": "string" },
@@ -77,14 +174,19 @@
         "phone": { "type": "string" },
         "role": { "type": "string", "enum": ["admin", "technician", "super_admin"] },
         "workspaceId": { "type": "string" },
+        "companyId": { "type": "string" },
         "inviteCode": { "type": "string" },
         "mustChangePassword": { "type": "boolean" },
+        "firstLoginCompleted": { "type": "boolean" },
+        "loginEnabled": { "type": "boolean" },
         "authProvider": { "type": "string" },
         "activationPasskeyHash": { "type": "string" },
         "activationPasskeyCreatedAt": { "type": "string", "format": "date-time" },
         "activatedAt": { "type": ["string", "null"], "format": "date-time" },
         "createdByUid": { "type": "string" },
         "passwordChangedAt": { "type": "string", "format": "date-time" },
+        "statusUpdatedAt": { "type": "string", "format": "date-time" },
+        "statusUpdatedByUid": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -100,6 +202,11 @@
         "passwordHash": { "type": "string" },
         "role": { "type": "string", "enum": ["admin", "technician", "super_admin"] },
         "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "uid": { "type": "string" },
+        "techId": { "type": "string" },
+        "companyId": { "type": "string" },
+        "loginEnabled": { "type": "boolean" },
         "photoBase64": { "type": "string" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -107,7 +214,7 @@
     },
     "WorkspaceBill": {
       "title": "Bill or Quotation",
-      "description": "Tax Invoice or Quotation generated by Admin or Technician and synced live to Admin and Super Admin.",
+      "description": "Tax Invoice or Quotation generated by Admin or Technician and synced live across authorized devices.",
       "type": "object",
       "properties": {
         "billId": { "type": "string" },
@@ -122,6 +229,9 @@
         "paidAmount": { "type": "number" },
         "dueAmount": { "type": "number" },
         "paymentMode": { "type": "string" },
+        "paymentStatus": { "type": "string", "enum": ["PAID", "PARTIAL", "UNPAID"] },
+        "linkedPaymentId": { "type": "string" },
+        "stockDeducted": { "type": "boolean" },
         "signatureBase64": { "type": "string" },
         "customQrText": { "type": "string" },
         "createdBy": { "type": "string" },
@@ -148,6 +258,35 @@
         "helpRequestId", "quotationNote", "updatedAt"
       ]
     },
+    "WorkspaceUpiTransaction": {
+      "title": "Dynamic UPI Gateway Payment",
+      "description": "Server-verified Razorpay/Cashfree Dynamic UPI payment transaction record.",
+      "type": "object",
+      "properties": {
+        "paymentId": { "type": "string" },
+        "paymentRef": { "type": "string" },
+        "companyId": { "type": "string" },
+        "workspaceId": { "type": "string" },
+        "customerId": { "type": "string" },
+        "customerName": { "type": "string" },
+        "billId": { "type": "string" },
+        "invoiceNo": { "type": "string" },
+        "orderId": { "type": "string" },
+        "txId": { "type": "string" },
+        "amount": { "type": "number" },
+        "status": { "type": "string", "enum": ["PENDING", "SUCCESS", "FAILED", "CANCELLED", "EXPIRED"] },
+        "paymentGateway": { "type": "string", "enum": ["RAZORPAY", "CASHFREE"] },
+        "qrCodeUrl": { "type": "string" },
+        "upiUri": { "type": "string" },
+        "receiptNumber": { "type": "string" },
+        "verifiedByWebhook": { "type": "boolean" },
+        "createdByUid": { "type": "string" },
+        "createdAtMillis": { "type": "integer" },
+        "expiresAtMillis": { "type": "integer" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["paymentId", "paymentRef", "companyId", "amount", "status", "paymentGateway", "verifiedByWebhook"]
+    },
     "WorkspaceCustomer": {
       "title": "Customer Record",
       "description": "Synced customer record shared across the workspace.",
@@ -166,13 +305,16 @@
     },
     "WorkspaceProduct": {
       "title": "Product Catalog Item",
-      "description": "CCTV product with category folder, default rate, and inventory stock levels.",
+      "description": "Product catalog item with SKU, barcode, purchasePrice, default selling rate, and stock levels.",
       "type": "object",
       "properties": {
         "productId": { "type": "string" },
         "name": { "type": "string" },
         "unit": { "type": "string" },
         "defaultRate": { "type": "number" },
+        "purchasePrice": { "type": "number" },
+        "sku": { "type": "string" },
+        "barcode": { "type": "string" },
         "folder": { "type": "string" },
         "stockQty": { "type": "number" },
         "minStockAlert": { "type": "number" },
@@ -181,11 +323,14 @@
       "required": ["productId", "name", "unit", "defaultRate", "folder", "stockQty", "minStockAlert", "updatedAt"]
     },
     "WorkspaceHelpRequest": {
-      "title": "Customer Help Request",
-      "description": "Support dispatch, emergency, installation, and quotation workflow tracked across Admin and Technicians.",
+      "title": "Customer Help Request & Installation Token",
+      "description": "Support dispatch, emergency, installation, and quotation-to-final-bill workflow tracked across Admin and Technicians.",
       "type": "object",
       "properties": {
         "helpId": { "type": "integer" },
+        "helpTokenId": { "type": "string" },
+        "quotationId": { "type": "string" },
+        "approvedQuotationJson": { "type": "string" },
         "customerName": { "type": "string" },
         "phone": { "type": "string" },
         "address": { "type": "string" },
@@ -197,7 +342,13 @@
         "installationReminderSent": { "type": "boolean" },
         "rejectedReason": { "type": "string" },
         "assignedTechnician": { "type": "string" },
-        "status": { "type": "string", "enum": ["OPEN", "ACCEPTED", "SOLVED", "NOT_SOLVED", "RESOLVED", "REJECTED"] },
+        "status": {
+          "type": "string",
+          "enum": [
+            "OPEN", "ACCEPTED", "POSTPONED", "INSTALLATION_IN_PROGRESS",
+            "INSTALLATION_COMPLETED", "BILLED", "SOLVED", "NOT_SOLVED", "RESOLVED", "REJECTED"
+          ]
+        },
         "createdAt": { "type": "integer" },
         "updatedAt": { "type": "integer" },
         "acceptedBy": { "type": "string" },
@@ -256,7 +407,7 @@
       "type": "object",
       "properties": {
         "trashId": { "type": "string" },
-        "entityType": { "type": "string", "enum": ["BILL", "CUSTOMER", "PRODUCT", "EXPENSE", "HELP", "HELP_REQUEST", "SETTLEMENT"] },
+        "entityType": { "type": "string", "enum": ["BILL", "CUSTOMER", "PRODUCT", "EXPENSE", "HELP", "HELP_REQUEST", "SETTLEMENT", "COMBO_FILE"] },
         "entityId": { "type": "string" },
         "title": { "type": "string" },
         "summary": { "type": "string" },
@@ -278,7 +429,7 @@
     },
     "WorkspaceAuditLog": {
       "title": "Security & Deletion Audit Log",
-      "description": "Append-only audit trail for deletions, restores, 24h auto-purges, and expense changes.",
+      "description": "Append-only audit trail for deletions, restores, technician login controls, 24h auto-purges, and expense changes.",
       "type": "object",
       "properties": {
         "logId": { "type": "string" },
@@ -320,14 +471,20 @@
   },
   "firestore": {
     "/admins/{userId}": { "schema": "AdminMarker", "description": "System admin allowlist documents." },
+    "/superAdmins/{userId}": { "schema": "SuperAdminMarker", "description": "System-level super admin allowlist documents." },
+    "/companies/{companyId}": { "schema": "CompanyProfile", "description": "Locked company identity profiles." },
+    "/companies/{companyId}/productComboFiles/{comboFileId}": { "schema": "ProductComboFile", "description": "Company-scoped Product Combo Files." },
+    "/employees/{employeeId}": { "schema": "Employee", "description": "Super Admin ONLY employee master records." },
+    "/employees/{employeeId}/salaryPayments/{paymentId}": { "schema": "SalaryPayment", "description": "Super Admin ONLY employee salary installments." },
     "/workspaceDirectories/{shareCode}": { "schema": "WorkspaceDirectory", "description": "Secret-token workspace invite resolver." },
     "/workspaces/{workspaceId}": { "schema": "Workspace", "description": "Root company workspace configuration." },
     "/workspaces/{workspaceId}/members/{memberUid}": { "schema": "WorkspaceMember", "description": "Authenticated Firebase member bindings." },
     "/workspaces/{workspaceId}/accounts/{accountId}": { "schema": "WorkspaceAccount", "description": "Workspace username/password accounts." },
     "/workspaces/{workspaceId}/bills/{billId}": { "schema": "WorkspaceBill", "description": "Synced bills and quotations." },
+    "/workspaces/{workspaceId}/upiTransactions/{paymentId}": { "schema": "WorkspaceUpiTransaction", "description": "Server-verified UPI payment orders and statuses." },
     "/workspaces/{workspaceId}/customers/{customerId}": { "schema": "WorkspaceCustomer", "description": "Synced customers." },
-    "/workspaces/{workspaceId}/products/{productId}": { "schema": "WorkspaceProduct", "description": "Synced products catalog with inventory stock." },
-    "/workspaces/{workspaceId}/helpRequests/{helpId}": { "schema": "WorkspaceHelpRequest", "description": "Synced help desk tickets." },
+    "/workspaces/{workspaceId}/products/{productId}": { "schema": "WorkspaceProduct", "description": "Synced products catalog with SKU, barcode, purchasePrice, and inventory stock." },
+    "/workspaces/{workspaceId}/helpRequests/{helpId}": { "schema": "WorkspaceHelpRequest", "description": "Synced help desk tickets & installation workflow." },
     "/workspaces/{workspaceId}/settlements/{settlementId}": { "schema": "WorkspaceSettlement", "description": "Synced technician settlements." },
     "/workspaces/{workspaceId}/expenses/{expenseId}": { "schema": "WorkspaceExpense", "description": "Synced business expenses." },
     "/workspaces/{workspaceId}/trash/{trashId}": { "schema": "WorkspaceTrashItem", "description": "24-hour recoverable trash bin." },

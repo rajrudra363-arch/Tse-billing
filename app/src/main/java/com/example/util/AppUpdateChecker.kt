@@ -60,7 +60,7 @@ object AppUpdateChecker {
         if (remoteVer.isBlank()) return null
         if (compareSemVer(remoteVer, currentVersionName) <= 0) return null
 
-        val notes = obj.optString("body", "").trim().ifBlank { "New TSE Billing update available on GitHub." }
+        val notes = obj.optString("body", "").trim().ifBlank { "New TS – TOTAL SOLUTION update available on GitHub." }
         val htmlUrl = obj.optString("html_url", GITHUB_RELEASES_PAGE).ifBlank { GITHUB_RELEASES_PAGE }
         val assets = obj.optJSONArray("assets")
         var apkUrl: String? = null
@@ -117,7 +117,7 @@ object AppUpdateChecker {
                 "App Updates",
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Alerts when a new TSE Billing release is available on GitHub"
+                description = "Alerts when a new TS – TOTAL SOLUTION release is available on GitHub"
             }
             nm.createNotificationChannel(ch)
         }
@@ -133,7 +133,7 @@ object AppUpdateChecker {
         )
         val notif = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("TSE Billing Update Available (v${release.versionName})")
+            .setContentTitle("TS – TOTAL SOLUTION Update Available (v${release.versionName})")
             .setContentText("Tap to download update while keeping all bills, customers, and settings safe.")
             .setAutoCancel(true)
             .setContentIntent(pending)
@@ -147,9 +147,9 @@ object AppUpdateChecker {
             val queued = runCatching {
                 val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
                 if (dm != null) {
-                    val fileName = "TSE-Billing-v${release.versionName}.apk"
+                    val fileName = "TS-TOTAL-SOLUTION-v${release.versionName}.apk"
                     val req = DownloadManager.Request(Uri.parse(apkUrl)).apply {
-                        setTitle("TSE Billing v${release.versionName} Update")
+                        setTitle("TS – TOTAL SOLUTION v${release.versionName} Update")
                         setDescription("Downloading latest APK release...")
                         setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                         setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)

@@ -59,7 +59,11 @@ data class CloudWorkspaceSnapshot(
     val settlements: List<TechnicianSettlementEntity>,
     val expenses: List<ExpenseEntity> = emptyList(),
     val trashItems: List<TrashItemEntity> = emptyList(),
-    val auditLogs: List<AuditLogEntity> = emptyList()
+    val auditLogs: List<AuditLogEntity> = emptyList(),
+    val comboFiles: List<ProductComboFileEntity> = emptyList(),
+    val upiTransactions: List<UpiTransactionEntity> = emptyList(),
+    val employees: List<EmployeeEntity> = emptyList(),
+    val salaryPayments: List<SalaryPaymentEntity> = emptyList()
 )
 
 data class CloudTechCreationResult(
@@ -70,7 +74,9 @@ data class CloudTechCreationResult(
     val role: String,
     val workspaceId: String,
     val mustChangePassword: Boolean,
-    val activationPasskey: String = ""
+    val activationPasskey: String = "",
+    val techId: String = "",
+    val loginEnabled: Boolean = true
 )
 
 data class CloudTechSignInResult(
@@ -83,7 +89,74 @@ data class CloudTechSignInResult(
     val role: String,
     val workspaceId: String,
     val mustChangePassword: Boolean,
-    val companyName: String
+    val companyName: String,
+    val techId: String = "",
+    val loginEnabled: Boolean = true
+)
+
+data class OtpRequestResult(
+    val challengeId: String,
+    val email: String,
+    val purpose: String,
+    val expiresAtMillis: Long,
+    val maskedEmail: String
+)
+
+data class OtpVerifyResult(
+    val verified: Boolean,
+    val challengeId: String,
+    val email: String,
+    val purpose: String,
+    val verificationToken: String
+)
+
+data class AdminSignUpResult(
+    val uid: String,
+    val companyId: String,
+    val workspaceId: String,
+    val email: String,
+    val username: String,
+    val adminName: String,
+    val companyName: String,
+    val role: String
+)
+
+data class PasskeyChallengeResult(
+    val challengeId: String,
+    val rpId: String,
+    val requestJson: String
+)
+
+data class PasskeyAuthVerifyResult(
+    val verified: Boolean,
+    val customToken: String,
+    val uid: String,
+    val email: String,
+    val role: String,
+    val workspaceId: String,
+    val companyId: String
+)
+
+data class UpiPaymentInitiateResult(
+    val paymentId: String,
+    val paymentRef: String,
+    val orderId: String,
+    val billId: String,
+    val invoiceNo: String,
+    val amount: Double,
+    val status: String,
+    val gateway: String,
+    val upiUri: String,
+    val paymentUrl: String,
+    val expiresAtMillis: Long
+)
+
+data class FinalizeBillServerResult(
+    val billId: String,
+    val paymentStatus: String,
+    val stockDeducted: Boolean,
+    val paidAmount: Double,
+    val dueAmount: Double
 )
 
 data class CloudWorkspaceNotification(
@@ -256,10 +329,11 @@ class CloudSyncRepository(private val context: Context) {
             val wsId = "ws_${uid.take(8)}_${System.currentTimeMillis() % 100000}"
             val techCode = generateShareCode("TSE-T-")
             val superCode = generateShareCode("TSE-S-")
-            val safeCompany = company.companyName.trim().ifBlank { BillingRepository.DEFAULT_COMPANY_NAME }
+            val safeCompany = AppIdentity.OFFICIAL_COMPANY_NAME
 
             val wsPayload = hashMapOf<String, Any>(
                 "workspaceId" to wsId,
+                "companyId" to wsId,
                 "ownerUid" to uid,
                 "ownerEmail" to user.email.orEmpty(),
                 "techShareCode" to techCode,
@@ -291,12 +365,28 @@ class CloudSyncRepository(private val context: Context) {
                 "displayName" to user.displayName.orEmpty().ifBlank { "Admin" },
                 "role" to "admin",
                 "inviteCode" to "OWNER",
+                "loginEnabled" to true,
                 "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
             db.collection("workspaces").document(wsId)
                 .collection("members").document(uid)
                 .set(ownerMember).await()
+
+            runCatching {
+                db.collection("companies").document(wsId).set(
+                    hashMapOf(
+                        "companyId" to wsId,
+                        "companyName" to AppIdentity.OFFICIAL_COMPANY_NAME,
+                        "officialAppName" to AppIdentity.OFFICIAL_APP_NAME,
+                        "ownerUid" to uid,
+                        "ownerEmail" to user.email.orEmpty(),
+                        "mobile" to company.mobile,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    ),
+                    SetOptions.merge()
+                ).awaitOfflineSafe()
+            }
 
             ensureShareDirectories(db, wsId, uid, safeCompany, techCode, superCode)
 
@@ -416,11 +506,14 @@ class CloudSyncRepository(private val context: Context) {
         initialPassword: String,
         phone: String = "",
         username: String = "",
-        photoBase64: String = ""
+        photoBase64: String = "",
+        otpChallengeId: String = "",
+        otpVerificationToken: String = "",
+        requireOtpVerification: Boolean = false
     ): Result<CloudTechCreationResult> = withContext(Dispatchers.IO) {
         val currentUser = getAuth()?.currentUser
             ?: return@withContext Result.failure(
-                IllegalStateException("Admin must sign in with Google first (${AuthPolicy.PRIMARY_ADMIN_EMAIL}).")
+                IllegalStateException("Admin must sign in first before adding Technicians.")
             )
         val functions = getFunctions()
             ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
@@ -429,7 +522,6 @@ class CloudSyncRepository(private val context: Context) {
         }
 
         try {
-            // Refresh ID token silently to ensure server has current email_verified & uid claims.
             runCatching { currentUser.getIdToken(false).await() }
 
             val payload = hashMapOf<String, Any>(
@@ -439,8 +531,12 @@ class CloudSyncRepository(private val context: Context) {
                 "initialPassword" to initialPassword,
                 "phone" to phone.trim(),
                 "username" to username.trim(),
-                "role" to "technician"
+                "role" to "technician",
+                "requireOtpVerification" to requireOtpVerification
             )
+            if (otpChallengeId.isNotBlank()) payload["otpChallengeId"] = otpChallengeId.trim()
+            if (otpVerificationToken.isNotBlank()) payload["otpVerificationToken"] = otpVerificationToken.trim()
+
             val result = functions
                 .getHttpsCallable("createTechnicianAccount")
                 .call(payload)
@@ -451,6 +547,7 @@ class CloudSyncRepository(private val context: Context) {
                 ?: return@withContext Result.failure(IllegalStateException("Unexpected server response."))
 
             val createdUid = data["uid"]?.toString().orEmpty()
+            val createdTechId = data["techId"]?.toString().orEmpty()
             val createdEmail = data["email"]?.toString().orEmpty().ifBlank { email.trim().lowercase(Locale.US) }
             val createdName = data["name"]?.toString().orEmpty().ifBlank { name.trim() }
             val createdUsername = data["username"]?.toString().orEmpty().ifBlank {
@@ -460,6 +557,7 @@ class CloudSyncRepository(private val context: Context) {
             val createdWsId = data["workspaceId"]?.toString().orEmpty().ifBlank { workspaceId }
             val mustChange = (data["mustChangePassword"] as? Boolean) ?: true
             val passkey = data["activationPasskey"]?.toString().orEmpty()
+            val loginEnabled = (data["loginEnabled"] as? Boolean) ?: true
 
             if (photoBase64.isNotBlank()) {
                 pushAccount(
@@ -470,7 +568,12 @@ class CloudSyncRepository(private val context: Context) {
                         passwordHash = AuthPolicy.FIREBASE_EMAIL_AUTH_MARKER,
                         role = "technician",
                         phone = phone.trim(),
-                        photoBase64 = sanitizeBase64(photoBase64.trim())
+                        photoBase64 = sanitizeBase64(photoBase64.trim()),
+                        email = createdEmail,
+                        uid = createdUid,
+                        techId = createdTechId,
+                        companyId = createdWsId,
+                        loginEnabled = loginEnabled
                     )
                 )
             }
@@ -484,7 +587,9 @@ class CloudSyncRepository(private val context: Context) {
                     role = createdRole,
                     workspaceId = createdWsId,
                     mustChangePassword = mustChange,
-                    activationPasskey = passkey
+                    activationPasskey = passkey,
+                    techId = createdTechId,
+                    loginEnabled = loginEnabled
                 )
             )
         } catch (e: CancellationException) {
@@ -630,6 +735,557 @@ class CloudSyncRepository(private val context: Context) {
         }
     }
 
+    suspend fun requestEmailOtp(email: String, purpose: String): Result<OtpRequestResult> =
+        withContext(Dispatchers.IO) {
+            val functions = getFunctions()
+                ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+            try {
+                val res = functions.getHttpsCallable("requestEmailOtp")
+                    .call(hashMapOf("email" to email.trim().lowercase(Locale.US), "purpose" to purpose.trim().uppercase(Locale.US)))
+                    .await()
+                @Suppress("UNCHECKED_CAST")
+                val data = res.getData() as? Map<String, Any?>
+                    ?: return@withContext Result.failure(IllegalStateException("Unexpected OTP response."))
+                Result.success(
+                    OtpRequestResult(
+                        challengeId = data["challengeId"]?.toString().orEmpty(),
+                        email = data["email"]?.toString().orEmpty(),
+                        purpose = data["purpose"]?.toString().orEmpty(),
+                        expiresAtMillis = (data["expiresAtMillis"] as? Number)?.toLong() ?: 0L,
+                        maskedEmail = data["maskedEmail"]?.toString().orEmpty()
+                    )
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(IllegalStateException(e.message ?: "Failed to send Email OTP.", e))
+            }
+        }
+
+    suspend fun verifyEmailOtp(
+        challengeId: String,
+        email: String,
+        purpose: String,
+        otp: String
+    ): Result<OtpVerifyResult> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        try {
+            val res = functions.getHttpsCallable("verifyEmailOtp")
+                .call(
+                    hashMapOf(
+                        "challengeId" to challengeId.trim(),
+                        "email" to email.trim().lowercase(Locale.US),
+                        "purpose" to purpose.trim().uppercase(Locale.US),
+                        "otp" to otp.trim()
+                    )
+                )
+                .await()
+            @Suppress("UNCHECKED_CAST")
+            val data = res.getData() as? Map<String, Any?>
+                ?: return@withContext Result.failure(IllegalStateException("Unexpected OTP verification response."))
+            Result.success(
+                OtpVerifyResult(
+                    verified = (data["verified"] as? Boolean) ?: false,
+                    challengeId = data["challengeId"]?.toString().orEmpty(),
+                    email = data["email"]?.toString().orEmpty(),
+                    purpose = data["purpose"]?.toString().orEmpty(),
+                    verificationToken = data["verificationToken"]?.toString().orEmpty()
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Invalid or expired OTP.", e))
+        }
+    }
+
+    suspend fun registerCompanyAdmin(
+        adminName: String,
+        mobile: String,
+        email: String,
+        password: String,
+        confirmPassword: String,
+        twoFactorPassword: String,
+        confirmTwoFactorPassword: String,
+        otpChallengeId: String,
+        otpVerificationToken: String
+    ): Result<AdminSignUpResult> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        try {
+            val res = functions.getHttpsCallable("registerCompanyAdmin")
+                .call(
+                    hashMapOf(
+                        "companyName" to AppIdentity.OFFICIAL_COMPANY_NAME,
+                        "adminName" to adminName.trim(),
+                        "mobile" to mobile.trim(),
+                        "email" to email.trim().lowercase(Locale.US),
+                        "password" to password,
+                        "confirmPassword" to confirmPassword,
+                        "twoFactorPassword" to twoFactorPassword,
+                        "confirmTwoFactorPassword" to confirmTwoFactorPassword,
+                        "otpChallengeId" to otpChallengeId.trim(),
+                        "otpVerificationToken" to otpVerificationToken.trim()
+                    )
+                )
+                .await()
+            @Suppress("UNCHECKED_CAST")
+            val data = res.getData() as? Map<String, Any?>
+                ?: return@withContext Result.failure(IllegalStateException("Unexpected Admin registration response."))
+            Result.success(
+                AdminSignUpResult(
+                    uid = data["uid"]?.toString().orEmpty(),
+                    companyId = data["companyId"]?.toString().orEmpty(),
+                    workspaceId = data["workspaceId"]?.toString().orEmpty(),
+                    email = data["email"]?.toString().orEmpty(),
+                    username = data["username"]?.toString().orEmpty(),
+                    adminName = data["adminName"]?.toString().orEmpty(),
+                    companyName = data["companyName"]?.toString().orEmpty().ifBlank { AppIdentity.OFFICIAL_COMPANY_NAME },
+                    role = data["role"]?.toString().orEmpty().ifBlank { "admin" }
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Admin Sign Up failed.", e))
+        }
+    }
+
+    suspend fun verifyAdminSecondFactor(twoFactorPassword: String): Result<Boolean> =
+        withContext(Dispatchers.IO) {
+            val functions = getFunctions()
+                ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+            try {
+                val res = functions.getHttpsCallable("verifyAdminSecondFactor")
+                    .call(hashMapOf("twoFactorPassword" to twoFactorPassword))
+                    .await()
+                @Suppress("UNCHECKED_CAST")
+                val data = res.getData() as? Map<String, Any?>
+                Result.success((data?.get("verified") as? Boolean) == true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(IllegalStateException(e.message ?: "Incorrect Two-Factor Authentication Password.", e))
+            }
+        }
+
+    suspend fun resetPasswordWithOtp(
+        email: String,
+        purpose: String,
+        otpChallengeId: String,
+        otpVerificationToken: String,
+        newPassword: String,
+        confirmPassword: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        try {
+            functions.getHttpsCallable("resetPasswordWithOtp")
+                .call(
+                    hashMapOf(
+                        "email" to email.trim().lowercase(Locale.US),
+                        "purpose" to purpose.trim().uppercase(Locale.US),
+                        "otpChallengeId" to otpChallengeId.trim(),
+                        "otpVerificationToken" to otpVerificationToken.trim(),
+                        "newPassword" to newPassword,
+                        "confirmPassword" to confirmPassword
+                    )
+                )
+                .await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Password reset failed.", e))
+        }
+    }
+
+    suspend fun signInWithEmailPassword(email: String, password: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            val auth = getAuth()
+                ?: return@withContext Result.failure(IllegalStateException("Firebase Auth is not initialized."))
+            val cleanEmail = email.trim().lowercase(Locale.US)
+            try {
+                val authRes = auth.signInWithEmailAndPassword(cleanEmail, password).await()
+                val uid = authRes.user?.uid
+                    ?: return@withContext Result.failure(IllegalStateException("Sign-in failed."))
+                val accessCheck = verifyMemberLoginAccess("")
+                if (accessCheck.isFailure) {
+                    runCatching { auth.signOut() }
+                    return@withContext Result.failure(accessCheck.exceptionOrNull()!!)
+                }
+                Result.success(uid)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val rawMsg = e.message.orEmpty()
+                val mappedMsg = if (rawMsg.contains("USER_DISABLED", ignoreCase = true) ||
+                    rawMsg.contains("disabled by an administrator", ignoreCase = true) ||
+                    rawMsg.contains(AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE, ignoreCase = true)
+                ) {
+                    AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE
+                } else {
+                    rawMsg.ifBlank { "Invalid email or password." }
+                }
+                Result.failure(IllegalStateException(mappedMsg, e))
+            }
+        }
+
+    suspend fun verifyMemberLoginAccess(workspaceId: String = ""): Result<Boolean> =
+        withContext(Dispatchers.IO) {
+            val functions = getFunctions() ?: return@withContext Result.success(true)
+            if (getAuth()?.currentUser == null) return@withContext Result.failure(IllegalStateException("Not signed in."))
+            try {
+                functions.getHttpsCallable("verifyMemberLoginAccess")
+                    .call(hashMapOf("workspaceId" to workspaceId.trim()))
+                    .await()
+                Result.success(true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: FirebaseFunctionsException) {
+                if (e.code == FirebaseFunctionsException.Code.PERMISSION_DENIED) {
+                    Result.failure(IllegalStateException(e.message ?: AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE, e))
+                } else {
+                    Result.success(true)
+                }
+            } catch (_: Exception) {
+                Result.success(true)
+            }
+        }
+
+    suspend fun completeTechnicianFirstLogin(
+        workspaceId: String,
+        username: String,
+        newPassword: String,
+        photoBase64: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        try {
+            val res = functions.getHttpsCallable("completeTechnicianFirstLogin")
+                .call(
+                    hashMapOf(
+                        "workspaceId" to workspaceId.trim(),
+                        "username" to username.trim(),
+                        "newPassword" to newPassword,
+                        "photoBase64" to sanitizeBase64(photoBase64.trim())
+                    )
+                )
+                .await()
+            @Suppress("UNCHECKED_CAST")
+            val data = res.getData() as? Map<String, Any?>
+            val techId = data?.get("techId")?.toString().orEmpty()
+            Result.success(techId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Failed to complete Technician setup.", e))
+        }
+    }
+
+    suspend fun setTechnicianLoginStatus(
+        workspaceId: String,
+        technicianUid: String,
+        enabled: Boolean
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        try {
+            val res = functions.getHttpsCallable("setTechnicianLoginStatus")
+                .call(
+                    hashMapOf(
+                        "workspaceId" to workspaceId.trim(),
+                        "technicianUid" to technicianUid.trim(),
+                        "enabled" to enabled
+                    )
+                )
+                .await()
+            @Suppress("UNCHECKED_CAST")
+            val data = res.getData() as? Map<String, Any?>
+            Result.success((data?.get("loginEnabled") as? Boolean) ?: enabled)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Failed to update Technician login status.", e))
+        }
+    }
+
+    suspend fun beginPasskeyRegistration(
+        workspaceId: String,
+        email: String,
+        displayName: String,
+        role: String,
+        rpId: String = ""
+    ): Result<PasskeyChallengeResult> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        try {
+            val payload = hashMapOf<String, Any>(
+                "workspaceId" to workspaceId.trim(),
+                "email" to email.trim().lowercase(Locale.US),
+                "displayName" to displayName.trim(),
+                "role" to role.trim().lowercase(Locale.US)
+            )
+            if (rpId.isNotBlank()) payload["rpId"] = rpId.trim()
+            val res = functions.getHttpsCallable("beginPasskeyRegistration").call(payload).await()
+            @Suppress("UNCHECKED_CAST")
+            val data = res.getData() as? Map<String, Any?>
+                ?: return@withContext Result.failure(IllegalStateException("Invalid Passkey registration challenge."))
+            Result.success(
+                PasskeyChallengeResult(
+                    challengeId = data["challengeId"]?.toString().orEmpty(),
+                    rpId = data["rpId"]?.toString().orEmpty(),
+                    requestJson = data["requestJson"]?.toString().orEmpty()
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Failed to initialize Passkey registration.", e))
+        }
+    }
+
+    suspend fun finishPasskeyRegistration(
+        challengeId: String,
+        registrationResponseJson: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        try {
+            val res = functions.getHttpsCallable("finishPasskeyRegistration")
+                .call(
+                    hashMapOf(
+                        "challengeId" to challengeId.trim(),
+                        "registrationResponseJson" to registrationResponseJson
+                    )
+                )
+                .await()
+            @Suppress("UNCHECKED_CAST")
+            val data = res.getData() as? Map<String, Any?>
+            Result.success(data?.get("credentialId")?.toString().orEmpty())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Passkey verification failed on server.", e))
+        }
+    }
+
+    suspend fun beginPasskeyAuthentication(
+        email: String = "",
+        expectedRole: String = "",
+        rpId: String = ""
+    ): Result<PasskeyChallengeResult> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        try {
+            val payload = hashMapOf<String, Any>(
+                "email" to email.trim().lowercase(Locale.US),
+                "expectedRole" to expectedRole.trim().lowercase(Locale.US)
+            )
+            if (rpId.isNotBlank()) payload["rpId"] = rpId.trim()
+            val res = functions.getHttpsCallable("beginPasskeyAuthentication").call(payload).await()
+            @Suppress("UNCHECKED_CAST")
+            val data = res.getData() as? Map<String, Any?>
+                ?: return@withContext Result.failure(IllegalStateException("Invalid Passkey login challenge."))
+            Result.success(
+                PasskeyChallengeResult(
+                    challengeId = data["challengeId"]?.toString().orEmpty(),
+                    rpId = data["rpId"]?.toString().orEmpty(),
+                    requestJson = data["requestJson"]?.toString().orEmpty()
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Unable to start Passkey sign-in.", e))
+        }
+    }
+
+    suspend fun finishPasskeyAuthentication(
+        challengeId: String,
+        authenticationResponseJson: String
+    ): Result<PasskeyAuthVerifyResult> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        val auth = getAuth()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Auth is not initialized."))
+        try {
+            val res = functions.getHttpsCallable("finishPasskeyAuthentication")
+                .call(
+                    hashMapOf(
+                        "challengeId" to challengeId.trim(),
+                        "authenticationResponseJson" to authenticationResponseJson
+                    )
+                )
+                .await()
+            @Suppress("UNCHECKED_CAST")
+            val data = res.getData() as? Map<String, Any?>
+                ?: return@withContext Result.failure(IllegalStateException("Invalid Passkey verification response."))
+            val token = data["customToken"]?.toString().orEmpty()
+            if (token.isBlank()) {
+                return@withContext Result.failure(IllegalStateException("Server did not return an authentication token."))
+            }
+            auth.signInWithCustomToken(token).await()
+            val result = PasskeyAuthVerifyResult(
+                verified = (data["verified"] as? Boolean) ?: false,
+                customToken = token,
+                uid = data["uid"]?.toString().orEmpty(),
+                email = data["email"]?.toString().orEmpty(),
+                role = data["role"]?.toString().orEmpty(),
+                workspaceId = data["workspaceId"]?.toString().orEmpty(),
+                companyId = data["companyId"]?.toString().orEmpty()
+            )
+            val accessRes = verifyMemberLoginAccess(result.workspaceId)
+            if (accessRes.isFailure) {
+                runCatching { auth.signOut() }
+                return@withContext Result.failure(accessRes.exceptionOrNull()!!)
+            }
+            Result.success(result)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Passkey sign-in failed.", e))
+        }
+    }
+
+    suspend fun initiateUpiPayment(
+        workspaceId: String,
+        amount: Double,
+        gateway: String = "RAZORPAY",
+        billId: String = "",
+        customerId: String = "",
+        customerName: String = "Customer",
+        customerDetails: String = "",
+        customerEmail: String = "",
+        customerPhone: String = "",
+        draftSnapshot: Map<String, Any?>? = null
+    ): Result<UpiPaymentInitiateResult> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        try {
+            val payload = hashMapOf<String, Any>(
+                "workspaceId" to workspaceId.trim(),
+                "amount" to amount,
+                "gateway" to gateway.trim().uppercase(Locale.US),
+                "billId" to billId.trim(),
+                "customerId" to customerId.trim(),
+                "customerName" to customerName.trim(),
+                "customerDetails" to customerDetails.trim(),
+                "customerEmail" to customerEmail.trim(),
+                "customerPhone" to customerPhone.trim()
+            )
+            if (draftSnapshot != null) {
+                payload["draftSnapshot"] = draftSnapshot
+            }
+            val res = functions.getHttpsCallable("initiateUpiPayment").call(payload).await()
+            @Suppress("UNCHECKED_CAST")
+            val data = res.getData() as? Map<String, Any?>
+                ?: return@withContext Result.failure(IllegalStateException("Unexpected payment initiation response."))
+            Result.success(
+                UpiPaymentInitiateResult(
+                    paymentId = data["paymentId"]?.toString().orEmpty(),
+                    paymentRef = data["paymentRef"]?.toString().orEmpty(),
+                    orderId = data["orderId"]?.toString().orEmpty(),
+                    billId = data["billId"]?.toString().orEmpty(),
+                    invoiceNo = data["invoiceNo"]?.toString().orEmpty(),
+                    amount = (data["amount"] as? Number)?.toDouble() ?: amount,
+                    status = data["status"]?.toString().orEmpty().ifBlank { "PENDING" },
+                    gateway = data["gateway"]?.toString().orEmpty().ifBlank { gateway },
+                    upiUri = data["upiUri"]?.toString().orEmpty(),
+                    paymentUrl = data["paymentUrl"]?.toString().orEmpty(),
+                    expiresAtMillis = (data["expiresAtMillis"] as? Number)?.toLong() ?: 0L
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Failed to create Dynamic UPI QR order.", e))
+        }
+    }
+
+    suspend fun cancelUpiPayment(
+        workspaceId: String,
+        paymentId: String,
+        nextStatus: String = "CANCELLED"
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        try {
+            functions.getHttpsCallable("cancelUpiPayment")
+                .call(
+                    hashMapOf(
+                        "workspaceId" to workspaceId.trim(),
+                        "paymentId" to paymentId.trim(),
+                        "nextStatus" to nextStatus.trim().uppercase(Locale.US)
+                    )
+                )
+                .await()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Failed to update payment status.", e))
+        }
+    }
+
+    suspend fun finalizeBillWithAtomicStock(
+        workspaceId: String,
+        bill: BillEntity
+    ): Result<FinalizeBillServerResult> = withContext(Dispatchers.IO) {
+        val functions = getFunctions()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Functions is not initialized."))
+        try {
+            val billPayload = hashMapOf<String, Any>(
+                "billId" to bill.id,
+                "invoiceNo" to bill.invoiceNo,
+                "date" to bill.date,
+                "customerName" to bill.customerName,
+                "customerDetails" to bill.customerDetails,
+                "itemsJson" to bill.itemsJson,
+                "subtotal" to bill.subtotal,
+                "discount" to bill.discount,
+                "grandTotal" to bill.grandTotal,
+                "paidAmount" to bill.paidAmount,
+                "dueAmount" to bill.dueAmount,
+                "paymentMode" to bill.paymentMode,
+                "linkedPaymentId" to bill.linkedPaymentId,
+                "signatureBase64" to sanitizeBase64(bill.signatureBase64),
+                "customQrText" to bill.customQrText,
+                "createdBy" to bill.createdBy,
+                "extraChargeType" to bill.extraChargeType,
+                "extraChargeAmount" to bill.extraChargeAmount,
+                "secondaryChargeType" to bill.secondaryChargeType,
+                "secondaryChargeAmount" to bill.secondaryChargeAmount,
+                "staffRating" to bill.staffRating,
+                "staffReviewNote" to bill.staffReviewNote,
+                "documentType" to bill.documentType,
+                "helpBill" to bill.isHelpBill,
+                "helpRequestId" to bill.helpRequestId,
+                "quotationNote" to bill.quotationNote
+            )
+            val res = functions.getHttpsCallable("finalizeBillWithAtomicStock")
+                .call(hashMapOf("workspaceId" to workspaceId.trim(), "bill" to billPayload))
+                .await()
+            @Suppress("UNCHECKED_CAST")
+            val data = res.getData() as? Map<String, Any?>
+                ?: return@withContext Result.failure(IllegalStateException("Unexpected server billing response."))
+            Result.success(
+                FinalizeBillServerResult(
+                    billId = data["billId"]?.toString().orEmpty().ifBlank { bill.id },
+                    paymentStatus = data["paymentStatus"]?.toString().orEmpty(),
+                    stockDeducted = (data["stockDeducted"] as? Boolean) ?: false,
+                    paidAmount = (data["paidAmount"] as? Number)?.toDouble() ?: bill.paidAmount,
+                    dueAmount = (data["dueAmount"] as? Number)?.toDouble() ?: bill.dueAmount
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException(e.message ?: "Failed to finalize bill on server.", e))
+        }
+    }
+
     /**
      * Authenticates a Technician using Firebase Authentication Email/Password provider
      * and reads their workspace role and `mustChangePassword` flag from Firestore.
@@ -725,6 +1381,11 @@ class CloudSyncRepository(private val context: Context) {
             }
 
             val role = BillingRepository.normalizeRole(memberSnap.getString("role").orEmpty())
+            val loginEnabled = memberSnap.getBoolean("loginEnabled") ?: true
+            if (role == "technician" && !loginEnabled) {
+                return Result.failure(IllegalStateException(AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE))
+            }
+            val techId = memberSnap.getString("techId").orEmpty()
             val email = memberSnap.getString("email").orEmpty()
             val name = memberSnap.getString("name").orEmpty()
                 .ifBlank { memberSnap.getString("displayName").orEmpty() }
@@ -733,8 +1394,7 @@ class CloudSyncRepository(private val context: Context) {
                 .ifBlank { AuthPolicy.deriveUsernameFromEmailOrName(email, name) }
             val phone = memberSnap.getString("phone").orEmpty()
             val mustChangePassword = memberSnap.getBoolean("mustChangePassword") ?: false
-            val companyName = wsDoc.getString("companyName").orEmpty()
-                .ifBlank { BillingRepository.DEFAULT_COMPANY_NAME }
+            val companyName = AppIdentity.OFFICIAL_COMPANY_NAME
 
             val photoB64 = runCatching {
                 db.collection("workspaces").document(wsId)
@@ -753,7 +1413,9 @@ class CloudSyncRepository(private val context: Context) {
                     role = role,
                     workspaceId = wsId,
                     mustChangePassword = mustChangePassword,
-                    companyName = companyName
+                    companyName = companyName,
+                    techId = techId,
+                    loginEnabled = loginEnabled
                 )
             )
         } catch (e: CancellationException) {
@@ -916,6 +1578,37 @@ class CloudSyncRepository(private val context: Context) {
                         .sortedByDescending { it.createdAt }
                 } else emptyList()
 
+                val comboList = runCatching {
+                    db.collection("companies").document(workspaceId)
+                        .collection("productComboFiles").get().await()
+                        .documents.mapNotNull(::parseProductComboFileDoc)
+                }.getOrElse { emptyList() }
+
+                val upiTxList = runCatching {
+                    wsRef.collection("upiTransactions").get().await()
+                        .documents.mapNotNull(::parseUpiTransactionDoc)
+                }.getOrElse { emptyList() }
+
+                // Strict Super Admin ONLY Employee & Salary fetch (never fetched for Admin or Technician)
+                val employeeList = if (normRole == "super_admin") {
+                    runCatching {
+                        db.collection("employees")
+                            .whereEqualTo("companyId", workspaceId)
+                            .get().await()
+                            .documents.mapNotNull(::parseEmployeeDoc)
+                    }.getOrElse { emptyList() }
+                } else emptyList()
+
+                val salaryList = if (normRole == "super_admin") {
+                    employeeList.flatMap { emp ->
+                        runCatching {
+                            db.collection("employees").document(emp.employeeId)
+                                .collection("salaryPayments").get().await()
+                                .documents.mapNotNull(::parseSalaryPaymentDoc)
+                        }.getOrElse { emptyList() }
+                    }
+                } else emptyList()
+
                 val snapshot = CloudWorkspaceSnapshot(
                     workspace = parseWorkspaceDoc(wsSnap, deviceRole),
                     companySettings = parseCompanySettings(wsSnap),
@@ -929,7 +1622,11 @@ class CloudSyncRepository(private val context: Context) {
                     settlements = settlementsList,
                     expenses = expensesList,
                     trashItems = trashList,
-                    auditLogs = auditList
+                    auditLogs = auditList,
+                    comboFiles = comboList,
+                    upiTransactions = upiTxList,
+                    employees = employeeList,
+                    salaryPayments = salaryList
                 )
                 Result.success(snapshot)
             } catch (e: CancellationException) {
@@ -953,7 +1650,11 @@ class CloudSyncRepository(private val context: Context) {
         onExpensesChanged: (List<ExpenseEntity>) -> Unit = {},
         onTrashChanged: (List<TrashItemEntity>) -> Unit = {},
         onAuditLogsChanged: (List<AuditLogEntity>) -> Unit = {},
-        onNotificationsChanged: (List<CloudWorkspaceNotification>) -> Unit = {}
+        onNotificationsChanged: (List<CloudWorkspaceNotification>) -> Unit = {},
+        onComboFilesChanged: (List<ProductComboFileEntity>) -> Unit = {},
+        onUpiTransactionsChanged: (List<UpiTransactionEntity>) -> Unit = {},
+        onEmployeesChanged: (List<EmployeeEntity>) -> Unit = {},
+        onSalaryPaymentsChanged: (List<SalaryPaymentEntity>) -> Unit = {}
     ) {
         stopListeners()
         val uid = getAuth()?.currentUser?.uid ?: return
@@ -1095,6 +1796,69 @@ class CloudSyncRepository(private val context: Context) {
                     onNotificationsChanged(snap.documents.mapNotNull(::parseNotificationDoc))
                 }
             }
+
+        registrations += db.collection("companies").document(workspaceId)
+            .collection("productComboFiles")
+            .addSnapshotListener { snap, err ->
+                if (err != null) {
+                    handleFirestoreError(err, OperationType.LIST, "companies/$workspaceId/productComboFiles")
+                    return@addSnapshotListener
+                }
+                if (snap != null) {
+                    onComboFilesChanged(snap.documents.mapNotNull(::parseProductComboFileDoc).sortedByDescending { it.updatedAt })
+                }
+            }
+
+        registrations += wsRef.collection("upiTransactions")
+            .orderBy("updatedAt", Query.Direction.DESCENDING)
+            .limit(100)
+            .addSnapshotListener { snap, err ->
+                if (err != null) {
+                    handleFirestoreError(err, OperationType.LIST, "workspaces/$workspaceId/upiTransactions")
+                    return@addSnapshotListener
+                }
+                if (snap != null) {
+                    onUpiTransactionsChanged(snap.documents.mapNotNull(::parseUpiTransactionDoc))
+                }
+            }
+
+        // Strict Super Admin ONLY Employee & Salary real-time sync
+        if (normRole == "super_admin") {
+            val salaryRegs = mutableMapOf<String, ListenerRegistration>()
+            val salaryByEmp = mutableMapOf<String, List<SalaryPaymentEntity>>()
+            registrations += db.collection("employees")
+                .whereEqualTo("companyId", workspaceId)
+                .addSnapshotListener { snap, err ->
+                    if (err != null) {
+                        handleFirestoreError(err, OperationType.LIST, "employees")
+                        return@addSnapshotListener
+                    }
+                    if (snap != null) {
+                        val emps = snap.documents.mapNotNull(::parseEmployeeDoc)
+                        onEmployeesChanged(emps)
+                        val activeIds = emps.map { it.employeeId }.toSet()
+                        val removedIds = salaryRegs.keys.filter { it !in activeIds }
+                        removedIds.forEach { eid ->
+                            runCatching { salaryRegs.remove(eid)?.remove() }
+                            salaryByEmp.remove(eid)
+                        }
+                        emps.forEach { emp ->
+                            if (!salaryRegs.containsKey(emp.employeeId)) {
+                                val reg = db.collection("employees").document(emp.employeeId)
+                                    .collection("salaryPayments")
+                                    .addSnapshotListener { pSnap, pErr ->
+                                        if (pErr == null && pSnap != null) {
+                                            salaryByEmp[emp.employeeId] = pSnap.documents.mapNotNull(::parseSalaryPaymentDoc)
+                                            onSalaryPaymentsChanged(salaryByEmp.values.flatten().sortedByDescending { it.createdAt })
+                                        }
+                                    }
+                                salaryRegs[emp.employeeId] = reg
+                                registrations += reg
+                            }
+                        }
+                    }
+                }
+        }
     }
 
     suspend fun pushWorkspaceConfig(
@@ -1107,7 +1871,7 @@ class CloudSyncRepository(private val context: Context) {
         if (workspaceId.isBlank() || getAuth()?.currentUser == null) return@withContext Result.success(Unit)
         try {
             val updates = hashMapOf<String, Any>(
-                "companyName" to company.companyName.trim().ifBlank { BillingRepository.DEFAULT_COMPANY_NAME },
+                "companyName" to AppIdentity.OFFICIAL_COMPANY_NAME,
                 "mobile" to company.mobile,
                 "email" to company.email,
                 "address" to company.address,
@@ -1147,6 +1911,11 @@ class CloudSyncRepository(private val context: Context) {
                     "role" to BillingRepository.normalizeRole(account.role),
                     "phone" to account.phone,
                     "photoBase64" to sanitizeBase64(account.photoBase64),
+                    "email" to account.email.trim().lowercase(Locale.US),
+                    "uid" to account.uid.trim(),
+                    "techId" to account.techId.trim(),
+                    "companyId" to account.companyId.ifBlank { workspaceId },
+                    "loginEnabled" to account.loginEnabled,
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
                 db.collection("workspaces").document(workspaceId)
@@ -1190,6 +1959,9 @@ class CloudSyncRepository(private val context: Context) {
                     "name" to product.name.trim(),
                     "unit" to product.unit.ifBlank { "Nos" },
                     "defaultRate" to product.defaultRate.coerceAtLeast(0.0),
+                    "purchasePrice" to product.purchasePrice.coerceAtLeast(0.0),
+                    "sku" to product.sku.trim(),
+                    "barcode" to product.barcode.trim(),
                     "folder" to product.folder.ifBlank { "General" },
                     "stockQty" to product.stockQty.coerceAtLeast(0.0),
                     "minStockAlert" to product.minStockAlert.coerceAtLeast(0.0),
@@ -1307,6 +2079,8 @@ class CloudSyncRepository(private val context: Context) {
             val db = getFirestore()
             if (workspaceId.isBlank() || uid.isNullOrBlank() || db == null) return@withContext Result.success(Unit)
             val docId = bill.id.ifBlank { "b_${System.currentTimeMillis()}" }
+            val docType = if (bill.documentType.equals("QUOTATION", ignoreCase = true)) "QUOTATION" else "BILL"
+            val paymentStatus = if (docType == "QUOTATION") "UNPAID" else BillPaymentStatus.resolveForBill(bill).code
             try {
                 val docRef = db.collection("workspaces").document(workspaceId)
                     .collection("bills").document(docId)
@@ -1314,7 +2088,7 @@ class CloudSyncRepository(private val context: Context) {
                 val preservedCreatorUid = existing?.getString("createdByUid")?.takeIf { it.isNotBlank() } ?: uid
                 val data = hashMapOf<String, Any>(
                     "billId" to docId,
-                    "invoiceNo" to bill.invoiceNo.ifBlank { "TSE-001" },
+                    "invoiceNo" to bill.invoiceNo.ifBlank { "TS-001" },
                     "date" to bill.date,
                     "customerName" to bill.customerName,
                     "customerDetails" to bill.customerDetails,
@@ -1325,6 +2099,9 @@ class CloudSyncRepository(private val context: Context) {
                     "paidAmount" to bill.paidAmount.coerceAtLeast(0.0),
                     "dueAmount" to bill.dueAmount.coerceAtLeast(0.0),
                     "paymentMode" to bill.paymentMode,
+                    "paymentStatus" to paymentStatus,
+                    "linkedPaymentId" to bill.linkedPaymentId,
+                    "stockDeducted" to (bill.stockDeducted && docType == "BILL"),
                     "signatureBase64" to sanitizeBase64(bill.signatureBase64),
                     "customQrText" to bill.customQrText,
                     "createdBy" to bill.createdBy.ifBlank { "Technician" },
@@ -1335,7 +2112,7 @@ class CloudSyncRepository(private val context: Context) {
                     "secondaryChargeAmount" to bill.secondaryChargeAmount.coerceAtLeast(0.0),
                     "staffRating" to bill.staffRating.coerceIn(0, 5),
                     "staffReviewNote" to bill.staffReviewNote,
-                    "documentType" to if (bill.documentType.equals("QUOTATION", ignoreCase = true)) "QUOTATION" else "BILL",
+                    "documentType" to docType,
                     "helpBill" to bill.isHelpBill,
                     "helpRequestId" to bill.helpRequestId.coerceAtLeast(0L),
                     "quotationNote" to bill.quotationNote,
@@ -1362,6 +2139,8 @@ class CloudSyncRepository(private val context: Context) {
             return@withContext Result.success(Unit)
         }
         val docId = bill.id.ifBlank { "b_${System.currentTimeMillis()}" }
+        val docType = if (bill.documentType.equals("QUOTATION", ignoreCase = true)) "QUOTATION" else "BILL"
+        val paymentStatus = if (docType == "QUOTATION") "UNPAID" else BillPaymentStatus.resolveForBill(bill).code
         val wsRef = db.collection("workspaces").document(workspaceId)
         val billRef = wsRef.collection("bills").document(docId)
         try {
@@ -1408,7 +2187,7 @@ class CloudSyncRepository(private val context: Context) {
 
                 val billData = hashMapOf<String, Any>(
                     "billId" to docId,
-                    "invoiceNo" to bill.invoiceNo.ifBlank { "TSE-001" },
+                    "invoiceNo" to bill.invoiceNo.ifBlank { "TS-001" },
                     "date" to bill.date,
                     "customerName" to bill.customerName,
                     "customerDetails" to bill.customerDetails,
@@ -1419,6 +2198,9 @@ class CloudSyncRepository(private val context: Context) {
                     "paidAmount" to bill.paidAmount.coerceAtLeast(0.0),
                     "dueAmount" to bill.dueAmount.coerceAtLeast(0.0),
                     "paymentMode" to bill.paymentMode,
+                    "paymentStatus" to paymentStatus,
+                    "linkedPaymentId" to bill.linkedPaymentId,
+                    "stockDeducted" to (docType == "BILL"),
                     "signatureBase64" to sanitizeBase64(bill.signatureBase64),
                     "customQrText" to bill.customQrText,
                     "createdBy" to bill.createdBy.ifBlank { "Technician" },
@@ -1429,7 +2211,7 @@ class CloudSyncRepository(private val context: Context) {
                     "secondaryChargeAmount" to bill.secondaryChargeAmount.coerceAtLeast(0.0),
                     "staffRating" to bill.staffRating.coerceIn(0, 5),
                     "staffReviewNote" to bill.staffReviewNote,
-                    "documentType" to if (bill.documentType.equals("QUOTATION", ignoreCase = true)) "QUOTATION" else "BILL",
+                    "documentType" to docType,
                     "helpBill" to bill.isHelpBill,
                     "helpRequestId" to bill.helpRequestId.coerceAtLeast(0L),
                     "quotationNote" to bill.quotationNote,
@@ -1497,6 +2279,9 @@ class CloudSyncRepository(private val context: Context) {
                 } else {
                     val data = hashMapOf<String, Any>(
                         "helpId" to req.id,
+                        "helpTokenId" to req.helpTokenId,
+                        "quotationId" to req.quotationId,
+                        "approvedQuotationJson" to req.approvedQuotationJson,
                         "customerName" to req.customerName,
                         "phone" to req.phone,
                         "address" to req.address,
@@ -1792,11 +2577,11 @@ class CloudSyncRepository(private val context: Context) {
             techShareCode = doc.getString("techShareCode").orEmpty(),
             superShareCode = doc.getString("superShareCode").orEmpty(),
             deviceRole = deviceRole,
-            companyName = doc.getString("companyName").orEmpty().ifBlank { BillingRepository.DEFAULT_COMPANY_NAME }
+            companyName = AppIdentity.OFFICIAL_COMPANY_NAME
         )
 
     private fun parseCompanySettings(doc: DocumentSnapshot): CompanySettings = CompanySettings(
-        companyName = doc.getString("companyName").orEmpty().ifBlank { BillingRepository.DEFAULT_COMPANY_NAME },
+        companyName = AppIdentity.OFFICIAL_COMPANY_NAME,
         mobile = doc.getString("mobile").orEmpty().ifBlank { BillingRepository.DEFAULT_COMPANY_MOBILE },
         email = doc.getString("email").orEmpty().ifBlank { BillingRepository.DEFAULT_COMPANY_EMAIL },
         address = doc.getString("address").orEmpty().ifBlank { BillingRepository.DEFAULT_COMPANY_ADDRESS },
@@ -1832,7 +2617,12 @@ class CloudSyncRepository(private val context: Context) {
             passwordHash = passHash,
             role = BillingRepository.normalizeRole(doc.getString("role").orEmpty()),
             phone = doc.getString("phone").orEmpty(),
-            photoBase64 = doc.getString("photoBase64").orEmpty()
+            photoBase64 = doc.getString("photoBase64").orEmpty(),
+            email = doc.getString("email").orEmpty(),
+            uid = doc.getString("uid").orEmpty(),
+            techId = doc.getString("techId").orEmpty(),
+            companyId = doc.getString("companyId").orEmpty(),
+            loginEnabled = doc.getBoolean("loginEnabled") ?: true
         )
     }
 
@@ -1848,7 +2638,10 @@ class CloudSyncRepository(private val context: Context) {
             defaultRate = (doc.get("defaultRate") as? Number)?.toDouble() ?: 0.0,
             folder = doc.getString("folder").orEmpty().ifBlank { "General" },
             stockQty = (doc.get("stockQty") as? Number)?.toDouble() ?: 0.0,
-            minStockAlert = (doc.get("minStockAlert") as? Number)?.toDouble() ?: 0.0
+            minStockAlert = (doc.get("minStockAlert") as? Number)?.toDouble() ?: 0.0,
+            purchasePrice = (doc.get("purchasePrice") as? Number)?.toDouble() ?: 0.0,
+            sku = doc.getString("sku").orEmpty(),
+            barcode = doc.getString("barcode").orEmpty()
         )
     }
 
@@ -1872,6 +2665,17 @@ class CloudSyncRepository(private val context: Context) {
         if (inv.isBlank()) return null
         val updatedTs = doc.getTimestamp("updatedAt", DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
             ?.toDate()?.time ?: System.currentTimeMillis()
+        val grandTotal = (doc.get("grandTotal") as? Number)?.toDouble() ?: 0.0
+        val paidAmount = (doc.get("paidAmount") as? Number)?.toDouble() ?: 0.0
+        val docType = doc.getString("documentType").orEmpty().ifBlank { "BILL" }
+        val explicitPayStatus = doc.getString("paymentStatus").orEmpty()
+        val computedPayStatus = if (docType.equals("QUOTATION", ignoreCase = true)) {
+            "UNPAID"
+        } else if (explicitPayStatus.isNotBlank()) {
+            explicitPayStatus
+        } else {
+            BillPaymentStatus.compute(grandTotal, paidAmount).code
+        }
         return BillEntity(
             id = id,
             invoiceNo = inv,
@@ -1881,8 +2685,8 @@ class CloudSyncRepository(private val context: Context) {
             itemsJson = doc.getString("itemsJson").orEmpty().ifBlank { "[]" },
             subtotal = (doc.get("subtotal") as? Number)?.toDouble() ?: 0.0,
             discount = (doc.get("discount") as? Number)?.toDouble() ?: 0.0,
-            grandTotal = (doc.get("grandTotal") as? Number)?.toDouble() ?: 0.0,
-            paidAmount = (doc.get("paidAmount") as? Number)?.toDouble() ?: 0.0,
+            grandTotal = grandTotal,
+            paidAmount = paidAmount,
             dueAmount = (doc.get("dueAmount") as? Number)?.toDouble() ?: 0.0,
             paymentMode = doc.getString("paymentMode").orEmpty(),
             signatureBase64 = doc.getString("signatureBase64").orEmpty(),
@@ -1895,10 +2699,13 @@ class CloudSyncRepository(private val context: Context) {
             secondaryChargeAmount = (doc.get("secondaryChargeAmount") as? Number)?.toDouble() ?: 0.0,
             staffRating = (doc.get("staffRating") as? Number)?.toInt()?.coerceIn(0, 5) ?: 0,
             staffReviewNote = doc.getString("staffReviewNote").orEmpty(),
-            documentType = doc.getString("documentType").orEmpty().ifBlank { "BILL" },
+            documentType = docType,
             isHelpBill = doc.getBoolean("helpBill") ?: false,
             helpRequestId = (doc.get("helpRequestId") as? Number)?.toLong() ?: 0L,
-            quotationNote = doc.getString("quotationNote").orEmpty()
+            quotationNote = doc.getString("quotationNote").orEmpty(),
+            paymentStatus = computedPayStatus,
+            linkedPaymentId = doc.getString("linkedPaymentId").orEmpty(),
+            stockDeducted = doc.getBoolean("stockDeducted") ?: false
         )
     }
 
@@ -1925,7 +2732,233 @@ class CloudSyncRepository(private val context: Context) {
             installationDate = doc.getString("installationDate").orEmpty(),
             installationReminderSent = doc.getBoolean("installationReminderSent") ?: false,
             rejectedReason = doc.getString("rejectedReason").orEmpty(),
-            assignedTechnician = doc.getString("assignedTechnician").orEmpty()
+            assignedTechnician = doc.getString("assignedTechnician").orEmpty(),
+            helpTokenId = doc.getString("helpTokenId").orEmpty(),
+            quotationId = doc.getString("quotationId").orEmpty(),
+            approvedQuotationJson = doc.getString("approvedQuotationJson").orEmpty()
+        )
+    }
+
+    suspend fun pushProductComboFile(companyId: String, combo: ProductComboFileEntity): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            val db = getFirestore() ?: return@withContext Result.success(Unit)
+            if (companyId.isBlank() || getAuth()?.currentUser == null) return@withContext Result.success(Unit)
+            val docId = combo.comboFileId
+            try {
+                runCatching {
+                    db.collection("companies").document(companyId).set(
+                        hashMapOf(
+                            "companyId" to companyId,
+                            "companyName" to AppIdentity.OFFICIAL_COMPANY_NAME,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        ),
+                        SetOptions.merge()
+                    ).awaitOfflineSafe()
+                }
+                val data = hashMapOf<String, Any>(
+                    "comboFileId" to docId,
+                    "companyId" to companyId,
+                    "name" to combo.name.trim(),
+                    "description" to combo.description.trim(),
+                    "itemsJson" to combo.itemsJson,
+                    "comboPrice" to combo.comboPrice.coerceAtLeast(0.0),
+                    "createdAt" to combo.createdAt,
+                    "updatedAt" to combo.updatedAt
+                )
+                db.collection("companies").document(companyId)
+                    .collection("productComboFiles").document(docId)
+                    .set(data).awaitOfflineSafe()
+                Result.success(Unit)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                handleFirestoreError(e, OperationType.WRITE, "companies/$companyId/productComboFiles/$docId")
+                Result.failure(e)
+            }
+        }
+
+    suspend fun deleteProductComboFile(companyId: String, comboFileId: String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            val db = getFirestore() ?: return@withContext Result.success(Unit)
+            if (companyId.isBlank() || getAuth()?.currentUser == null) return@withContext Result.success(Unit)
+            try {
+                db.collection("companies").document(companyId)
+                    .collection("productComboFiles").document(comboFileId)
+                    .delete().awaitOfflineSafe()
+                Result.success(Unit)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                handleFirestoreError(e, OperationType.DELETE, "companies/$companyId/productComboFiles/$comboFileId")
+                Result.failure(e)
+            }
+        }
+
+    private fun parseProductComboFileDoc(doc: DocumentSnapshot): ProductComboFileEntity? {
+        val name = doc.getString("name")?.trim().orEmpty()
+        if (name.isEmpty()) return null
+        return ProductComboFileEntity(
+            comboFileId = doc.getString("comboFileId").orEmpty().ifBlank { doc.id },
+            companyId = doc.getString("companyId").orEmpty(),
+            name = name,
+            description = doc.getString("description").orEmpty(),
+            itemsJson = doc.getString("itemsJson").orEmpty().ifBlank { "[]" },
+            comboPrice = (doc.get("comboPrice") as? Number)?.toDouble() ?: 0.0,
+            createdAt = (doc.get("createdAt") as? Number)?.toLong() ?: System.currentTimeMillis(),
+            updatedAt = (doc.get("updatedAt") as? Number)?.toLong() ?: System.currentTimeMillis()
+        )
+    }
+
+    private fun parseUpiTransactionDoc(doc: DocumentSnapshot): UpiTransactionEntity? {
+        val paymentId = doc.getString("paymentId").orEmpty().ifBlank { doc.id }
+        if (paymentId.isBlank()) return null
+        val createdMillis = (doc.get("createdAtMillis") as? Number)?.toLong()
+            ?: doc.getTimestamp("createdAt", DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)?.toDate()?.time
+            ?: System.currentTimeMillis()
+        val updatedMillis = doc.getTimestamp("updatedAt", DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)?.toDate()?.time
+            ?: createdMillis
+        return UpiTransactionEntity(
+            paymentId = paymentId,
+            billId = doc.getString("billId").orEmpty(),
+            invoiceNo = doc.getString("invoiceNo").orEmpty(),
+            orderId = doc.getString("orderId").orEmpty(),
+            amount = (doc.get("amount") as? Number)?.toDouble() ?: 0.0,
+            status = PaymentGatewayStatus.fromString(doc.getString("status").orEmpty()).code,
+            paymentGateway = doc.getString("paymentGateway").orEmpty().ifBlank { "RAZORPAY" },
+            gatewaySignature = doc.getString("gatewaySignature").orEmpty(),
+            qrCodeUrl = doc.getString("qrCodeUrl").orEmpty(),
+            customerEmail = doc.getString("customerEmail").orEmpty(),
+            customerPhone = doc.getString("customerPhone").orEmpty(),
+            createdAt = createdMillis,
+            updatedAt = updatedMillis,
+            companyId = doc.getString("companyId").orEmpty(),
+            customerId = doc.getString("customerId").orEmpty(),
+            customerName = doc.getString("customerName").orEmpty(),
+            paymentRef = doc.getString("paymentRef").orEmpty(),
+            txId = doc.getString("txId").orEmpty(),
+            upiUri = doc.getString("upiUri").orEmpty(),
+            receiptNumber = doc.getString("receiptNumber").orEmpty(),
+            expiresAtMillis = (doc.get("expiresAtMillis") as? Number)?.toLong() ?: 0L
+        )
+    }
+
+    suspend fun pushEmployee(employee: EmployeeEntity): Result<Unit> = withContext(Dispatchers.IO) {
+        val uid = getAuth()?.currentUser?.uid
+        val db = getFirestore()
+        if (uid.isNullOrBlank() || db == null || employee.companyId.isBlank()) return@withContext Result.success(Unit)
+        try {
+            val data = hashMapOf<String, Any>(
+                "employeeId" to employee.employeeId,
+                "employeeCode" to employee.employeeCode,
+                "companyId" to employee.companyId,
+                "name" to employee.name.trim(),
+                "mobile" to employee.mobile.trim(),
+                "hiringDate" to employee.hiringDate.trim(),
+                "workStartDate" to employee.workStartDate.trim(),
+                "workStopDate" to employee.workStopDate.trim(),
+                "monthlySalary" to employee.monthlySalary.coerceAtLeast(0.0),
+                "address" to employee.address.trim(),
+                "notes" to employee.notes.trim(),
+                "isActive" to employee.isActive,
+                "createdAt" to employee.createdAt,
+                "updatedAt" to employee.updatedAt,
+                "createdByUid" to employee.createdByUid.ifBlank { uid }
+            )
+            db.collection("employees").document(employee.employeeId)
+                .set(data).awaitOfflineSafe()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.WRITE, "employees/${employee.employeeId}")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteEmployee(employeeId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val db = getFirestore() ?: return@withContext Result.success(Unit)
+        if (getAuth()?.currentUser == null || employeeId.isBlank()) return@withContext Result.success(Unit)
+        try {
+            db.collection("employees").document(employeeId).delete().awaitOfflineSafe()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, "employees/$employeeId")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun pushSalaryPayment(payment: SalaryPaymentEntity): Result<Unit> = withContext(Dispatchers.IO) {
+        val uid = getAuth()?.currentUser?.uid
+        val db = getFirestore()
+        if (uid.isNullOrBlank() || db == null || payment.employeeId.isBlank()) return@withContext Result.success(Unit)
+        try {
+            val data = hashMapOf<String, Any>(
+                "paymentId" to payment.paymentId,
+                "employeeId" to payment.employeeId,
+                "companyId" to payment.companyId,
+                "amount" to payment.amount.coerceAtLeast(0.0),
+                "paymentDate" to payment.paymentDate.trim(),
+                "method" to payment.method.trim(),
+                "referenceNo" to payment.referenceNo.trim(),
+                "notes" to payment.notes.trim(),
+                "cycleStart" to payment.cycleStart.trim(),
+                "cycleEnd" to payment.cycleEnd.trim(),
+                "createdAt" to payment.createdAt,
+                "createdByUid" to payment.createdByUid.ifBlank { uid }
+            )
+            db.collection("employees").document(payment.employeeId)
+                .collection("salaryPayments").document(payment.paymentId)
+                .set(data).awaitOfflineSafe()
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, "employees/${payment.employeeId}/salaryPayments/${payment.paymentId}")
+            Result.failure(e)
+        }
+    }
+
+    private fun parseEmployeeDoc(doc: DocumentSnapshot): EmployeeEntity? {
+        val name = doc.getString("name")?.trim().orEmpty()
+        if (name.isEmpty()) return null
+        return EmployeeEntity(
+            employeeId = doc.getString("employeeId").orEmpty().ifBlank { doc.id },
+            employeeCode = doc.getString("employeeCode").orEmpty(),
+            companyId = doc.getString("companyId").orEmpty(),
+            name = name,
+            mobile = doc.getString("mobile").orEmpty(),
+            hiringDate = doc.getString("hiringDate").orEmpty(),
+            workStartDate = doc.getString("workStartDate").orEmpty(),
+            workStopDate = doc.getString("workStopDate").orEmpty(),
+            monthlySalary = (doc.get("monthlySalary") as? Number)?.toDouble() ?: 0.0,
+            address = doc.getString("address").orEmpty(),
+            notes = doc.getString("notes").orEmpty(),
+            isActive = doc.getBoolean("isActive") ?: true,
+            createdAt = (doc.get("createdAt") as? Number)?.toLong() ?: System.currentTimeMillis(),
+            updatedAt = (doc.get("updatedAt") as? Number)?.toLong() ?: System.currentTimeMillis(),
+            createdByUid = doc.getString("createdByUid").orEmpty()
+        )
+    }
+
+    private fun parseSalaryPaymentDoc(doc: DocumentSnapshot): SalaryPaymentEntity? {
+        val paymentId = doc.getString("paymentId").orEmpty().ifBlank { doc.id }
+        val employeeId = doc.getString("employeeId").orEmpty()
+        if (paymentId.isBlank() || employeeId.isBlank()) return null
+        return SalaryPaymentEntity(
+            paymentId = paymentId,
+            employeeId = employeeId,
+            companyId = doc.getString("companyId").orEmpty(),
+            amount = (doc.get("amount") as? Number)?.toDouble() ?: 0.0,
+            paymentDate = doc.getString("paymentDate").orEmpty(),
+            method = doc.getString("method").orEmpty().ifBlank { "Cash" },
+            referenceNo = doc.getString("referenceNo").orEmpty(),
+            notes = doc.getString("notes").orEmpty(),
+            cycleStart = doc.getString("cycleStart").orEmpty(),
+            cycleEnd = doc.getString("cycleEnd").orEmpty(),
+            createdAt = (doc.get("createdAt") as? Number)?.toLong() ?: System.currentTimeMillis(),
+            createdByUid = doc.getString("createdByUid").orEmpty()
         )
     }
 

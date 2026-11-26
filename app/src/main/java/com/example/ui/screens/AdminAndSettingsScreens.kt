@@ -119,6 +119,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.fragment.app.FragmentActivity
 import com.example.BuildConfig
+import com.example.data.AppIdentity
 import com.example.data.AuditLogEntity
 import com.example.data.AuthPolicy
 import com.example.data.CloudAuthUser
@@ -132,6 +133,7 @@ import com.example.data.UserAccountEntity
 import com.example.data.UserSession
 import com.example.data.VoiceAndNoteSettings
 import com.example.data.VoicePreset
+import com.example.ui.OtpUiState
 import com.example.ui.TechnicianPerformanceSummary
 import com.example.ui.components.BackupPasteImportDialog
 import com.example.ui.components.PasswordStrengthChecklist
@@ -181,10 +183,17 @@ fun AdminPanelScreen(
     expenses: List<ExpenseEntity> = emptyList(),
     trashItems: List<TrashItemEntity> = emptyList(),
     auditLogs: List<AuditLogEntity> = emptyList(),
+    otpState: OtpUiState = OtpUiState(),
     onSaveUpi: (upiId: String, payeeName: String) -> Unit,
     onClearUpi: () -> Unit,
     onAddTechnician: (name: String, phone: String, username: String, password: String, photoBitmap: Bitmap?, onDone: () -> Unit) -> Unit,
     onCreateCloudTechnician: (name: String, phone: String, email: String, username: String, initialPassword: String, photoBitmap: Bitmap?, onDone: () -> Unit) -> Unit = { _, _, _, _, _, _, _ -> },
+    onCreateCloudTechnicianOtp: (name: String, phone: String, email: String, username: String, initialPassword: String, photoBitmap: Bitmap?, otpChallengeId: String, otpToken: String, onDone: () -> Unit) -> Unit = { n, p, e, u, pw, bmp, _, _, done ->
+        onCreateCloudTechnician(n, p, e, u, pw, bmp, done)
+    },
+    onRequestOtp: (email: String, purpose: String) -> Unit = { _, _ -> },
+    onVerifyOtp: (otp: String, onVerified: () -> Unit) -> Unit = { _, _ -> },
+    onToggleTechnicianLogin: (UserAccountEntity, Boolean) -> Unit = { _, _ -> },
     onUpdateTechnician: (oldUsername: String, newUsername: String, name: String, phone: String, newPassword: String, newPhotoBitmap: Bitmap?, onDone: () -> Unit) -> Unit,
     onRemoveTechnician: (username: String) -> Unit,
     onAddSuperAdmin: (name: String, phone: String, username: String, password: String, onDone: () -> Unit) -> Unit,
@@ -213,6 +222,7 @@ fun AdminPanelScreen(
     var techName by remember { mutableStateOf("") }
     var techPhone by remember { mutableStateOf("") }
     var techEmail by remember { mutableStateOf("") }
+    var techOtpInput by remember { mutableStateOf("") }
     var techUsername by remember { mutableStateOf("") }
     var techPassword by remember { mutableStateOf("") }
     var techPhotoBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -620,15 +630,63 @@ fun AdminPanelScreen(
                     OutlinedTextField(
                         value = techEmail,
                         onValueChange = { techEmail = it },
-                        label = { Text("Technician Email (for Firebase Email Login)") },
+                        label = { Text("Technician Email (OTP & Cloud Login)") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_tech_email")
                     )
+                    val techOtpVerified = otpState.otpVerified && otpState.email.equals(techEmail.trim(), ignoreCase = true)
+                    Surface(
+                        color = if (techOtpVerified) GreenPaidBg else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        border = BorderStroke(1.dp, if (techOtpVerified) GreenPaid else MaterialTheme.colorScheme.outline),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = if (techOtpVerified) "Technician Email Verified" else "Verify Technician Email (OTP)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (techOtpVerified) GreenPaid else MaterialTheme.colorScheme.onSurface
+                                )
+                                OutlinedButton(
+                                    onClick = { onRequestOtp(techEmail, "TECH_VERIFY") },
+                                    enabled = !otpState.busy && AuthPolicy.isValidEmail(techEmail.trim()),
+                                    modifier = Modifier.testTag("new_tech_send_otp_button")
+                                ) {
+                                    Text(if (otpState.challengeId.isNotBlank()) "Resend OTP" else "Send OTP", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            if (!techOtpVerified && otpState.challengeId.isNotBlank() && otpState.purpose == "TECH_VERIFY") {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    OutlinedTextField(
+                                        value = techOtpInput,
+                                        onValueChange = { techOtpInput = it.filter { ch -> ch.isDigit() }.take(6) },
+                                        label = { Text("Enter Tech OTP") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f).testTag("new_tech_otp_input")
+                                    )
+                                    Button(
+                                        onClick = { onVerifyOtp(techOtpInput) {} },
+                                        enabled = !otpState.busy && techOtpInput.length >= 4,
+                                        colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
+                                        modifier = Modifier.height(50.dp).testTag("new_tech_verify_otp_button")
+                                    ) {
+                                        Text("Verify", color = Color.White, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
                     OutlinedTextField(
                         value = techUsername,
                         onValueChange = { techUsername = it },
-                        label = { Text("Technician Username (optional for Email Login)") },
+                        label = { Text("Technician Username (optional)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("new_tech_username")
                     )
@@ -727,20 +785,38 @@ fun AdminPanelScreen(
                     Button(
                         onClick = {
                             clearFocusAndHideToolbar(focusManager, textToolbar)
-                            onCreateCloudTechnician(
-                                techName,
-                                techPhone,
-                                techEmail,
-                                techUsername,
-                                techPassword,
-                                techPhotoBitmap
-                            ) {
+                            val otpReady = otpState.otpVerified && otpState.email.equals(techEmail.trim(), ignoreCase = true)
+                            val onDoneClear: () -> Unit = {
                                 techName = ""
                                 techPhone = ""
                                 techEmail = ""
+                                techOtpInput = ""
                                 techUsername = ""
                                 techPassword = ""
                                 techPhotoBitmap = null
+                            }
+                            if (otpReady) {
+                                onCreateCloudTechnicianOtp(
+                                    techName,
+                                    techPhone,
+                                    techEmail,
+                                    techUsername,
+                                    techPassword,
+                                    techPhotoBitmap,
+                                    otpState.challengeId,
+                                    otpState.verificationToken,
+                                    onDoneClear
+                                )
+                            } else {
+                                onCreateCloudTechnician(
+                                    techName,
+                                    techPhone,
+                                    techEmail,
+                                    techUsername,
+                                    techPassword,
+                                    techPhotoBitmap,
+                                    onDoneClear
+                                )
                             }
                         },
                         enabled = !cloudTechBusy,
@@ -838,10 +914,10 @@ fun AdminPanelScreen(
                                             Icon(Icons.Default.Person, contentDescription = null, tint = TealAccent)
                                         }
                                     }
-                                    Column(modifier = Modifier.weight(1f)) {
+                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(tech.displayName.ifBlank { tech.username }, fontWeight = FontWeight.Bold)
                                         Text(
-                                            text = "${AuthPolicy.formatHandle(tech.username)} · ${tech.phone.ifBlank { "No phone" }} · Bills: ${stats?.billCount ?: 0}",
+                                            text = "${AuthPolicy.formatHandle(tech.username)} · ${tech.techId.ifBlank { "No ID" }} · ${tech.phone.ifBlank { "No phone" }} · Bills: ${stats?.billCount ?: 0}",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -863,6 +939,75 @@ fun AdminPanelScreen(
                                     ) {
                                         Icon(Icons.Default.Delete, contentDescription = "Remove Technician", tint = RedDue)
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1b. Admin ONLY — TECHNICIAN LOGIN CONTROL (Part 18)
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.2.dp, TealAccent.copy(alpha = 0.45f)),
+                modifier = Modifier.testTag("technician_login_control_card")
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.Shield, contentDescription = null, tint = TealAccent)
+                        Text("TECHNICIAN LOGIN CONTROL", style = MaterialTheme.typography.titleLarge)
+                    }
+                    Text(
+                        text = "Admin-only control: enable or disable any company Technician's login access instantly (blocks Password & Passkey sign-in).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (technicianAccounts.isEmpty()) {
+                        Text(
+                            text = "No Technician accounts to control yet.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        technicianAccounts.forEach { tech ->
+                            val isEnabled = tech.loginEnabled
+                            Surface(
+                                color = if (isEnabled) GreenPaidBg else RedDueBg,
+                                border = BorderStroke(1.dp, if (isEnabled) GreenPaid else RedDue),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth().testTag("tech_login_control_row_${tech.username}")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Text(
+                                            text = "${tech.displayName.ifBlank { tech.username }} (${tech.techId.ifBlank { AuthPolicy.formatHandle(tech.username) }})",
+                                            fontWeight = FontWeight.Bold,
+                                            color = NavyDeep
+                                        )
+                                        Text(
+                                            text = tech.email.ifBlank { AuthPolicy.formatHandle(tech.username) },
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Color(0xFF334155)
+                                        )
+                                        Text(
+                                            text = if (isEnabled) "STATUS: ENABLED" else "STATUS: DISABLED",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Black,
+                                            color = if (isEnabled) GreenPaid else RedDueDark
+                                        )
+                                    }
+                                    Switch(
+                                        checked = isEnabled,
+                                        onCheckedChange = { checked -> onToggleTechnicianLogin(tech, checked) },
+                                        modifier = Modifier.testTag("tech_login_toggle_${tech.username}")
+                                    )
                                 }
                             }
                         }
@@ -1711,12 +1856,13 @@ fun AdminPanelScreen(
     if (createdPasskeyInfo != null) {
         val clipboard = LocalClipboardManager.current
         val shareText = buildString {
-            appendLine("TSE Billing Technician Account Ready")
+            appendLine("${AppIdentity.OFFICIAL_APP_NAME} Technician Account Ready")
             appendLine("Name: ${createdPasskeyInfo.name}")
+            if (createdPasskeyInfo.techId.isNotBlank()) appendLine("Tech ID: ${createdPasskeyInfo.techId}")
             appendLine("Email: ${createdPasskeyInfo.email}")
             appendLine("Username: @${createdPasskeyInfo.username}")
             appendLine("Activation Passkey: ${createdPasskeyInfo.activationPasskey}")
-            append("Open the Technician APK, enter your Email & Activation Passkey, then log in and change your password on first login.")
+            append("Open the app, choose TECHNICIAN LOGIN -> First-Time Activate, enter your Email & Activation Passkey, then complete setup.")
         }
         AlertDialog(
             onDismissRequest = onDismissCreatedTechPasskey,
@@ -2001,11 +2147,13 @@ fun SettingsScreen(
     user: UserSession,
     deviceAuthEnabled: Boolean,
     updateCheckBusy: Boolean,
+    passkeyBusy: Boolean = false,
     onToggleDeviceAuth: (Boolean) -> Unit,
     onSaveSettings: (CompanySettings) -> Unit,
     onPickCompanyLogoBitmap: (Bitmap?) -> Unit,
     onPickFallbackQrBitmap: (Bitmap) -> Unit,
     onPickAuthorisedSignatureBitmap: (Bitmap?) -> Unit = {},
+    onRegisterPasskey: () -> Unit = {},
     onExportBackup: suspend () -> String,
     onImportBackup: (String) -> Unit,
     onBackupExported: () -> Unit = {},
@@ -2018,7 +2166,7 @@ fun SettingsScreen(
     val focusManager = LocalFocusManager.current
     val textToolbar = LocalTextToolbar.current
 
-    var company by remember(settings.companyName) { mutableStateOf(settings.companyName) }
+    val lockedCompanyName = AppIdentity.OFFICIAL_COMPANY_NAME
     var mobile by remember(settings.mobile) { mutableStateOf(settings.mobile) }
     var email by remember(settings.email) { mutableStateOf(settings.email) }
     var address by remember(settings.address) { mutableStateOf(settings.address) }
@@ -2285,11 +2433,12 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         OutlinedTextField(
-                            value = company,
-                            onValueChange = { company = it },
-                            label = { Text("Company Name") },
+                            value = lockedCompanyName,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Company Name (Permanently Locked)") },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("settings_company_name")
+                            modifier = Modifier.fillMaxWidth().testTag("settings_company_name")
                         )
                         OutlinedTextField(
                             value = mobile,
@@ -2317,7 +2466,7 @@ fun SettingsScreen(
                                 clearFocusAndHideToolbar(focusManager, textToolbar)
                                 onSaveSettings(
                                     settings.copy(
-                                        companyName = company,
+                                        companyName = AppIdentity.OFFICIAL_COMPANY_NAME,
                                         mobile = mobile,
                                         email = email,
                                         address = address
@@ -2337,10 +2486,45 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Text("Company: ${settings.companyName}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                        Text("Company: ${AppIdentity.OFFICIAL_COMPANY_NAME}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
                         Text("Mobile / WhatsApp: ${settings.mobile}", style = MaterialTheme.typography.bodyMedium)
                         Text("Email: ${settings.email}", style = MaterialTheme.typography.bodyMedium)
                         Text("Address: ${settings.address}", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        }
+
+        // FIDO2 Passkey Registration Card (for all signed-in roles)
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.testTag("settings_passkey_card")
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.Fingerprint, contentDescription = null, tint = NavyDeep)
+                        Text("FIDO2 Passkey Security", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    }
+                    Text(
+                        text = "Register a server-verified Android Credential Manager Passkey (biometric / device lock) for passwordless login.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(
+                        onClick = onRegisterPasskey,
+                        enabled = !passkeyBusy,
+                        colors = ButtonDefaults.buttonColors(containerColor = NavyDeep, contentColor = Color.White),
+                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("register_passkey_button")
+                    ) {
+                        if (passkeyBusy) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Icon(Icons.Default.Fingerprint, contentDescription = null, tint = Color.White)
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (passkeyBusy) "Registering Passkey..." else "Register FIDO2 Passkey", fontWeight = FontWeight.Bold, color = Color.White)
                     }
                 }
             }
@@ -2356,7 +2540,7 @@ fun SettingsScreen(
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("Company Logo (Admin Only)", style = MaterialTheme.typography.titleLarge)
                         Text(
-                            text = "Upload a custom logo photo or use the built-in TSE Shield emblem across header, A4 Print, PDF, and PNG bills.",
+                            text = "Upload a custom logo photo or use the built-in TS Shield emblem across header, A4 Print, PDF, and PNG bills.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -2488,9 +2672,9 @@ fun SettingsScreen(
                         Text("Backup & App Updates (v${BuildConfig.VERSION_NAME})", style = MaterialTheme.typography.titleLarge)
                         Text(
                             text = if (canEditSettings) {
-                                "Save backups directly into phone Downloads/TSE_Billing or import from phone storage. Check GitHub Releases for APK updates."
+                                "Save backups directly into phone Downloads/Total_Solution or import from phone storage. Check GitHub Releases for APK updates."
                             } else {
-                                "Super Admin can export a full backup directly to phone Downloads/TSE_Billing and check for updates. Technicians have no backup access."
+                                "Super Admin can export a full backup directly to phone Downloads/Total_Solution and check for updates. Technicians have no backup access."
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant

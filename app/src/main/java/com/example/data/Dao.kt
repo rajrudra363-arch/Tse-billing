@@ -240,3 +240,64 @@ interface AuditLogDao {
     @Query("DELETE FROM audit_logs")
     suspend fun deleteAll()
 }
+
+@Dao
+interface ProductComboFileDao {
+    @Query("SELECT * FROM product_combo_files ORDER BY updatedAt DESC")
+    fun observeAll(): Flow<List<ProductComboFileEntity>>
+
+    @Query("SELECT * FROM product_combo_files ORDER BY updatedAt DESC")
+    suspend fun getAll(): List<ProductComboFileEntity>
+
+    @Query("SELECT * FROM product_combo_files WHERE comboFileId = :id LIMIT 1")
+    suspend fun findById(id: String): ProductComboFileEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(combo: ProductComboFileEntity)
+
+    @Query("DELETE FROM product_combo_files WHERE comboFileId = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM product_combo_files")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface EmployeeDao {
+    @Query("SELECT * FROM employees ORDER BY name COLLATE NOCASE ASC")
+    fun observeAll(): Flow<List<EmployeeEntity>>
+
+    @Query("SELECT * FROM employees ORDER BY name COLLATE NOCASE ASC")
+    suspend fun getAll(): List<EmployeeEntity>
+
+    @Query("SELECT * FROM employees WHERE employeeId = :id LIMIT 1")
+    suspend fun findById(id: String): EmployeeEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(employee: EmployeeEntity)
+
+    @Query("DELETE FROM employees WHERE employeeId = :id")
+    suspend fun deleteById(id: String)
+
+    @Query("DELETE FROM employees")
+    suspend fun deleteAll()
+}
+
+@Dao
+interface SalaryPaymentDao {
+    @Query("SELECT * FROM salary_payments ORDER BY paymentDate DESC, createdAt DESC")
+    fun observeAll(): Flow<List<SalaryPaymentEntity>>
+
+    @Query("SELECT * FROM salary_payments WHERE employeeId = :employeeId ORDER BY paymentDate DESC, createdAt DESC")
+    fun observeForEmployee(employeeId: String): Flow<List<SalaryPaymentEntity>>
+
+    @Query("SELECT * FROM salary_payments ORDER BY paymentDate DESC, createdAt DESC")
+    suspend fun getAll(): List<SalaryPaymentEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(payment: SalaryPaymentEntity)
+
+    @Query("DELETE FROM salary_payments")
+    suspend fun deleteAll()
+}
+

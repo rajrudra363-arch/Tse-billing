@@ -80,7 +80,7 @@ object DispatchCardGenerator {
                 textAlign = Paint.Align.CENTER
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             }
-            canvas.drawText("TSE", logoBounds.centerX(), logoBounds.centerY() + 16f, tsePaint)
+            canvas.drawText("TS", logoBounds.centerX(), logoBounds.centerY() + 16f, tsePaint)
         }
 
         val hTitlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -299,7 +299,7 @@ object DispatchCardGenerator {
         return try {
             val bmp = renderDispatchCardBitmap(company, request, technicianPhotoBase64)
             val dir = File(context.cacheDir, "photos").apply { mkdirs() }
-            val file = File(dir, "TSE_Dispatch_${request.id}.png")
+            val file = File(dir, "TS_Dispatch_${request.id}.png")
             FileOutputStream(file).use { out ->
                 bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
                 out.flush()

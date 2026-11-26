@@ -122,7 +122,7 @@ fun BackupPasteImportDialog(
                 onClick = {
                     val trimmed = jsonText.trim()
                     if (!trimmed.startsWith("{")) {
-                        localError = "Please paste valid TSE Billing backup JSON starting with '{'."
+                        localError = "Please paste valid ${com.example.data.AppIdentity.OFFICIAL_APP_NAME} backup JSON starting with '{'."
                     } else {
                         onImportJsonText(trimmed)
                         onDismiss()

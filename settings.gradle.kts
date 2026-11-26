@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "TSE Billing"
+rootProject.name = "TS – TOTAL SOLUTION"
 
 include(":app")

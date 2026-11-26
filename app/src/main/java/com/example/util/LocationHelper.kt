@@ -239,7 +239,7 @@ object LocationHelper {
         helpDescription: String
     ): String {
         return buildString {
-            appendLine("*TOTAL SOLUTION ENTERPRISES - CUSTOMER HELP REQUEST*")
+            appendLine("*TOTAL SOLUTION - CUSTOMER HELP REQUEST*")
             if (customerName.isNotBlank()) appendLine("Customer: ${customerName.trim()}")
             if (phone.isNotBlank()) appendLine("Mobile: ${phone.trim()}")
             if (address.isNotBlank()) appendLine("Address: ${address.trim()}")

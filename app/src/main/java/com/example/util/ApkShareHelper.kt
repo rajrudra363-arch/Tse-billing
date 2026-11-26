@@ -31,7 +31,7 @@ object ApkShareHelper {
         val cleanCode = shareCode.ifBlank { "Ask Admin for Invite Code" }
         val deepLink = if (shareCode.isNotBlank()) buildInviteDeepLink(targetRole, shareCode) else ""
         return buildString {
-            appendLine("*$companyName — TSE Billing App (v$versionName)*")
+            appendLine("*$companyName — TS – TOTAL SOLUTION App (v$versionName)*")
             appendLine("Role Access: *$roleTitle*")
             appendLine()
             appendLine("Your Workspace Invite Code:")
@@ -76,7 +76,7 @@ object ApkShareHelper {
                 }
             }
             val roleSuffix = if (targetRole == ROLE_SUPER_ADMIN) "SuperAdmin" else "Technician"
-            val destFile = File(dir, "TSE-Billing-v${versionName}-$roleSuffix.apk")
+            val destFile = File(dir, "TS-TOTAL-SOLUTION-v${versionName}-$roleSuffix.apk")
             sourceFile.inputStream().use { input ->
                 destFile.outputStream().use { output ->
                     input.copyTo(output, bufferSize = 64 * 1024)
@@ -113,7 +113,7 @@ object ApkShareHelper {
                 return targeted
             }
         }
-        return Intent.createChooser(baseIntent, "Share TSE Billing APK via WhatsApp").apply {
+        return Intent.createChooser(baseIntent, "Share TS – TOTAL SOLUTION APK via WhatsApp").apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
     }

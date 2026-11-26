@@ -7,6 +7,12 @@ import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 
+/**
+ * Local device biometric / screen-lock helper for quick app unlock or local UI confirmation.
+ * IMPORTANT: Never treat local biometric verification alone as server authentication; genuine
+ * Passkey registration and authentication must use [PasskeyAuthHelper] (Credential Manager FIDO2/WebAuthn)
+ * paired with Cloud Functions verification and Firebase custom token sign-in.
+ */
 object DeviceAuthHelper {
     private const val ALLOWED_AUTHENTICATORS =
         Authenticators.BIOMETRIC_STRONG or

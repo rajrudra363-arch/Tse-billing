@@ -78,7 +78,7 @@ object InvoicePdfPrinter {
 
     fun printInvoice(context: Context, payload: InvoicePrintPayload) {
         val printManager = context.getSystemService(Context.PRINT_SERVICE) as? PrintManager ?: return
-        val prefix = if (payload.documentType == DocumentType.QUOTATION) "TSE_Quotation" else "TSE_Invoice"
+        val prefix = if (payload.documentType == DocumentType.QUOTATION) "TS_Quotation" else "TS_Invoice"
         val safeNo = sanitizeFileName(payload.invoiceNo.ifBlank { "Document" })
         val jobName = "${prefix}_$safeNo"
         val attrs = PrintAttributes.Builder()
@@ -131,7 +131,7 @@ object InvoicePdfPrinter {
     fun shareInvoicePhoto(context: Context, payload: InvoicePrintPayload): Boolean {
         return try {
             val dir = File(context.cacheDir, "photos").apply { mkdirs() }
-            val prefix = if (payload.documentType == DocumentType.QUOTATION) "TSE_Quotation" else "TSE_Invoice"
+            val prefix = if (payload.documentType == DocumentType.QUOTATION) "TS_Quotation" else "TS_Invoice"
             val safeNo = sanitizeFileName(payload.invoiceNo.ifBlank { "Document" })
             val file = File(dir, "${prefix}_$safeNo.png")
             FileOutputStream(file).use { out ->
@@ -164,7 +164,7 @@ object InvoicePdfPrinter {
     fun sharePdf(context: Context, payload: InvoicePrintPayload): Boolean {
         return try {
             val dir = File(context.cacheDir, "pdfs").apply { mkdirs() }
-            val prefix = if (payload.documentType == DocumentType.QUOTATION) "TSE_Quotation" else "TSE_Invoice"
+            val prefix = if (payload.documentType == DocumentType.QUOTATION) "TS_Quotation" else "TS_Invoice"
             val safeNo = sanitizeFileName(payload.invoiceNo.ifBlank { "Bill" })
             val file = File(dir, "${prefix}_$safeNo.pdf")
             FileOutputStream(file).use { out ->
@@ -208,7 +208,7 @@ object InvoicePdfPrinter {
                 callback.onLayoutCancelled()
                 return
             }
-            val prefix = if (payload.documentType == DocumentType.QUOTATION) "TSE_Quotation" else "TSE_Invoice"
+            val prefix = if (payload.documentType == DocumentType.QUOTATION) "TS_Quotation" else "TS_Invoice"
             val safeNo = sanitizeFileName(payload.invoiceNo.ifBlank { "Bill" })
             val info = PrintDocumentInfo.Builder("${prefix}_$safeNo.pdf")
                 .setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT)
@@ -855,7 +855,7 @@ object InvoicePdfPrinter {
             textAlign = Paint.Align.CENTER
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
-        canvas.drawText("TSE", sx(60f), sy(98f), tsePaint)
+        canvas.drawText("TS", sx(60f), sy(98f), tsePaint)
     }
 
     private fun drawRadioIndicator(canvas: Canvas, cx: Float, cy: Float, selected: Boolean) {

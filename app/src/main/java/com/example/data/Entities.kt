@@ -30,7 +30,10 @@ data class BillEntity(
     val documentType: String = "BILL",
     val isHelpBill: Boolean = false,
     val helpRequestId: Long = 0L,
-    val quotationNote: String = ""
+    val quotationNote: String = "",
+    val paymentStatus: String = "UNPAID", // PAID, PARTIAL, UNPAID
+    val linkedPaymentId: String = "",
+    val stockDeducted: Boolean = false
 )
 
 @Entity(tableName = "customers")
@@ -51,7 +54,22 @@ data class ProductEntity(
     val defaultRate: Double = 0.0,
     val folder: String = "General",
     val stockQty: Double = 0.0,
-    val minStockAlert: Double = 0.0
+    val minStockAlert: Double = 0.0,
+    val purchasePrice: Double = 0.0,
+    val sku: String = "",
+    val barcode: String = ""
+)
+
+@Entity(tableName = "product_combo_files")
+data class ProductComboFileEntity(
+    @PrimaryKey val comboFileId: String,
+    val companyId: String = "",
+    val name: String,
+    val description: String = "",
+    val itemsJson: String = "[]",
+    val comboPrice: Double = 0.0,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
 )
 
 @Entity(tableName = "user_accounts")
@@ -61,7 +79,12 @@ data class UserAccountEntity(
     val passwordHash: String,
     val role: String,
     val phone: String = "",
-    val photoBase64: String = ""
+    val photoBase64: String = "",
+    val email: String = "",
+    val uid: String = "",
+    val techId: String = "",
+    val companyId: String = "",
+    val loginEnabled: Boolean = true
 )
 
 @Entity(tableName = "app_config")
@@ -92,7 +115,10 @@ data class CustomerHelpEntity(
     val installationDate: String = "",
     val installationReminderSent: Boolean = false,
     val rejectedReason: String = "",
-    val assignedTechnician: String = ""
+    val assignedTechnician: String = "",
+    val helpTokenId: String = "",
+    val quotationId: String = "",
+    val approvedQuotationJson: String = ""
 )
 
 @Entity(tableName = "technician_settlements")
@@ -146,4 +172,39 @@ data class AuditLogEntity(
     val actorRole: String,
     val details: String = "",
     val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(tableName = "employees")
+data class EmployeeEntity(
+    @PrimaryKey val employeeId: String,
+    val employeeCode: String,
+    val companyId: String = "",
+    val name: String,
+    val mobile: String = "",
+    val hiringDate: String,
+    val workStartDate: String,
+    val workStopDate: String = "",
+    val monthlySalary: Double = 0.0,
+    val address: String = "",
+    val notes: String = "",
+    val isActive: Boolean = true,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis(),
+    val createdByUid: String = ""
+)
+
+@Entity(tableName = "salary_payments")
+data class SalaryPaymentEntity(
+    @PrimaryKey val paymentId: String,
+    val employeeId: String,
+    val companyId: String = "",
+    val amount: Double,
+    val paymentDate: String,
+    val method: String = "Cash",
+    val referenceNo: String = "",
+    val notes: String = "",
+    val cycleStart: String = "",
+    val cycleEnd: String = "",
+    val createdAt: Long = System.currentTimeMillis(),
+    val createdByUid: String = ""
 )

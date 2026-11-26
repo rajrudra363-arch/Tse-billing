@@ -29,6 +29,11 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(uid));
     }
 
+    function isMemberLoginActive(workspaceId) {
+      return !exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) ||
+        memberDoc(workspaceId, request.auth.uid).data.get('loginEnabled', true) == true;
+    }
+
     function isWorkspaceOwner(workspaceId) {
       return isSignedIn() &&
         exists(/databases/$(database)/documents/workspaces/$(workspaceId)) &&
@@ -36,11 +41,16 @@ service cloud.firestore {
     }
 
     function isWorkspaceAdmin(workspaceId) {
-      return isBootstrappedAdmin() || isWorkspaceOwner(workspaceId);
+      return (isBootstrappedAdmin() || isWorkspaceOwner(workspaceId) ||
+        (isSignedIn() &&
+          exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
+          memberDoc(workspaceId, request.auth.uid).data.role == 'admin')) &&
+        !isTechnicianMember(workspaceId) &&
+        !isSuperAdminMember(workspaceId);
     }
 
     function isWorkspaceMember(workspaceId) {
-      return isSignedIn() && (
+      return isSignedIn() && isMemberLoginActive(workspaceId) && (
         isWorkspaceAdmin(workspaceId) ||
         exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid))
       );
@@ -49,13 +59,31 @@ service cloud.firestore {
     function isTechnicianMember(workspaceId) {
       return isSignedIn() &&
         exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
-        memberDoc(workspaceId, request.auth.uid).data.role == 'technician';
+        memberDoc(workspaceId, request.auth.uid).data.role == 'technician' &&
+        memberDoc(workspaceId, request.auth.uid).data.get('loginEnabled', true) == true;
     }
 
     function isSuperAdminMember(workspaceId) {
       return isSignedIn() &&
         exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) &&
-        memberDoc(workspaceId, request.auth.uid).data.role == 'super_admin';
+        memberDoc(workspaceId, request.auth.uid).data.role == 'super_admin' &&
+        memberDoc(workspaceId, request.auth.uid).data.get('loginEnabled', true) == true;
+    }
+
+    // Strict Super Admin ONLY check for Employee & Salary Management:
+    // Explicitly denies Admin and Technician roles.
+    function isStrictSuperAdmin(companyId) {
+      return isSignedIn() &&
+        !exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+        request.auth.token.email != 'rajrudra363@gmail.com' &&
+        (!exists(/databases/$(database)/documents/workspaces/$(companyId)) ||
+          workspaceDoc(companyId).data.ownerUid != request.auth.uid) &&
+        !isTechnicianMember(companyId) &&
+        (
+          isSuperAdminMember(companyId) ||
+          request.auth.token.get('role', '') == 'super_admin' ||
+          exists(/databases/$(database)/documents/superAdmins/$(request.auth.uid))
+        );
     }
 
     function isValidWorkspaceCreate(workspaceId) {
@@ -68,7 +96,7 @@ service cloud.firestore {
           'voiceBillDone', 'voiceModelId', 'memberUids', 'createdAt', 'updatedAt'
         ]) &&
         d.keys().hasOnly([
-          'workspaceId', 'ownerUid', 'ownerEmail', 'techShareCode', 'superShareCode',
+          'workspaceId', 'companyId', 'ownerUid', 'ownerEmail', 'techShareCode', 'superShareCode',
           'companyName', 'mobile', 'email', 'address', 'upiId', 'payeeName',
           'logoBase64', 'authorisedSignatureBase64', 'fallbackQrBase64',
           'headerNote', 'voiceLogin', 'voicePostLogin', 'voiceBillStart',
@@ -104,7 +132,8 @@ service cloud.firestore {
         d.keys().hasOnly([
           'billId', 'invoiceNo', 'date', 'customerName', 'customerDetails',
           'itemsJson', 'subtotal', 'discount', 'grandTotal', 'paidAmount',
-          'dueAmount', 'paymentMode', 'signatureBase64', 'customQrText',
+          'dueAmount', 'paymentMode', 'paymentStatus', 'linkedPaymentId', 'stockDeducted',
+          'signatureBase64', 'customQrText',
           'createdBy', 'createdByUid', 'extraChargeType', 'extraChargeAmount',
           'secondaryChargeType', 'secondaryChargeAmount',
           'staffRating', 'staffReviewNote', 'documentType', 'helpBill',
@@ -121,6 +150,9 @@ service cloud.firestore {
         d.paidAmount is number && d.paidAmount >= 0 &&
         d.dueAmount is number && d.dueAmount >= 0 &&
         d.paymentMode is string &&
+        (!('paymentStatus' in d) || d.paymentStatus in ['PAID', 'PARTIAL', 'UNPAID']) &&
+        (!('linkedPaymentId' in d) || d.linkedPaymentId is string) &&
+        (!('stockDeducted' in d) || d.stockDeducted is bool) &&
         d.signatureBase64 is string && d.customQrText is string &&
         d.createdBy is string && d.createdBy.size() >= 1 &&
         d.createdByUid is string && d.createdByUid.size() >= 1 &&
@@ -137,7 +169,29 @@ service cloud.firestore {
         d.updatedAt is timestamp && d.updatedAt <= request.time;
     }
 
-    // ===== Collections =====
+    // ===== Backend-Only Secret Collections (Zero Client SDK Access) =====
+
+    match /otpChallenges/{id} {
+      allow read, write: if false;
+    }
+
+    match /passkeyChallenges/{id} {
+      allow read, write: if false;
+    }
+
+    match /passkeyCredentials/{id} {
+      allow read, write: if false;
+    }
+
+    match /processedWebhookEvents/{id} {
+      allow read, write: if false;
+    }
+
+    match /secondFactorSecrets/{id} {
+      allow read, write: if false;
+    }
+
+    // ===== Role Allowlists =====
 
     match /admins/{userId} {
       allow get: if isSignedIn() && (request.auth.uid == userId || isBootstrappedAdmin());
@@ -153,8 +207,101 @@ service cloud.firestore {
       allow delete: if isBootstrappedAdmin();
     }
 
+    match /superAdmins/{userId} {
+      allow get: if isSignedIn() && request.auth.uid == userId;
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    // ===== Company Scope & Product Combo Files (Part 11) =====
+
+    match /companies/{companyId} {
+      allow get: if isWorkspaceMember(companyId);
+      allow list: if false;
+      allow create, update: if isWorkspaceAdmin(companyId) &&
+        request.resource.data.companyId == companyId &&
+        request.resource.data.companyName == 'TOTAL SOLUTION';
+      allow delete: if false;
+
+      match /productComboFiles/{comboFileId} {
+        allow get, list: if isWorkspaceMember(companyId);
+        allow create: if isWorkspaceAdmin(companyId) && isValidId(comboFileId) &&
+          request.resource.data.keys().hasAll([
+            'comboFileId', 'companyId', 'name', 'description', 'itemsJson', 'comboPrice', 'createdAt', 'updatedAt'
+          ]) &&
+          request.resource.data.keys().hasOnly([
+            'comboFileId', 'companyId', 'name', 'description', 'itemsJson', 'comboPrice', 'createdAt', 'updatedAt'
+          ]) &&
+          request.resource.data.comboFileId == comboFileId &&
+          request.resource.data.companyId == companyId &&
+          request.resource.data.name is string && request.resource.data.name.size() >= 1 &&
+          request.resource.data.description is string &&
+          request.resource.data.itemsJson is string && request.resource.data.itemsJson.size() <= 200000 &&
+          request.resource.data.comboPrice is number && request.resource.data.comboPrice >= 0 &&
+          request.resource.data.createdAt is int &&
+          request.resource.data.updatedAt is int;
+        allow update: if isWorkspaceAdmin(companyId) &&
+          request.resource.data.comboFileId == resource.data.comboFileId &&
+          request.resource.data.companyId == resource.data.companyId &&
+          request.resource.data.createdAt == resource.data.createdAt &&
+          request.resource.data.name is string && request.resource.data.name.size() >= 1 &&
+          request.resource.data.comboPrice is number && request.resource.data.comboPrice >= 0;
+        allow delete: if isWorkspaceAdmin(companyId);
+      }
+    }
+
+    // ===== Super Admin ONLY Employee & Salary Management (Parts 16 & 17) =====
+
+    match /employees/{employeeId} {
+      allow get, list: if resource.data.companyId is string && isStrictSuperAdmin(resource.data.companyId);
+      allow create: if isValidId(employeeId) &&
+        request.resource.data.companyId is string &&
+        isStrictSuperAdmin(request.resource.data.companyId) &&
+        request.resource.data.keys().hasAll([
+          'employeeId', 'employeeCode', 'companyId', 'name', 'mobile', 'hiringDate',
+          'workStartDate', 'workStopDate', 'monthlySalary', 'address', 'notes',
+          'isActive', 'createdAt', 'updatedAt', 'createdByUid'
+        ]) &&
+        request.resource.data.keys().hasOnly([
+          'employeeId', 'employeeCode', 'companyId', 'name', 'mobile', 'hiringDate',
+          'workStartDate', 'workStopDate', 'monthlySalary', 'address', 'notes',
+          'isActive', 'createdAt', 'updatedAt', 'createdByUid'
+        ]) &&
+        request.resource.data.employeeId == employeeId &&
+        request.resource.data.name is string && request.resource.data.name.size() >= 1 &&
+        request.resource.data.mobile is string &&
+        request.resource.data.monthlySalary is number && request.resource.data.monthlySalary >= 0 &&
+        request.resource.data.createdByUid == request.auth.uid;
+      allow update: if resource.data.companyId is string &&
+        isStrictSuperAdmin(resource.data.companyId) &&
+        request.resource.data.employeeId == resource.data.employeeId &&
+        request.resource.data.companyId == resource.data.companyId &&
+        request.resource.data.monthlySalary is number && request.resource.data.monthlySalary >= 0;
+      allow delete: if resource.data.companyId is string && isStrictSuperAdmin(resource.data.companyId);
+
+      match /salaryPayments/{paymentId} {
+        allow get, list: if isStrictSuperAdmin(get(/databases/$(database)/documents/employees/$(employeeId)).data.companyId);
+        allow create: if isValidId(paymentId) &&
+          isStrictSuperAdmin(get(/databases/$(database)/documents/employees/$(employeeId)).data.companyId) &&
+          request.resource.data.keys().hasAll([
+            'paymentId', 'employeeId', 'companyId', 'amount', 'paymentDate', 'method',
+            'referenceNo', 'notes', 'cycleStart', 'cycleEnd', 'createdAt', 'createdByUid'
+          ]) &&
+          request.resource.data.keys().hasOnly([
+            'paymentId', 'employeeId', 'companyId', 'amount', 'paymentDate', 'method',
+            'referenceNo', 'notes', 'cycleStart', 'cycleEnd', 'createdAt', 'createdByUid'
+          ]) &&
+          request.resource.data.paymentId == paymentId &&
+          request.resource.data.employeeId == employeeId &&
+          request.resource.data.amount is number && request.resource.data.amount > 0 &&
+          request.resource.data.createdByUid == request.auth.uid;
+        allow update, delete: if false;
+      }
+    }
+
+    // ===== Workspace Directory & Shared Business Collections =====
+
     match /workspaceDirectories/{shareCode} {
-      // Capability token lookup: list is disabled; get requires knowing exact high-entropy shareCode.
       allow get: if isSignedIn() && isValidId(shareCode);
       allow list: if false;
       allow create: if isSignedIn() && isValidId(shareCode) &&
@@ -178,8 +325,8 @@ service cloud.firestore {
       allow get: if isSignedIn() && isValidId(workspaceId) && (
         isBootstrappedAdmin() ||
         resource.data.ownerUid == request.auth.uid ||
-        request.auth.uid in resource.data.memberUids ||
-        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid))
+        (request.auth.uid in resource.data.memberUids && isMemberLoginActive(workspaceId)) ||
+        (exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) && isMemberLoginActive(workspaceId))
       );
       allow list: if isSignedIn() && (
         isBootstrappedAdmin() ||
@@ -210,16 +357,17 @@ service cloud.firestore {
           !('activationPasskey' in request.resource.data) &&
           request.resource.data.keys().hasAll(['userId', 'email', 'displayName', 'role', 'inviteCode', 'createdAt', 'updatedAt']) &&
           request.resource.data.keys().hasOnly([
-            'userId', 'email', 'displayName', 'name', 'username', 'phone',
-            'role', 'workspaceId', 'inviteCode', 'mustChangePassword',
-            'authProvider', 'activationPasskeyHash', 'activationPasskeyCreatedAt', 'activatedAt',
-            'createdByUid', 'passwordChangedAt', 'createdAt', 'updatedAt'
+            'userId', 'uid', 'techId', 'email', 'displayName', 'name', 'username', 'phone',
+            'role', 'workspaceId', 'companyId', 'inviteCode', 'mustChangePassword', 'firstLoginCompleted',
+            'loginEnabled', 'authProvider', 'activationPasskeyHash', 'activationPasskeyCreatedAt', 'activatedAt',
+            'createdByUid', 'passwordChangedAt', 'statusUpdatedAt', 'statusUpdatedByUid', 'createdAt', 'updatedAt'
           ]) &&
           request.resource.data.userId == memberUid &&
           request.resource.data.email is string &&
           request.resource.data.displayName is string &&
           request.resource.data.inviteCode is string &&
           (!('mustChangePassword' in request.resource.data) || request.resource.data.mustChangePassword is bool) &&
+          (!('loginEnabled' in request.resource.data) || request.resource.data.loginEnabled is bool) &&
           (!('activationPasskeyHash' in request.resource.data) || request.resource.data.activationPasskeyHash is string) &&
           (!('workspaceId' in request.resource.data) || request.resource.data.workspaceId == workspaceId) &&
           request.resource.data.createdAt is timestamp && request.resource.data.createdAt <= request.time &&
@@ -244,21 +392,24 @@ service cloud.firestore {
             request.resource.data.userId == resource.data.userId &&
             request.resource.data.createdAt == resource.data.createdAt &&
             request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'displayName', 'name', 'username', 'phone', 'email', 'role',
-              'mustChangePassword', 'activationPasskeyHash', 'activationPasskeyCreatedAt',
-              'activatedAt', 'updatedAt'
+              'displayName', 'name', 'username', 'phone', 'email', 'role', 'techId',
+              'loginEnabled', 'statusUpdatedAt', 'statusUpdatedByUid',
+              'mustChangePassword', 'firstLoginCompleted', 'activationPasskeyHash',
+              'activationPasskeyCreatedAt', 'activatedAt', 'updatedAt'
             ]) &&
             request.resource.data.role in ['admin', 'technician', 'super_admin']
           ) || (
             isSignedIn() &&
             request.auth.uid == memberUid &&
+            isMemberLoginActive(workspaceId) &&
             request.resource.data.userId == resource.data.userId &&
             request.resource.data.role == resource.data.role &&
             request.resource.data.createdAt == resource.data.createdAt &&
+            request.resource.data.get('loginEnabled', true) == resource.data.get('loginEnabled', true) &&
             resource.data.mustChangePassword == true &&
             request.resource.data.mustChangePassword == false &&
             request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'mustChangePassword', 'passwordChangedAt', 'updatedAt'
+              'mustChangePassword', 'firstLoginCompleted', 'passwordChangedAt', 'updatedAt'
             ]) &&
             (!('passwordChangedAt' in request.resource.data) ||
               (request.resource.data.passwordChangedAt is timestamp && request.resource.data.passwordChangedAt <= request.time))
@@ -271,7 +422,10 @@ service cloud.firestore {
         allow get, list: if isWorkspaceMember(workspaceId);
         allow create: if isWorkspaceAdmin(workspaceId) && isValidId(accountId) &&
           request.resource.data.keys().hasAll(['username', 'displayName', 'passwordHash', 'role', 'phone', 'photoBase64', 'updatedAt']) &&
-          request.resource.data.keys().hasOnly(['username', 'displayName', 'passwordHash', 'role', 'phone', 'photoBase64', 'updatedAt']) &&
+          request.resource.data.keys().hasOnly([
+            'username', 'displayName', 'passwordHash', 'role', 'phone', 'photoBase64',
+            'email', 'uid', 'techId', 'companyId', 'loginEnabled', 'updatedAt'
+          ]) &&
           request.resource.data.username is string && request.resource.data.username.size() >= 3 &&
           request.resource.data.displayName is string &&
           request.resource.data.passwordHash is string && request.resource.data.passwordHash.size() >= 16 &&
@@ -281,7 +435,8 @@ service cloud.firestore {
           request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
         allow update: if isWorkspaceAdmin(workspaceId) &&
           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-            'username', 'displayName', 'passwordHash', 'role', 'phone', 'photoBase64', 'updatedAt'
+            'username', 'displayName', 'passwordHash', 'role', 'phone', 'photoBase64',
+            'email', 'uid', 'techId', 'companyId', 'loginEnabled', 'updatedAt'
           ]) &&
           request.resource.data.role in ['admin', 'technician', 'super_admin'] &&
           request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time;
@@ -293,12 +448,16 @@ service cloud.firestore {
         allow create: if isWorkspaceAdmin(workspaceId) && isValidId(productId) &&
           request.resource.data.keys().hasAll(['productId', 'name', 'unit', 'defaultRate', 'folder', 'updatedAt']) &&
           request.resource.data.keys().hasOnly([
-            'productId', 'name', 'unit', 'defaultRate', 'folder', 'stockQty', 'minStockAlert', 'updatedAt'
+            'productId', 'name', 'unit', 'defaultRate', 'purchasePrice', 'sku', 'barcode',
+            'folder', 'stockQty', 'minStockAlert', 'updatedAt'
           ]) &&
           request.resource.data.productId == productId &&
           request.resource.data.name is string && request.resource.data.name.size() >= 1 &&
           request.resource.data.unit is string &&
           request.resource.data.defaultRate is number && request.resource.data.defaultRate >= 0 &&
+          (!('purchasePrice' in request.resource.data) || (request.resource.data.purchasePrice is number && request.resource.data.purchasePrice >= 0)) &&
+          (!('sku' in request.resource.data) || request.resource.data.sku is string) &&
+          (!('barcode' in request.resource.data) || request.resource.data.barcode is string) &&
           request.resource.data.folder is string &&
           (!('stockQty' in request.resource.data) ||
             (request.resource.data.stockQty is number && request.resource.data.stockQty >= 0)) &&
@@ -310,10 +469,12 @@ service cloud.firestore {
             isWorkspaceAdmin(workspaceId) &&
             request.resource.data.productId == resource.data.productId &&
             request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-              'name', 'unit', 'defaultRate', 'folder', 'stockQty', 'minStockAlert', 'updatedAt'
+              'name', 'unit', 'defaultRate', 'purchasePrice', 'sku', 'barcode',
+              'folder', 'stockQty', 'minStockAlert', 'updatedAt'
             ]) &&
             request.resource.data.name is string && request.resource.data.name.size() >= 1 &&
             request.resource.data.defaultRate is number && request.resource.data.defaultRate >= 0 &&
+            (!('purchasePrice' in request.resource.data) || (request.resource.data.purchasePrice is number && request.resource.data.purchasePrice >= 0)) &&
             (!('stockQty' in request.resource.data) ||
               (request.resource.data.stockQty is number && request.resource.data.stockQty >= 0)) &&
             (!('minStockAlert' in request.resource.data) ||
@@ -331,6 +492,7 @@ service cloud.firestore {
             (!('minStockAlert' in resource.data) ||
               request.resource.data.minStockAlert == resource.data.minStockAlert) &&
             request.resource.data.stockQty is number && request.resource.data.stockQty >= 0 &&
+            request.resource.data.stockQty <= resource.data.get('stockQty', 0) &&
             (!('minStockAlert' in request.resource.data) ||
               (request.resource.data.minStockAlert is number && request.resource.data.minStockAlert >= 0))
           )
@@ -376,7 +538,8 @@ service cloud.firestore {
           request.resource.data.diff(resource.data).affectedKeys().hasOnly([
             'invoiceNo', 'date', 'customerName', 'customerDetails', 'itemsJson',
             'subtotal', 'discount', 'grandTotal', 'paidAmount', 'dueAmount',
-            'paymentMode', 'signatureBase64', 'customQrText', 'createdBy',
+            'paymentMode', 'paymentStatus', 'linkedPaymentId', 'stockDeducted',
+            'signatureBase64', 'customQrText', 'createdBy',
             'extraChargeType', 'extraChargeAmount', 'secondaryChargeType', 'secondaryChargeAmount',
             'staffRating', 'staffReviewNote',
             'documentType', 'helpBill', 'helpRequestId', 'quotationNote', 'updatedAt'
@@ -393,8 +556,16 @@ service cloud.firestore {
 
       match /upiTransactions/{paymentId} {
         allow get, list: if isWorkspaceMember(workspaceId);
-        allow create, update: if isWorkspaceMember(workspaceId) && isValidId(paymentId);
-        allow delete: if isWorkspaceAdmin(workspaceId);
+        // Zero-trust rule: clients can NEVER create or mark transactions as SUCCESS/PAID.
+        // Only the server-side payment gateway webhook Cloud Function (Admin SDK) marks SUCCESS/PAID.
+        allow create: if isWorkspaceMember(workspaceId) && isValidId(paymentId) &&
+          request.resource.data.status == 'PENDING' &&
+          request.resource.data.get('verifiedByWebhook', false) == false;
+        allow update: if isWorkspaceMember(workspaceId) &&
+          resource.data.status == 'PENDING' &&
+          request.resource.data.status in ['CANCELLED', 'EXPIRED'] &&
+          request.resource.data.get('verifiedByWebhook', false) == false;
+        allow delete: if false;
       }
 
       match /helpRequests/{helpId} {
@@ -407,7 +578,8 @@ service cloud.firestore {
             'acceptedAt', 'solvedAt', 'billId'
           ]) &&
           request.resource.data.keys().hasOnly([
-            'helpId', 'customerName', 'phone', 'address', 'locationUrl',
+            'helpId', 'helpTokenId', 'quotationId', 'approvedQuotationJson',
+            'customerName', 'phone', 'address', 'locationUrl',
             'helpDescription', 'category', 'quotationStatus', 'installationDate',
             'installationReminderSent', 'rejectedReason', 'assignedTechnician',
             'status', 'createdAt', 'updatedAt',
@@ -422,10 +594,16 @@ service cloud.firestore {
           (!('installationReminderSent' in request.resource.data) || request.resource.data.installationReminderSent is bool) &&
           (!('rejectedReason' in request.resource.data) || request.resource.data.rejectedReason is string) &&
           (!('assignedTechnician' in request.resource.data) || request.resource.data.assignedTechnician is string) &&
+          (!('helpTokenId' in request.resource.data) || request.resource.data.helpTokenId is string) &&
+          (!('quotationId' in request.resource.data) || request.resource.data.quotationId is string) &&
+          (!('approvedQuotationJson' in request.resource.data) || request.resource.data.approvedQuotationJson is string) &&
           (
             (
               isWorkspaceAdmin(workspaceId) &&
-              request.resource.data.status in ['OPEN', 'ACCEPTED', 'SOLVED', 'NOT_SOLVED', 'RESOLVED', 'REJECTED']
+              request.resource.data.status in [
+                'OPEN', 'ACCEPTED', 'POSTPONED', 'INSTALLATION_IN_PROGRESS',
+                'INSTALLATION_COMPLETED', 'BILLED', 'SOLVED', 'NOT_SOLVED', 'RESOLVED', 'REJECTED'
+              ]
             ) || (
               isTechnicianMember(workspaceId) &&
               request.resource.data.get('category', '') == 'QUOTATION' &&
@@ -435,7 +613,10 @@ service cloud.firestore {
           );
         allow update: if (
           isWorkspaceAdmin(workspaceId) &&
-          request.resource.data.status in ['OPEN', 'ACCEPTED', 'SOLVED', 'NOT_SOLVED', 'RESOLVED', 'REJECTED'] &&
+          request.resource.data.status in [
+            'OPEN', 'ACCEPTED', 'POSTPONED', 'INSTALLATION_IN_PROGRESS',
+            'INSTALLATION_COMPLETED', 'BILLED', 'SOLVED', 'NOT_SOLVED', 'RESOLVED', 'REJECTED'
+          ] &&
           (!('category' in request.resource.data) ||
             request.resource.data.category in ['REGULAR_SERVICE', 'EMERGENCY', 'INSTALLATION', 'QUOTATION']) &&
           (!('quotationStatus' in request.resource.data) ||
@@ -446,7 +627,10 @@ service cloud.firestore {
             'status', 'acceptedBy', 'acceptedByUid', 'acceptedByName',
             'acceptedByPhone', 'acceptedAt', 'solvedAt', 'billId', 'rejectedReason', 'updatedAt'
           ]) &&
-          request.resource.data.status in ['ACCEPTED', 'SOLVED', 'NOT_SOLVED', 'REJECTED'] &&
+          request.resource.data.status in [
+            'ACCEPTED', 'POSTPONED', 'INSTALLATION_IN_PROGRESS',
+            'INSTALLATION_COMPLETED', 'BILLED', 'SOLVED', 'NOT_SOLVED', 'REJECTED'
+          ] &&
           (!('rejectedReason' in request.resource.data) || request.resource.data.rejectedReason is string) &&
           (resource.data.acceptedByUid == '' || resource.data.acceptedByUid == request.auth.uid)
         );
@@ -515,7 +699,7 @@ service cloud.firestore {
             'expireAt', 'restoredAt', 'restoredBy'
           ]) &&
           request.resource.data.trashId == trashId &&
-          request.resource.data.entityType in ['BILL', 'CUSTOMER', 'PRODUCT', 'EXPENSE', 'HELP', 'HELP_REQUEST', 'SETTLEMENT'] &&
+          request.resource.data.entityType in ['BILL', 'CUSTOMER', 'PRODUCT', 'EXPENSE', 'HELP', 'HELP_REQUEST', 'SETTLEMENT', 'COMBO_FILE'] &&
           request.resource.data.entityId is string && request.resource.data.entityId.size() >= 1 &&
           request.resource.data.title is string &&
           request.resource.data.summary is string &&

@@ -3,6 +3,13 @@ package com.example.data
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
+import java.util.Locale
+import java.util.UUID
+
+object AppIdentity {
+    const val OFFICIAL_APP_NAME = "TS – TOTAL SOLUTION"
+    const val OFFICIAL_COMPANY_NAME = "TOTAL SOLUTION"
+}
 
 data class InvoiceItem(
     val localId: Long = System.nanoTime(),
@@ -73,6 +80,78 @@ enum class PaymentMode(val label: String) {
     }
 }
 
+enum class BillPaymentStatus(val code: String, val label: String) {
+    PAID("PAID", "Paid"),
+    PARTIAL("PARTIAL", "Partially Paid"),
+    UNPAID("UNPAID", "Unpaid");
+
+    companion object {
+        fun compute(grandTotal: Double, paidAmount: Double): BillPaymentStatus {
+            val total = grandTotal.coerceAtLeast(0.0)
+            val paid = paidAmount.coerceAtLeast(0.0)
+            if (total <= 0.009) return if (paid > 0.009) PAID else UNPAID
+            return when {
+                paid + 0.009 >= total -> PAID
+                paid > 0.009 -> PARTIAL
+                else -> UNPAID
+            }
+        }
+
+        fun resolveForBill(bill: BillEntity): BillPaymentStatus {
+            val explicit = entries.firstOrNull { it.code.equals(bill.paymentStatus, ignoreCase = true) }
+            if (bill.paymentStatus.isNotBlank() && explicit != null) {
+                return explicit
+            }
+            return compute(bill.grandTotal, bill.paidAmount)
+        }
+    }
+}
+
+enum class PaymentGatewayStatus(val code: String, val label: String) {
+    PENDING("PENDING", "Pending"),
+    SUCCESS("SUCCESS", "Successful"),
+    FAILED("FAILED", "Failed"),
+    CANCELLED("CANCELLED", "Cancelled"),
+    EXPIRED("EXPIRED", "Expired");
+
+    companion object {
+        fun fromString(raw: String): PaymentGatewayStatus {
+            val norm = raw.trim().uppercase(Locale.US)
+            return when (norm) {
+                "PAID", "SUCCESS" -> SUCCESS
+                "FAILED" -> FAILED
+                "CANCELLED", "CANCELED" -> CANCELLED
+                "EXPIRED" -> EXPIRED
+                else -> PENDING
+            }
+        }
+    }
+}
+
+enum class BillPaymentFilter(val label: String) {
+    ALL("All"),
+    SUCCESSFUL_PAYMENTS("Successful Payments"),
+    PENDING_PAYMENTS("Pending Payments"),
+    FAILED_PAYMENTS("Failed Payments"),
+    PAID_BILLS("Paid Bills"),
+    UNPAID_BILLS("Unpaid Bills"),
+    PARTIALLY_PAID_BILLS("Partially Paid Bills")
+}
+
+object HelpWorkflowStatus {
+    const val OPEN = "OPEN"
+    const val ASSIGNED = "ASSIGNED"
+    const val ACCEPTED = "ACCEPTED"
+    const val POSTPONED = "POSTPONED"
+    const val INSTALLATION_IN_PROGRESS = "INSTALLATION_IN_PROGRESS"
+    const val INSTALLATION_COMPLETED = "INSTALLATION_COMPLETED"
+    const val BILLED = "BILLED"
+    const val SOLVED = "SOLVED"
+    const val NOT_SOLVED = "NOT_SOLVED"
+    const val RESOLVED = "RESOLVED"
+    const val REJECTED = "REJECTED"
+}
+
 enum class ChargeType(val label: String) {
     NONE("None"),
     SERVICE("Service Charges"),
@@ -112,16 +191,16 @@ enum class VoicePreset(
 }
 
 data class VoiceAndNoteSettings(
-    val headerNote: String = "Welcome to Total Solution Enterprises — CCTV Security, Sales, Installation & Support",
-    val loginVoice: String = "Welcome to Total Solution Bill system. Select username and enter password.",
-    val postLoginVoice: String = "Login successful. Welcome to Total Solution Enterprises.",
+    val headerNote: String = "Welcome to ${AppIdentity.OFFICIAL_COMPANY_NAME} — CCTV Security, Sales, Installation & Support",
+    val loginVoice: String = "Welcome to ${AppIdentity.OFFICIAL_APP_NAME}. Select your role and sign in.",
+    val postLoginVoice: String = "Login successful. Welcome to ${AppIdentity.OFFICIAL_COMPANY_NAME}.",
     val billGeneratingVoice: String = "Generating bill. Please verify customer summary.",
-    val billCompletedVoice: String = "Bill generated. Total amount is {amount} rupees. Thank you for choosing Total Solution Enterprises.",
+    val billCompletedVoice: String = "Bill generated. Total amount is {amount} rupees. Thank you for choosing ${AppIdentity.OFFICIAL_COMPANY_NAME}.",
     val voiceModelId: String = VoicePreset.CLEAR.id
 )
 
 data class CompanySettings(
-    val companyName: String = "TOTAL SOLUTION ENTERPRISES",
+    val companyName: String = AppIdentity.OFFICIAL_COMPANY_NAME,
     val mobile: String = "7083805120",
     val email: String = "totalsolution7020@gmail.com",
     val address: String = "B1, Santa Anna Holiday Homes, Naika Vaddo, Calangute, North Goa 403516.",
@@ -131,7 +210,7 @@ data class CompanySettings(
 
 data class UpiSettings(
     val upiId: String = "",
-    val payeeName: String = "Manoj Kumar Saha",
+    val payeeName: String = AppIdentity.OFFICIAL_COMPANY_NAME,
     val fallbackQrBase64: String = ""
 )
 
@@ -156,7 +235,10 @@ data class TechActivationState(
     val username: String = "",
     val name: String = "",
     val workspaceId: String = "",
-    val companyName: String = ""
+    val companyName: String = AppIdentity.OFFICIAL_COMPANY_NAME,
+    val techId: String = "",
+    val phone: String = "",
+    val mustChangePassword: Boolean = false
 )
 
 data class UserSession(
@@ -164,7 +246,11 @@ data class UserSession(
     val displayName: String,
     val role: String,
     val phone: String = "",
-    val photoBase64: String = ""
+    val photoBase64: String = "",
+    val email: String = "",
+    val uid: String = "",
+    val techId: String = "",
+    val companyId: String = ""
 ) {
     val isAdmin: Boolean get() = role.equals("admin", ignoreCase = true)
     val isSuperAdmin: Boolean get() = role.equals("super_admin", ignoreCase = true)
@@ -181,9 +267,11 @@ data class UserSession(
 }
 
 object AuthPolicy {
-    const val CANONICAL_ADMIN_USERNAME = "@TotalSolutionEnterprises"
+    const val CANONICAL_ADMIN_USERNAME = "@TotalSolutionAdmin"
     const val PRIMARY_ADMIN_EMAIL = "rajrudra363@gmail.com"
     const val FIREBASE_EMAIL_AUTH_MARKER = "FIREBASE_EMAIL_AUTH_ONLY"
+    const val TECH_LOGIN_DISABLED_MESSAGE =
+        "Your login has been disabled by Admin. Please contact your Admin."
 
     data class PasswordStrengthResult(
         val hasMinLength: Boolean,
@@ -237,7 +325,7 @@ object AuthPolicy {
 
     fun deriveUsernameFromEmailOrName(email: String, name: String): String {
         val seed = email.trim().substringBefore('@').ifBlank { name.trim() }
-        val cleaned = seed.lowercase(java.util.Locale.US)
+        val cleaned = seed.lowercase(Locale.US)
             .replace(Regex("[^a-z0-9_]"), "_")
             .replace(Regex("_+"), "_")
             .trim('_')
@@ -259,9 +347,9 @@ data class LoginSecurityState(
 ) {
     companion object {
         const val MAX_ATTEMPTS = 5
-        const val LOCK_DURATION_MS = 2L * 60L * 60L * 1000L // 2 hours
+        const val LOCK_DURATION_MS = 2L * 60L * 60L * 1000L
         const val ADMIN_MAX_ATTEMPTS = 3
-        const val ADMIN_LOCK_DURATION_MS = 15L * 60L * 1000L // 15 minutes (device-local)
+        const val ADMIN_LOCK_DURATION_MS = 15L * 60L * 1000L
     }
 
     fun isLocked(nowMillis: Long = System.currentTimeMillis()): Boolean =
@@ -279,9 +367,6 @@ data class LoginSecurityState(
 }
 
 object BillingTimePolicy {
-    /**
-     * Billing system is closed daily from 12:01 AM (00:01) to 6:00 AM (06:00) local time.
-     */
     fun isNightClosed(hourOfDay: Int, minute: Int): Boolean {
         val totalMinutes = hourOfDay * 60 + minute
         return totalMinutes in 1..360
@@ -293,6 +378,97 @@ object BillingTimePolicy {
     }
 }
 
+/**
+ * Part 11: PRODUCT COMBO FILE models.
+ * Allows selecting multiple existing products, custom separate qty per item, and a separate combo price
+ * without modifying original product prices, purchase prices, or deducting stock.
+ */
+data class ProductComboItem(
+    val productId: Long = 0L,
+    val productName: String = "",
+    val unit: String = "Nos",
+    val qty: Double = 1.0,
+    val catalogRate: Double = 0.0,
+    val folder: String = ""
+)
+
+data class ProductComboFile(
+    val comboFileId: String = UUID.randomUUID().toString(),
+    val companyId: String = "",
+    val name: String = "",
+    val description: String = "",
+    val items: List<ProductComboItem> = emptyList(),
+    val comboPrice: Double = 0.0,
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
+) {
+    val catalogSum: Double get() = items.sumOf { (it.qty.coerceAtLeast(0.0) * it.catalogRate.coerceAtLeast(0.0)) }
+    val effectiveComboPrice: Double get() = if (comboPrice > 0.0) comboPrice else catalogSum
+    val totalQty: Double get() = items.sumOf { it.qty }
+}
+
+object ProductComboFileJson {
+    fun itemsToJson(items: List<ProductComboItem>): String {
+        val arr = JSONArray()
+        items.forEach { itm ->
+            arr.put(
+                JSONObject().apply {
+                    put("productId", itm.productId)
+                    put("productName", itm.productName)
+                    put("unit", itm.unit)
+                    put("qty", itm.qty)
+                    put("catalogRate", itm.catalogRate)
+                    put("folder", itm.folder)
+                }
+            )
+        }
+        return arr.toString()
+    }
+
+    fun itemsFromJson(raw: String): List<ProductComboItem> {
+        if (raw.isBlank()) return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            List(arr.length()) { i ->
+                val obj = arr.getJSONObject(i)
+                ProductComboItem(
+                    productId = obj.optLong("productId", obj.optLong("prodId", 0L)),
+                    productName = obj.optString("productName", obj.optString("prodName", "")),
+                    unit = obj.optString("unit", "Nos"),
+                    qty = obj.optDouble("qty", 1.0),
+                    catalogRate = obj.optDouble("catalogRate", obj.optDouble("rate", 0.0)),
+                    folder = obj.optString("folder", "")
+                )
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun toEntity(combo: ProductComboFile): ProductComboFileEntity = ProductComboFileEntity(
+        comboFileId = combo.comboFileId,
+        companyId = combo.companyId,
+        name = combo.name.trim(),
+        description = combo.description.trim(),
+        itemsJson = itemsToJson(combo.items),
+        comboPrice = combo.comboPrice.coerceAtLeast(0.0),
+        createdAt = combo.createdAt,
+        updatedAt = combo.updatedAt
+    )
+
+    fun fromEntity(entity: ProductComboFileEntity): ProductComboFile = ProductComboFile(
+        comboFileId = entity.comboFileId,
+        companyId = entity.companyId,
+        name = entity.name,
+        description = entity.description,
+        items = itemsFromJson(entity.itemsJson),
+        comboPrice = entity.comboPrice,
+        createdAt = entity.createdAt,
+        updatedAt = entity.updatedAt
+    )
+}
+
+// Legacy ComboPackage structures retained solely for automatic non-destructive migration from older versions.
 data class ComboPackageItem(
     val productId: Long = 0L,
     val productName: String = "",
@@ -305,7 +481,7 @@ data class ComboPackageItem(
 }
 
 data class ComboPackage(
-    val id: String = java.util.UUID.randomUUID().toString(),
+    val id: String = UUID.randomUUID().toString(),
     val name: String = "",
     val description: String = "",
     val items: List<ComboPackageItem> = emptyList(),
@@ -351,8 +527,8 @@ object ComboPackageJson {
             )
         }
         return ComboPackage(
-            id = obj.optString("id", java.util.UUID.randomUUID().toString()),
-            name = obj.optString("name", "Combo Setup"),
+            id = obj.optString("id", UUID.randomUUID().toString()),
+            name = obj.optString("name", "Combo File"),
             description = obj.optString("desc", ""),
             items = items,
             createdAt = obj.optLong("createdAt", System.currentTimeMillis())
@@ -386,4 +562,3 @@ object ComboPackageJson {
         }
     }
 }
-

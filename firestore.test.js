@@ -45,7 +45,7 @@ function validWorkspaceData(ownerUid = "owner_1") {
     ownerEmail: "owner@example.com",
     techShareCode: "TSE_TECH_991122",
     superShareCode: "TSE_SA_883344",
-    companyName: "TOTAL SOLUTION ENTERPRISES",
+    companyName: "TOTAL SOLUTION",
     mobile: "7083805120",
     email: "totalsolution7020@gmail.com",
     address: "Calangute, North Goa",
@@ -139,7 +139,7 @@ describe("TSE Billing Firestore Rules", () => {
         workspaceId: "ws_tse_1",
         ownerUid: "owner_1",
         role: "technician",
-        companyName: "TOTAL SOLUTION ENTERPRISES",
+        companyName: "TOTAL SOLUTION",
         createdAt: nowTs(),
         updatedAt: nowTs()
       })
@@ -150,7 +150,7 @@ describe("TSE Billing Firestore Rules", () => {
         workspaceId: "ws_tse_1",
         ownerUid: "owner_1",
         role: "super_admin",
-        companyName: "TOTAL SOLUTION ENTERPRISES",
+        companyName: "TOTAL SOLUTION",
         createdAt: nowTs(),
         updatedAt: nowTs()
       })
@@ -792,6 +792,171 @@ describe("TSE Billing Firestore Rules", () => {
       })
     );
   });
+
+  test("Product Combo Files, Super Admin ONLY Employees/Salary, zero-trust UPI, disabled Technician & secret collections", async () => {
+    const ownerDb = testEnv.authenticatedContext("owner_1", {
+      email: "rajrudra363@gmail.com",
+      email_verified: true
+    }).firestore(DB_ID);
+    const techDb = testEnv.authenticatedContext("tech_1", {
+      email: "tech@example.com",
+      email_verified: true
+    }).firestore(DB_ID);
+    const saDb = testEnv.authenticatedContext("sa_1", {
+      email: "sa@example.com",
+      email_verified: true
+    }).firestore(DB_ID);
+    const outsiderDb = testEnv.authenticatedContext("outsider_1", {
+      email: "outsider@example.com",
+      email_verified: true
+    }).firestore(DB_ID);
+
+    await assertSucceeds(ownerDb.collection("workspaces").doc("ws_tse_1").set(validWorkspaceData("owner_1")));
+    await assertSucceeds(
+      ownerDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("tech_1").set({
+        userId: "tech_1",
+        email: "tech@example.com",
+        displayName: "Rahul Tech",
+        role: "technician",
+        inviteCode: "TSE_TECH_991122",
+        loginEnabled: true,
+        createdAt: nowTs(),
+        updatedAt: nowTs()
+      })
+    );
+    await assertSucceeds(
+      ownerDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("sa_1").set({
+        userId: "sa_1",
+        email: "sa@example.com",
+        displayName: "Super Auditor",
+        role: "super_admin",
+        inviteCode: "TSE_SA_883344",
+        loginEnabled: true,
+        createdAt: nowTs(),
+        updatedAt: nowTs()
+      })
+    );
+
+    // 1. Secret collections: completely inaccessible to all clients (even Admin & Super Admin)
+    await assertFails(ownerDb.collection("otpChallenges").doc("c1").get());
+    await assertFails(ownerDb.collection("passkeyCredentials").doc("k1").get());
+    await assertFails(ownerDb.collection("secondFactorSecrets").doc("owner_1").get());
+    await assertFails(saDb.collection("processedWebhookEvents").doc("ev1").get());
+
+    // 2. Product Combo Files: Admin CRUD; Technician & Super Admin read-only; outsider denied
+    const comboRefAdmin = ownerDb.collection("companies").doc("ws_tse_1").collection("productComboFiles").doc("combo_1");
+    await assertSucceeds(comboRefAdmin.set({
+      comboFileId: "combo_1",
+      companyId: "ws_tse_1",
+      name: "4-Cam Home Starter Kit",
+      description: "4 Dome + DVR",
+      itemsJson: "[{\"productId\":\"p1\",\"qty\":4}]",
+      comboPrice: 9999,
+      createdAt: 1760000000000,
+      updatedAt: 1760000000000
+    }));
+    await assertSucceeds(techDb.collection("companies").doc("ws_tse_1").collection("productComboFiles").doc("combo_1").get());
+    await assertFails(techDb.collection("companies").doc("ws_tse_1").collection("productComboFiles").doc("combo_2").set({
+      comboFileId: "combo_2",
+      companyId: "ws_tse_1",
+      name: "Tech Tamper",
+      description: "",
+      itemsJson: "[]",
+      comboPrice: 1,
+      createdAt: 1760000000000,
+      updatedAt: 1760000000000
+    }));
+    await assertFails(outsiderDb.collection("companies").doc("ws_tse_1").collection("productComboFiles").doc("combo_1").get());
+
+    // 3. Employees & Salary Payments: STRICTLY Super Admin ONLY (Admin & Technician DENIED)
+    const empSaRef = saDb.collection("employees").doc("emp_1");
+    await assertSucceeds(empSaRef.set({
+      employeeId: "emp_1",
+      employeeCode: "EMP-001",
+      companyId: "ws_tse_1",
+      name: "Vikram Helper",
+      mobile: "9876543210",
+      hiringDate: "2026-11-01",
+      workStartDate: "2026-11-01",
+      workStopDate: "",
+      monthlySalary: 15000,
+      address: "Mapusa",
+      notes: "Field Helper",
+      isActive: true,
+      createdAt: 1760000000000,
+      updatedAt: 1760000000000,
+      createdByUid: "sa_1"
+    }));
+    await assertSucceeds(empSaRef.collection("salaryPayments").doc("pay_1").set({
+      paymentId: "pay_1",
+      employeeId: "emp_1",
+      companyId: "ws_tse_1",
+      amount: 5000,
+      paymentDate: "2026-11-15",
+      method: "UPI",
+      referenceNo: "UTR123",
+      notes: "Advance",
+      cycleStart: "2026-11-01",
+      cycleEnd: "2026-12-01",
+      createdAt: 1760000000000,
+      createdByUid: "sa_1"
+    }));
+    // Admin CANNOT read or write Employees or Salary Payments!
+    await assertFails(ownerDb.collection("employees").doc("emp_1").get());
+    await assertFails(ownerDb.collection("employees").doc("emp_2").set({
+      employeeId: "emp_2",
+      employeeCode: "EMP-002",
+      companyId: "ws_tse_1",
+      name: "Admin Bypass",
+      mobile: "9999999999",
+      hiringDate: "2026-11-01",
+      workStartDate: "2026-11-01",
+      workStopDate: "",
+      monthlySalary: 10000,
+      address: "",
+      notes: "",
+      isActive: true,
+      createdAt: 1760000000000,
+      updatedAt: 1760000000000,
+      createdByUid: "owner_1"
+    }));
+    await assertFails(ownerDb.collection("employees").doc("emp_1").collection("salaryPayments").doc("pay_1").get());
+    await assertFails(techDb.collection("employees").doc("emp_1").get());
+
+    // 4. Zero-trust UPI transactions: client can create PENDING, NEVER SUCCESS/PAID
+    const upiRefTech = techDb.collection("workspaces").doc("ws_tse_1").collection("upiTransactions").doc("tx_1");
+    await assertSucceeds(upiRefTech.set({
+      paymentId: "tx_1",
+      amount: 2500,
+      status: "PENDING",
+      verifiedByWebhook: false
+    }));
+    await assertFails(upiRefTech.update({
+      status: "SUCCESS",
+      verifiedByWebhook: true
+    }));
+    await assertFails(
+      techDb.collection("workspaces").doc("ws_tse_1").collection("upiTransactions").doc("tx_cheat").set({
+        paymentId: "tx_cheat",
+        amount: 2500,
+        status: "SUCCESS",
+        verifiedByWebhook: true
+      })
+    );
+
+    // 5. Disabled Technician (loginEnabled: false) is immediately blocked in Firestore
+    await assertSucceeds(
+      ownerDb.collection("workspaces").doc("ws_tse_1").collection("members").doc("tech_1").update({
+        loginEnabled: false,
+        updatedAt: nowTs()
+      })
+    );
+    await assertFails(techDb.collection("workspaces").doc("ws_tse_1").get());
+    await assertFails(
+      techDb.collection("workspaces").doc("ws_tse_1").collection("bills").doc("b_blocked").set(validBillData("b_blocked", "rahul_tech", "tech_1", 0))
+    );
+  });
 });
+
 
 

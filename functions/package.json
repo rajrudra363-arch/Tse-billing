@@ -1,7 +1,7 @@
 {
-  "name": "tse-billing-functions",
-  "description": "Firebase Cloud Functions (Admin SDK) for TSE Billing secure technician account provisioning",
-  "version": "1.0.0",
+  "name": "ts-total-solution-functions",
+  "description": "Firebase Cloud Functions (Admin SDK) for TS – TOTAL SOLUTION authentication, WebAuthn passkeys, Email OTP, payment webhooks, and atomic billing",
+  "version": "2.0.0",
   "main": "index.js",
   "engines": {
     "node": "22"
@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "firebase-admin": "^13.0.1",
-    "firebase-functions": "^6.0.1"
+    "firebase-functions": "^6.0.1",
+    "nodemailer": "^6.9.16"
   },
   "private": true
 }

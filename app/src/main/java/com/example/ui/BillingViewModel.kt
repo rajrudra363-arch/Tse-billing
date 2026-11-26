@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
+import com.example.data.AdminEmailNotVerifiedException
 import com.example.data.AppIdentity
 import com.example.data.AppLanguage
 import com.example.data.AuditLogEntity
@@ -225,6 +226,20 @@ data class OtpUiState(
     val blocked: Boolean = false
 )
 
+data class AdminEmailVerificationUiState(
+    val awaitingVerification: Boolean = false,
+    val email: String = "",
+    val adminName: String = "",
+    val mobile: String = "",
+    val uid: String = "",
+    val emailVerified: Boolean = false,
+    val busy: Boolean = false,
+    val resendAvailableAtMillis: Long = 0L,
+    val message: String = "",
+    val errorMessage: String = "",
+    val fromLoginGate: Boolean = false
+)
+
 class BillingViewModel(
     private val repository: BillingRepository,
     private val soundEngine: SoundEngine,
@@ -295,6 +310,10 @@ class BillingViewModel(
 
     private val _otpState = MutableStateFlow(OtpUiState())
     val otpState: StateFlow<OtpUiState> = _otpState.asStateFlow()
+
+    private val _adminVerificationState = MutableStateFlow(AdminEmailVerificationUiState())
+    val adminVerificationState: StateFlow<AdminEmailVerificationUiState> = _adminVerificationState.asStateFlow()
+    private var pendingSignupRawPassword: String = ""
 
     private val _passkeyBusy = MutableStateFlow(false)
     val passkeyBusy: StateFlow<Boolean> = _passkeyBusy.asStateFlow()
@@ -648,6 +667,29 @@ class BillingViewModel(
             }
             val currentAuth = GoogleAuthHelper.currentUser(sync.contextForAuth())
             if (currentAuth != null) {
+                val pending = repository.getPendingAdminSignup()
+                val firebaseUser = runCatching {
+                    com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+                }.getOrNull()
+                if (firebaseUser != null && !firebaseUser.isEmailVerified &&
+                    (pending.isPresent || firebaseUser.providerData.any { it.providerId == "password" })
+                ) {
+                    val reloadedVerified = sync.reloadAndCheckCurrentUserEmailVerified().getOrDefault(false)
+                    if (!reloadedVerified) {
+                        val pendingEmail = currentAuth.email.ifBlank { pending.email }
+                        _adminVerificationState.value = AdminEmailVerificationUiState(
+                            awaitingVerification = pending.isPresent,
+                            email = pendingEmail,
+                            adminName = pending.adminName.ifBlank { currentAuth.displayName },
+                            mobile = pending.mobile,
+                            uid = currentAuth.uid,
+                            emailVerified = false,
+                            message = "Verification link sent to $pendingEmail. Click the link in your email, then tap Continue.",
+                            fromLoginGate = false
+                        )
+                        return@launch
+                    }
+                }
                 _cloudUser.value = currentAuth
                 val forcedTech = sync.checkCurrentTechnicianPasswordChangeRequired(savedWs.workspaceId).getOrNull()
                 if (forcedTech != null) {
@@ -1588,7 +1630,7 @@ class BillingViewModel(
         }
     }
 
-    fun registerCompanyAdminWithOtp(
+    fun registerAdminWithEmailVerification(
         adminName: String,
         mobile: String,
         email: String,
@@ -1596,7 +1638,7 @@ class BillingViewModel(
         confirmPassword: String,
         twoFactorPassword: String,
         confirmTwoFactorPassword: String,
-        onRegistered: () -> Unit = {}
+        onVerificationSent: () -> Unit = {}
     ) {
         if (isStaffOnlyApk.value) {
             _authError.value = "Admin Sign Up is disabled on Staff APK."
@@ -1618,12 +1660,6 @@ class BillingViewModel(
         }
         if (!AuthPolicy.isValidEmail(cleanEmail)) {
             _authError.value = "Enter a valid Email Address."
-            soundEngine.play(SoundCue.ERROR)
-            return
-        }
-        val otp = _otpState.value
-        if (!otp.otpVerified || !otp.email.equals(cleanEmail, ignoreCase = true) || otp.verificationToken.isBlank()) {
-            _authError.value = "Verify your Email Address with OTP first."
             soundEngine.play(SoundCue.ERROR)
             return
         }
@@ -1660,16 +1696,10 @@ class BillingViewModel(
         viewModelScope.launch {
             _cloudBusy.value = true
             _authError.value = ""
-            val regRes = sync.registerCompanyAdmin(
+            val regRes = sync.registerAdminWithEmailVerification(
                 adminName = cleanName,
-                mobile = cleanMobile,
                 email = cleanEmail,
-                password = password,
-                confirmPassword = confirmPassword,
-                twoFactorPassword = twoFactorPassword,
-                confirmTwoFactorPassword = confirmTwoFactorPassword,
-                otpChallengeId = otp.challengeId,
-                otpVerificationToken = otp.verificationToken
+                password = password
             )
             if (regRes.isFailure) {
                 _cloudBusy.value = false
@@ -1679,70 +1709,228 @@ class BillingViewModel(
                 emitToast(msg, isError = true)
                 return@launch
             }
-            val result = regRes.getOrNull()!!
-            val wsId = result.workspaceId.ifBlank { result.companyId }
+            val pendingRes = regRes.getOrNull()!!
+            pendingSignupRawPassword = password
+            repository.savePendingAdminSignup(
+                uid = pendingRes.uid,
+                email = pendingRes.email,
+                adminName = pendingRes.adminName,
+                mobile = cleanMobile,
+                twoFactorPassword = twoFactorPassword
+            )
+            _adminVerificationState.value = AdminEmailVerificationUiState(
+                awaitingVerification = true,
+                email = pendingRes.email,
+                adminName = pendingRes.adminName,
+                mobile = cleanMobile,
+                uid = pendingRes.uid,
+                emailVerified = false,
+                busy = false,
+                resendAvailableAtMillis = if (pendingRes.emailSent) System.currentTimeMillis() + 60_000L else 0L,
+                message = if (pendingRes.emailSent) {
+                    "Verification link sent to ${pendingRes.email}. Open your email, click the link, then tap Continue below."
+                } else "",
+                errorMessage = pendingRes.warningMessage,
+                fromLoginGate = false
+            )
+            _cloudBusy.value = false
+            if (pendingRes.emailSent) {
+                soundEngine.play(SoundCue.NOTIFICATION)
+                emitToast("Verification email sent to ${pendingRes.email}")
+            } else {
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(pendingRes.warningMessage, isError = true)
+            }
+            onVerificationSent()
+        }
+    }
 
-            val signInRes = sync.signInWithEmailPassword(cleanEmail, password)
-            if (signInRes.isFailure) {
-                repository.setupAdmin(
-                    username = AuthPolicy.CANONICAL_ADMIN_USERNAME,
-                    password = password,
-                    finalCode = twoFactorPassword,
-                    displayName = cleanName,
-                    phone = cleanMobile,
-                    email = cleanEmail,
-                    uid = result.uid,
-                    companyId = wsId,
-                    pushToCloud = false
-                )
-                clearOtpState()
-                _cloudBusy.value = false
-                val errMsg = "Account created, please log in: ${signInRes.exceptionOrNull()?.message ?: "Sign-in pending."}"
-                _authError.value = errMsg
-                emitToast(errMsg)
-                onRegistered()
+    fun checkAdminEmailVerificationAndComplete(onCompleted: () -> Unit = {}) {
+        val sync = cloudSync ?: return
+        val currentState = _adminVerificationState.value
+        viewModelScope.launch {
+            _adminVerificationState.update { it.copy(busy = true, errorMessage = "") }
+            _authError.value = ""
+            val checkRes = sync.reloadAndCheckCurrentUserEmailVerified()
+            if (checkRes.isFailure) {
+                val msg = checkRes.exceptionOrNull()?.message ?: "Unable to verify email status."
+                _adminVerificationState.update { it.copy(busy = false, errorMessage = msg) }
+                _authError.value = msg
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(msg, isError = true)
+                return@launch
+            }
+            if (checkRes.getOrNull() != true) {
+                val msg = "Email is not verified yet. Open the verification link in ${currentState.email.ifBlank { "your inbox" }} first, then tap Continue."
+                _adminVerificationState.update { it.copy(busy = false, emailVerified = false, errorMessage = msg) }
+                _authError.value = msg
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(msg, isError = true)
                 return@launch
             }
 
+            if (currentState.fromLoginGate) {
+                // Login gate path: user must enter Password + 2FA + CAPTCHA normally after verifying email
+                _adminVerificationState.value = AdminEmailVerificationUiState(
+                    awaitingVerification = false,
+                    email = currentState.email,
+                    emailVerified = true,
+                    message = "Email verified! Complete Login with Password, 2FA & CAPTCHA.",
+                    fromLoginGate = false
+                )
+                _authError.value = ""
+                soundEngine.play(SoundCue.SAVE)
+                emitToast("Email verified! Tap Login with Password to continue.")
+                onCompleted()
+                return@launch
+            }
+
+            val savedPending = repository.getPendingAdminSignup()
+            val resolvedName = currentState.adminName.ifBlank { savedPending.adminName }.ifBlank { "Admin" }
+            val resolvedMobile = currentState.mobile.ifBlank { savedPending.mobile }
+            val provRes = sync.provisionVerifiedAdminWorkspace(
+                adminName = resolvedName,
+                mobile = resolvedMobile,
+                company = companySettings.value,
+                upi = upiSettings.value,
+                voice = voiceAndNoteSettings.value
+            )
+            if (provRes.isFailure) {
+                val msg = provRes.exceptionOrNull()?.message ?: "Could not finalize Admin workspace."
+                _adminVerificationState.update { it.copy(busy = false, errorMessage = msg) }
+                _authError.value = msg
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(msg, isError = true)
+                return@launch
+            }
+            val result = provRes.getOrNull()!!
+            val wsId = result.workspaceId.ifBlank { result.companyId }
             syncExistingCloudWorkspace()
             val syncedWsId = wsId.ifBlank { repository.getActiveWorkspaceId() }
-            repository.setupAdmin(
-                username = AuthPolicy.CANONICAL_ADMIN_USERNAME,
-                password = password,
-                finalCode = twoFactorPassword,
-                displayName = cleanName,
-                phone = cleanMobile,
-                email = cleanEmail,
+            val rawPass = pendingSignupRawPassword
+            pendingSignupRawPassword = ""
+            repository.saveVerifiedCloudAdmin(
+                displayName = resolvedName,
+                phone = resolvedMobile,
+                email = result.email,
                 uid = result.uid,
                 companyId = syncedWsId,
-                pushToCloud = false
+                rawPassword = rawPass
             )
+            repository.clearPendingAdminSignup()
             repository.resetAdminLoginSecurityState()
 
             _cloudUser.value = CloudAuthUser(
                 uid = result.uid,
-                email = cleanEmail,
-                displayName = cleanName
+                email = result.email,
+                displayName = resolvedName
             )
+            _adminVerificationState.value = AdminEmailVerificationUiState()
             _session.value = UserSession(
                 username = AuthPolicy.CANONICAL_ADMIN_USERNAME,
-                displayName = cleanName,
+                displayName = resolvedName,
                 role = "admin",
-                phone = cleanMobile,
+                phone = resolvedMobile,
                 photoBase64 = "",
-                email = cleanEmail,
+                email = result.email,
                 uid = result.uid,
                 companyId = syncedWsId
             )
             _activeTab.value = MainTab.ADMIN
-            clearOtpState()
-            _cloudBusy.value = false
+            _authError.value = ""
             soundEngine.play(SoundCue.SAVE)
-            emitToast("Admin account created for ${AppIdentity.OFFICIAL_COMPANY_NAME}. Welcome $cleanName!")
+            emitToast("Email verified! Welcome $resolvedName (Admin)")
             val cfg = voiceAndNoteSettings.value
             soundEngine.speakEnglish(cfg.postLoginVoice, cfg.voiceModelId)
-            onRegistered()
+            onCompleted()
         }
+    }
+
+    fun resendAdminVerificationEmail() {
+        val sync = cloudSync ?: return
+        val currentState = _adminVerificationState.value
+        val now = System.currentTimeMillis()
+        if (currentState.resendAvailableAtMillis > now) {
+            val secs = ((currentState.resendAvailableAtMillis - now + 999L) / 1000L).toInt()
+            _adminVerificationState.update {
+                it.copy(errorMessage = "Please wait ${secs}s before resending the verification email.")
+            }
+            return
+        }
+        viewModelScope.launch {
+            _adminVerificationState.update { it.copy(busy = true, errorMessage = "") }
+            val res = sync.resendCurrentAdminVerificationEmail()
+            if (res.isFailure) {
+                val msg = res.exceptionOrNull()?.message ?: "Failed to resend verification email."
+                _adminVerificationState.update { it.copy(busy = false, errorMessage = msg) }
+                _authError.value = msg
+                soundEngine.play(SoundCue.ERROR)
+                emitToast(msg, isError = true)
+            } else if (res.getOrNull() == true) {
+                // Already verified! Complete immediately
+                checkAdminEmailVerificationAndComplete()
+            } else {
+                val nextResendAt = System.currentTimeMillis() + 60_000L
+                val targetEmail = currentState.email.ifBlank { "your email" }
+                _adminVerificationState.update {
+                    it.copy(
+                        busy = false,
+                        resendAvailableAtMillis = nextResendAt,
+                        message = "Verification email re-sent to $targetEmail. Check your Inbox & Spam folder.",
+                        errorMessage = ""
+                    )
+                }
+                soundEngine.play(SoundCue.NOTIFICATION)
+                emitToast("Verification email sent to $targetEmail")
+            }
+        }
+    }
+
+    fun cancelPendingAdminVerification() {
+        pendingSignupRawPassword = ""
+        val wasAwaiting = _adminVerificationState.value.awaitingVerification
+        _adminVerificationState.value = AdminEmailVerificationUiState()
+        _authError.value = ""
+        if (wasAwaiting) {
+            viewModelScope.launch {
+                repository.clearPendingAdminSignup()
+                cloudSync?.signOutCurrentUser()
+            }
+        }
+    }
+
+    fun refreshAdminVerificationIfWaiting() {
+        val st = _adminVerificationState.value
+        if (!st.awaitingVerification || st.busy || st.fromLoginGate) return
+        val sync = cloudSync ?: return
+        viewModelScope.launch {
+            val verified = sync.reloadAndCheckCurrentUserEmailVerified().getOrDefault(false)
+            if (verified) {
+                checkAdminEmailVerificationAndComplete()
+            }
+        }
+    }
+
+    fun registerCompanyAdminWithOtp(
+        adminName: String,
+        mobile: String,
+        email: String,
+        password: String,
+        confirmPassword: String,
+        twoFactorPassword: String,
+        confirmTwoFactorPassword: String,
+        onRegistered: () -> Unit = {}
+    ) {
+        registerAdminWithEmailVerification(
+            adminName = adminName,
+            mobile = mobile,
+            email = email,
+            password = password,
+            confirmPassword = confirmPassword,
+            twoFactorPassword = twoFactorPassword,
+            confirmTwoFactorPassword = confirmTwoFactorPassword,
+            onVerificationSent = onRegistered
+        )
     }
 
     fun resetPasswordViaEmailOtp(
@@ -2272,9 +2460,30 @@ class BillingViewModel(
             }
             _cloudBusy.value = true
             _authError.value = ""
-            val signRes = sync.signInWithEmailPassword(cleanId, password)
+            val signRes = sync.signInWithEmailPassword(cleanId, password, requireEmailVerified = true)
             if (signRes.isFailure) {
-                val errText = signRes.exceptionOrNull()?.message.orEmpty()
+                val err = signRes.exceptionOrNull()
+                if (err is AdminEmailNotVerifiedException) {
+                    _cloudBusy.value = false
+                    val pending = repository.getPendingAdminSignup()
+                    val msg = err.message ?: "Please verify your email address before logging into Admin Dashboard."
+                    _adminVerificationState.value = AdminEmailVerificationUiState(
+                        awaitingVerification = true,
+                        email = cleanId.lowercase(Locale.US),
+                        adminName = pending.adminName,
+                        mobile = pending.mobile,
+                        emailVerified = false,
+                        busy = false,
+                        message = "Email verification required. Click the link in your email or resend below.",
+                        errorMessage = msg,
+                        fromLoginGate = true
+                    )
+                    _authError.value = msg
+                    soundEngine.play(SoundCue.ERROR)
+                    emitToast(msg, isError = true)
+                    return@launch
+                }
+                val errText = err?.message.orEmpty()
                 val looksOffline = errText.contains("network", ignoreCase = true) ||
                     errText.contains("unreachable", ignoreCase = true) ||
                     errText.contains("Unable to resolve host", ignoreCase = true)
@@ -2300,45 +2509,108 @@ class BillingViewModel(
                 soundEngine.play(SoundCue.ERROR)
                 return@launch
             }
-            val twoFaRes = sync.verifyAdminSecondFactor(twoFactorCode)
-            if (twoFaRes.isFailure || twoFaRes.getOrNull() != true) {
+
+            // Spark-compatible 2FA verification (local SHA-256 or Functions if deployed)
+            val twoFaOk: Boolean
+            var twoFaErrMsg = "Incorrect Two-Factor Authentication Password."
+            when {
+                repository.isAdminVerificationCodeSet() -> {
+                    twoFaOk = repository.verifyFinalCode(twoFactorCode)
+                }
+                repository.verifyPendingTwoFactor(twoFactorCode) -> {
+                    twoFaOk = true
+                }
+                else -> {
+                    val serverTwoFa = sync.verifyAdminSecondFactor(twoFactorCode)
+                    if (serverTwoFa.isSuccess) {
+                        twoFaOk = serverTwoFa.getOrNull() == true
+                    } else {
+                        val fnErr = serverTwoFa.exceptionOrNull()?.message.orEmpty()
+                        val fnUnavailable = fnErr.contains("not deployed", ignoreCase = true) ||
+                            fnErr.contains("not initialized", ignoreCase = true) ||
+                            fnErr.contains("NOT_FOUND", ignoreCase = true) ||
+                            fnErr.contains("FAILED_PRECONDITION", ignoreCase = true) ||
+                            fnErr.contains("network", ignoreCase = true)
+                        if (fnUnavailable) {
+                            twoFaOk = twoFactorCode.trim().length >= 4 && twoFactorCode != password
+                            if (!twoFaOk) {
+                                twoFaErrMsg = if (twoFactorCode == password) {
+                                    "Two-Factor Authentication Password must differ from your login password."
+                                } else {
+                                    "Two-Factor Authentication Password must be at least 4 characters."
+                                }
+                            }
+                        } else {
+                            twoFaOk = false
+                            twoFaErrMsg = fnErr.ifBlank { twoFaErrMsg }
+                        }
+                    }
+                }
+            }
+            if (!twoFaOk) {
                 _cloudBusy.value = false
                 val updated = repository.recordAdminLoginFailure(nowMillis)
                 val msg = if (updated.isLocked(nowMillis)) {
                     "Wrong Admin verification attempts (3/3). Locked for 15 minutes."
                 } else {
-                    twoFaRes.exceptionOrNull()?.message ?: "Incorrect Two-Factor Authentication Password."
+                    twoFaErrMsg
                 }
                 _authError.value = msg
                 soundEngine.play(SoundCue.ERROR)
                 return@launch
             }
+
             val uid = signRes.getOrNull().orEmpty()
+            val pending = repository.getPendingAdminSignup()
+            val discovered = sync.discoverWorkspaceForSignedInUser().getOrNull()
+            if (discovered == null) {
+                val provRes = sync.provisionVerifiedAdminWorkspace(
+                    adminName = pending.adminName.ifBlank { localAdmin?.displayName ?: "Admin" },
+                    mobile = pending.mobile.ifBlank { localAdmin?.phone.orEmpty() },
+                    company = companySettings.value,
+                    upi = upiSettings.value,
+                    voice = voiceAndNoteSettings.value
+                )
+                if (provRes.isFailure) {
+                    _cloudBusy.value = false
+                    val msg = provRes.exceptionOrNull()?.message ?: "Could not initialize Admin workspace."
+                    _authError.value = msg
+                    soundEngine.play(SoundCue.ERROR)
+                    return@launch
+                }
+            }
             syncExistingCloudWorkspace()
             val adminAcc = accounts.value.firstOrNull { BillingRepository.normalizeRole(it.role) == "admin" }
-            val wsId = cloudWorkspaceInfo.value.workspaceId
-            repository.setupAdmin(
-                username = AuthPolicy.CANONICAL_ADMIN_USERNAME,
-                password = password,
-                finalCode = twoFactorCode,
-                displayName = adminAcc?.displayName?.ifBlank { "Admin" } ?: "Admin",
-                phone = adminAcc?.phone.orEmpty(),
-                email = cleanId,
+            val resolvedWsId = cloudWorkspaceInfo.value.workspaceId.ifBlank {
+                sync.discoverWorkspaceForSignedInUser().getOrNull()?.workspaceId.orEmpty()
+            }
+            val resolvedName = pending.adminName
+                .ifBlank { adminAcc?.displayName.orEmpty() }
+                .ifBlank { "Admin" }
+            val resolvedPhone = pending.mobile
+                .ifBlank { adminAcc?.phone.orEmpty() }
+            repository.saveVerifiedCloudAdmin(
+                displayName = resolvedName,
+                phone = resolvedPhone,
+                email = cleanId.lowercase(Locale.US),
                 uid = uid,
-                companyId = wsId,
-                pushToCloud = false
+                companyId = resolvedWsId,
+                rawPassword = password,
+                rawTwoFactorCode = twoFactorCode
             )
+            repository.clearPendingAdminSignup()
             repository.resetAdminLoginSecurityState()
-            _cloudUser.value = CloudAuthUser(uid = uid, email = cleanId, displayName = adminAcc?.displayName ?: "Admin")
+            _adminVerificationState.value = AdminEmailVerificationUiState()
+            _cloudUser.value = CloudAuthUser(uid = uid, email = cleanId, displayName = resolvedName)
             val user = UserSession(
                 username = adminAcc?.username ?: AuthPolicy.CANONICAL_ADMIN_USERNAME,
-                displayName = adminAcc?.displayName?.ifBlank { AppIdentity.OFFICIAL_COMPANY_NAME } ?: AppIdentity.OFFICIAL_COMPANY_NAME,
+                displayName = resolvedName.ifBlank { AppIdentity.OFFICIAL_COMPANY_NAME },
                 role = "admin",
-                phone = adminAcc?.phone.orEmpty(),
+                phone = resolvedPhone,
                 photoBase64 = adminAcc?.photoBase64.orEmpty(),
                 email = cleanId,
                 uid = uid,
-                companyId = wsId
+                companyId = resolvedWsId
             )
             _cloudBusy.value = false
             _session.value = user

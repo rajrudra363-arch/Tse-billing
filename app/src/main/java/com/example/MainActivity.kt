@@ -288,6 +288,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
         val qrGatewayBusy by viewModel.qrGatewayBusy.collectAsStateWithLifecycle()
         val billPaymentFilter by viewModel.billPaymentFilter.collectAsStateWithLifecycle()
         val otpState by viewModel.otpState.collectAsStateWithLifecycle()
+        val adminVerificationState by viewModel.adminVerificationState.collectAsStateWithLifecycle()
         val passkeyBusy by viewModel.passkeyBusy.collectAsStateWithLifecycle()
         var showNotificationCenter by remember { mutableStateOf(false) }
 
@@ -296,6 +297,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
             val observer = LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
                     viewModel.purgeExpiredTrashIfReady()
+                    viewModel.refreshAdminVerificationIfWaiting()
                 }
             }
             lifecycleOwner.lifecycle.addObserver(observer)
@@ -617,6 +619,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     activationBusy = activationBusy,
                     activationError = activationError,
                     otpState = otpState,
+                    adminVerificationState = adminVerificationState,
                     passkeyBusy = passkeyBusy,
                     onClearError = viewModel::clearAuthError,
                     onSetupAdmin = viewModel::setupAdmin,
@@ -633,7 +636,10 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     onRequestOtp = viewModel::requestEmailOtp,
                     onVerifyOtp = viewModel::verifyEmailOtp,
                     onClearOtp = viewModel::clearOtpState,
-                    onRegisterCompanyAdmin = viewModel::registerCompanyAdminWithOtp,
+                    onCheckAdminEmailVerification = viewModel::checkAdminEmailVerificationAndComplete,
+                    onResendAdminVerificationEmail = viewModel::resendAdminVerificationEmail,
+                    onCancelPendingAdminVerification = viewModel::cancelPendingAdminVerification,
+                    onRegisterCompanyAdmin = viewModel::registerAdminWithEmailVerification,
                     onResetPasswordWithOtp = viewModel::resetPasswordViaEmailOtp,
                     onLoginAdminEmailOrUser = viewModel::loginAdminWithEmailOrUsername,
                     onLoginSuperAdmin = viewModel::loginSuperAdmin,

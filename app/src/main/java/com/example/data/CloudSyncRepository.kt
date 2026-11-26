@@ -5,8 +5,12 @@ import android.util.Log
 import com.example.R
 import com.google.android.gms.tasks.Task
 import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseTooManyRequestsException
 import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseAuthException
+import com.google.firebase.auth.FirebaseAuthUserCollisionException
+import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -121,6 +125,19 @@ data class AdminSignUpResult(
     val companyName: String,
     val role: String
 )
+
+data class AdminVerificationPendingResult(
+    val uid: String,
+    val email: String,
+    val adminName: String,
+    val emailSent: Boolean = true,
+    val warningMessage: String = ""
+)
+
+class AdminEmailNotVerifiedException(
+    val email: String,
+    message: String = "Your email address ($email) is not verified yet. Please click the verification link in your email before accessing the Admin Dashboard."
+) : IllegalStateException(message)
 
 data class PasskeyChallengeResult(
     val challengeId: String,
@@ -383,10 +400,11 @@ class CloudSyncRepository(private val context: Context) {
                         "ownerUid" to uid,
                         "ownerEmail" to user.email.orEmpty(),
                         "mobile" to company.mobile,
+                        "createdAt" to FieldValue.serverTimestamp(),
                         "updatedAt" to FieldValue.serverTimestamp()
                     ),
                     SetOptions.merge()
-                ).awaitOfflineSafe()
+                ).await()
             }
 
             ensureShareDirectories(db, wsId, uid, safeCompany, techCode, superCode)
@@ -921,54 +939,277 @@ class CloudSyncRepository(private val context: Context) {
         }
     }
 
-    suspend fun signInWithEmailPassword(email: String, password: String): Result<String> =
-        withContext(Dispatchers.IO) {
-            val auth = getAuth()
-                ?: return@withContext Result.failure(IllegalStateException("Firebase Auth is not initialized."))
-            val cleanEmail = email.trim().lowercase(Locale.US)
+    suspend fun registerAdminWithEmailVerification(
+        adminName: String,
+        email: String,
+        password: String
+    ): Result<AdminVerificationPendingResult> = withContext(Dispatchers.IO) {
+        val auth = getAuth()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Auth is not initialized."))
+        val cleanName = adminName.trim().ifBlank { "Admin" }
+        val cleanEmail = email.trim().lowercase(Locale.US)
+        try {
+            val authRes = auth.createUserWithEmailAndPassword(cleanEmail, password).await()
+            val user = authRes.user
+                ?: return@withContext Result.failure(IllegalStateException("Failed to create Firebase Admin account."))
+            runCatching {
+                val profileUpdates = UserProfileChangeRequest.Builder()
+                    .setDisplayName(cleanName)
+                    .build()
+                user.updateProfile(profileUpdates).await()
+            }
+            var emailSent = true
+            var warning = ""
             try {
-                val authRes = auth.signInWithEmailAndPassword(cleanEmail, password).await()
-                val uid = authRes.user?.uid
-                    ?: return@withContext Result.failure(IllegalStateException("Sign-in failed."))
-                val accessCheck = verifyMemberLoginAccess("")
-                if (accessCheck.isFailure) {
-                    runCatching { auth.signOut() }
-                    return@withContext Result.failure(accessCheck.exceptionOrNull()!!)
-                }
-                Result.success(uid)
+                user.sendEmailVerification().await()
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
-                val rawMsg = e.message.orEmpty()
-                val mappedMsg = if (rawMsg.contains("USER_DISABLED", ignoreCase = true) ||
-                    rawMsg.contains("disabled by an administrator", ignoreCase = true) ||
-                    rawMsg.contains(AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE, ignoreCase = true)
-                ) {
-                    AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE
-                } else {
-                    rawMsg.ifBlank { "Invalid email or password." }
-                }
-                Result.failure(IllegalStateException(mappedMsg, e))
+            } catch (sendErr: Exception) {
+                Log.w(TAG, "Initial sendEmailVerification failed for $cleanEmail", sendErr)
+                emailSent = false
+                warning = sendErr.message?.takeIf { it.isNotBlank() }
+                    ?: "Account created, but verification email could not be sent right now. Tap Resend Verification Email."
             }
+            Result.success(
+                AdminVerificationPendingResult(
+                    uid = user.uid,
+                    email = cleanEmail,
+                    adminName = cleanName,
+                    emailSent = emailSent,
+                    warningMessage = warning
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: FirebaseAuthUserCollisionException) {
+            Result.failure(
+                IllegalStateException(
+                    "An Admin account with this email already exists. Please use Admin Login (you can also resend your verification email there).",
+                    e
+                )
+            )
+        } catch (e: FirebaseAuthException) {
+            val msg = when (e.errorCode) {
+                "ERROR_EMAIL_ALREADY_IN_USE" ->
+                    "An Admin account with this email already exists. Please use Admin Login (you can also resend your verification email there)."
+                "ERROR_INVALID_EMAIL" -> "Please enter a valid Email Address."
+                "ERROR_WEAK_PASSWORD" -> "Password is too weak. Choose a stronger password."
+                else -> e.message?.takeIf { it.isNotBlank() } ?: "Admin Sign Up failed."
+            }
+            Result.failure(IllegalStateException(msg, e))
+        } catch (e: FirebaseTooManyRequestsException) {
+            Result.failure(
+                IllegalStateException("Too many attempts right now. Please wait a moment and try again.", e)
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "registerAdminWithEmailVerification failed", e)
+            Result.failure(IllegalStateException(e.message?.takeIf { it.isNotBlank() } ?: "Admin Sign Up failed.", e))
         }
+    }
+
+    suspend fun reloadAndCheckCurrentUserEmailVerified(): Result<Boolean> = withContext(Dispatchers.IO) {
+        val auth = getAuth()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Auth is not initialized."))
+        val user = auth.currentUser
+            ?: return@withContext Result.failure(
+                IllegalStateException("Session expired. Please sign in on Admin Login to verify your email.")
+            )
+        try {
+            user.reload().await()
+            val refreshed = auth.currentUser ?: user
+            if (refreshed.isEmailVerified) {
+                runCatching { refreshed.getIdToken(true).await() }
+                Result.success(true)
+            } else {
+                Result.success(false)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "reloadAndCheckCurrentUserEmailVerified failed", e)
+            val msg = if (e.message?.contains("network", ignoreCase = true) == true) {
+                "Network unavailable. Check your internet connection and tap Continue again."
+            } else {
+                e.message?.takeIf { it.isNotBlank() } ?: "Unable to check verification status."
+            }
+            Result.failure(IllegalStateException(msg, e))
+        }
+    }
+
+    suspend fun resendCurrentAdminVerificationEmail(): Result<Boolean> = withContext(Dispatchers.IO) {
+        val auth = getAuth()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Auth is not initialized."))
+        val user = auth.currentUser
+            ?: return@withContext Result.failure(
+                IllegalStateException("No pending Admin session found. Sign in on Admin Login first.")
+            )
+        try {
+            runCatching { user.reload().await() }
+            val refreshed = auth.currentUser ?: user
+            if (refreshed.isEmailVerified) {
+                runCatching { refreshed.getIdToken(true).await() }
+                return@withContext Result.success(true) // Already verified
+            }
+            refreshed.sendEmailVerification().await()
+            Result.success(false) // Sent verification email; still waiting for user click
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: FirebaseTooManyRequestsException) {
+            Result.failure(
+                IllegalStateException("Too many verification emails requested. Please wait a minute and check your inbox/spam folder.", e)
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "resendCurrentAdminVerificationEmail failed", e)
+            val raw = e.message.orEmpty()
+            val msg = if (raw.contains("too-many-requests", ignoreCase = true) ||
+                raw.contains("blocked all requests", ignoreCase = true)
+            ) {
+                "Too many verification emails requested. Please wait a few minutes and check your inbox/spam folder."
+            } else {
+                raw.ifBlank { "Failed to send verification email." }
+            }
+            Result.failure(IllegalStateException(msg, e))
+        }
+    }
+
+    suspend fun provisionVerifiedAdminWorkspace(
+        adminName: String,
+        mobile: String,
+        company: CompanySettings,
+        upi: UpiSettings,
+        voice: VoiceAndNoteSettings
+    ): Result<AdminSignUpResult> = withContext(Dispatchers.IO) {
+        val auth = getAuth()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Auth is not initialized."))
+        val user = auth.currentUser
+            ?: return@withContext Result.failure(IllegalStateException("Please sign in first."))
+        runCatching { user.reload().await() }
+        val refreshed = auth.currentUser ?: user
+        if (!refreshed.isEmailVerified) {
+            return@withContext Result.failure(AdminEmailNotVerifiedException(refreshed.email.orEmpty()))
+        }
+        runCatching { refreshed.getIdToken(true).await() }
+
+        val cleanName = adminName.trim().ifBlank { refreshed.displayName.orEmpty().ifBlank { "Admin" } }
+        val cleanMobile = mobile.trim().ifBlank { company.mobile }
+        val cleanEmail = refreshed.email.orEmpty().trim().lowercase(Locale.US)
+        val mergedCompany = company.copy(
+            companyName = AppIdentity.OFFICIAL_COMPANY_NAME,
+            mobile = cleanMobile.ifBlank { company.mobile },
+            email = cleanEmail.ifBlank { company.email }
+        )
+
+        val wsRes = ensureAdminWorkspace(
+            company = mergedCompany,
+            upi = upi,
+            voice = voice
+        )
+        if (wsRes.isFailure) {
+            return@withContext Result.failure(
+                wsRes.exceptionOrNull() ?: IllegalStateException("Failed to initialize Admin workspace.")
+            )
+        }
+        val ws = wsRes.getOrNull()!!
+        val adminEntity = UserAccountEntity(
+            username = AuthPolicy.CANONICAL_ADMIN_USERNAME,
+            displayName = cleanName,
+            passwordHash = AuthPolicy.FIREBASE_EMAIL_AUTH_MARKER,
+            role = "admin",
+            phone = cleanMobile,
+            email = cleanEmail,
+            uid = refreshed.uid,
+            companyId = ws.workspaceId,
+            loginEnabled = true
+        )
+        pushAccount(ws.workspaceId, adminEntity)
+
+        Result.success(
+            AdminSignUpResult(
+                uid = refreshed.uid,
+                companyId = ws.workspaceId,
+                workspaceId = ws.workspaceId,
+                email = cleanEmail,
+                username = AuthPolicy.CANONICAL_ADMIN_USERNAME,
+                adminName = cleanName,
+                companyName = AppIdentity.OFFICIAL_COMPANY_NAME,
+                role = "admin"
+            )
+        )
+    }
+
+    fun signOutCurrentUser() {
+        runCatching { getAuth()?.signOut() }
+    }
+
+    suspend fun signInWithEmailPassword(
+        email: String,
+        password: String,
+        requireEmailVerified: Boolean = false
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val auth = getAuth()
+            ?: return@withContext Result.failure(IllegalStateException("Firebase Auth is not initialized."))
+        val cleanEmail = email.trim().lowercase(Locale.US)
+        try {
+            val authRes = auth.signInWithEmailAndPassword(cleanEmail, password).await()
+            val user = authRes.user
+                ?: return@withContext Result.failure(IllegalStateException("Sign-in failed."))
+            if (requireEmailVerified) {
+                runCatching { user.reload().await() }
+                val refreshed = auth.currentUser ?: user
+                if (!refreshed.isEmailVerified) {
+                    return@withContext Result.failure(AdminEmailNotVerifiedException(cleanEmail))
+                }
+                runCatching { refreshed.getIdToken(true).await() }
+            }
+            val accessCheck = verifyMemberLoginAccess("")
+            if (accessCheck.isFailure) {
+                runCatching { auth.signOut() }
+                return@withContext Result.failure(accessCheck.exceptionOrNull()!!)
+            }
+            Result.success(user.uid)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val rawMsg = e.message.orEmpty()
+            val mappedMsg = if (rawMsg.contains("USER_DISABLED", ignoreCase = true) ||
+                rawMsg.contains("disabled by an administrator", ignoreCase = true) ||
+                rawMsg.contains(AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE, ignoreCase = true)
+            ) {
+                AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE
+            } else {
+                rawMsg.ifBlank { "Invalid email or password." }
+            }
+            Result.failure(IllegalStateException(mappedMsg, e))
+        }
+    }
 
     suspend fun verifyMemberLoginAccess(workspaceId: String = ""): Result<Boolean> =
         withContext(Dispatchers.IO) {
-            val functions = getFunctions() ?: return@withContext Result.success(true)
-            if (getAuth()?.currentUser == null) return@withContext Result.failure(IllegalStateException("Not signed in."))
+            val auth = getAuth()
+            val uid = auth?.currentUser?.uid
+                ?: return@withContext Result.failure(IllegalStateException("Not signed in."))
+            val db = getFirestore() ?: return@withContext Result.success(true)
             try {
-                functions.getHttpsCallable("verifyMemberLoginAccess")
-                    .call(hashMapOf("workspaceId" to workspaceId.trim()))
-                    .await()
-                Result.success(true)
+                val targetWsId = workspaceId.trim().ifBlank {
+                    discoverWorkspaceForSignedInUser().getOrNull()?.workspaceId.orEmpty()
+                }
+                if (targetWsId.isBlank()) {
+                    Result.success(true)
+                } else {
+                    val memberSnap = db.collection("workspaces")
+                        .document(targetWsId)
+                        .collection("members")
+                        .document(uid)
+                        .get()
+                        .await()
+                    if (memberSnap.exists() && memberSnap.getBoolean("loginEnabled") == false) {
+                        Result.failure(IllegalStateException(AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE))
+                    } else {
+                        Result.success(true)
+                    }
+                }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: FirebaseFunctionsException) {
-                if (e.code == FirebaseFunctionsException.Code.PERMISSION_DENIED) {
-                    Result.failure(IllegalStateException(e.message ?: AuthPolicy.TECH_LOGIN_DISABLED_MESSAGE, e))
-                } else {
-                    Result.success(true)
-                }
             } catch (_: Exception) {
                 Result.success(true)
             }

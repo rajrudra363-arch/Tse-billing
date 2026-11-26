@@ -65,6 +65,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockClock
 import androidx.compose.material.icons.filled.LockReset
 import androidx.compose.material.icons.filled.Login
+import androidx.compose.material.icons.filled.MarkEmailRead
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Phone
@@ -140,6 +141,7 @@ import com.example.data.CloudAuthUser
 import com.example.data.LoginSecurityState
 import com.example.data.TechActivationState
 import com.example.data.UserAccountEntity
+import com.example.ui.AdminEmailVerificationUiState
 import com.example.ui.OtpUiState
 import com.example.ui.PendingPasswordChangeState
 import com.example.ui.theme.AmberWarn
@@ -286,6 +288,7 @@ fun AuthScreen(
     activationBusy: Boolean = false,
     activationError: String = "",
     otpState: OtpUiState = OtpUiState(),
+    adminVerificationState: AdminEmailVerificationUiState = AdminEmailVerificationUiState(),
     passkeyBusy: Boolean = false,
     onClearError: () -> Unit,
     onSetupAdmin: (username: String, password: String, confirm: String, adminVerifyCode: String) -> Unit = { _, _, _, _ -> },
@@ -306,6 +309,9 @@ fun AuthScreen(
     onRequestOtp: (email: String, purpose: String) -> Unit = { _, _ -> },
     onVerifyOtp: (otp: String, onVerified: () -> Unit) -> Unit = { _, _ -> },
     onClearOtp: () -> Unit = {},
+    onCheckAdminEmailVerification: (onCompleted: () -> Unit) -> Unit = { _ -> },
+    onResendAdminVerificationEmail: () -> Unit = {},
+    onCancelPendingAdminVerification: () -> Unit = {},
     onRegisterCompanyAdmin: (
         adminName: String,
         mobile: String,
@@ -345,9 +351,21 @@ fun AuthScreen(
             when {
                 isStaffOnlyApk -> AuthPortalDestination.TECHNICIAN_LOGIN
                 techActivationState.verified || prefillInviteCode.isNotBlank() -> AuthPortalDestination.TECHNICIAN_LOGIN
+                adminVerificationState.awaitingVerification && adminVerificationState.fromLoginGate -> AuthPortalDestination.ADMIN_LOGIN
+                adminVerificationState.awaitingVerification -> AuthPortalDestination.ADMIN_SIGN_UP
                 else -> AuthPortalDestination.HUB
             }
         )
+    }
+
+    LaunchedEffect(adminVerificationState.awaitingVerification, adminVerificationState.fromLoginGate) {
+        if (!isStaffOnlyApk && adminVerificationState.awaitingVerification) {
+            if (adminVerificationState.fromLoginGate) {
+                destination = AuthPortalDestination.ADMIN_LOGIN
+            } else if (destination == AuthPortalDestination.HUB) {
+                destination = AuthPortalDestination.ADMIN_SIGN_UP
+            }
+        }
     }
 
     if (destination != AuthPortalDestination.HUB && !isStaffOnlyApk) {
@@ -459,16 +477,16 @@ fun AuthScreen(
                                     isStaffOnlyApk = isStaffOnlyApk,
                                     authError = authError,
                                     cloudBusy = cloudBusy,
-                                    otpState = otpState,
+                                    adminVerificationState = adminVerificationState,
                                     onBack = {
                                         onClearError()
                                         onClearOtp()
                                         destination = AuthPortalDestination.HUB
                                     },
                                     onClearError = onClearError,
-                                    onClearOtp = onClearOtp,
-                                    onRequestOtp = onRequestOtp,
-                                    onVerifyOtp = onVerifyOtp,
+                                    onCheckVerification = { onCheckAdminEmailVerification {} },
+                                    onResendVerification = onResendAdminVerificationEmail,
+                                    onCancelPendingVerification = onCancelPendingAdminVerification,
                                     onRegisterCompanyAdmin = { name, mob, email, pass, conf, twoFa, confTwoFa ->
                                         onRegisterCompanyAdmin(name, mob, email, pass, conf, twoFa, confTwoFa) {}
                                     },
@@ -487,6 +505,7 @@ fun AuthScreen(
                                     adminLoginSecurityState = adminLoginSecurityState,
                                     hasAdminVerifyCode = hasAdminVerifyCode,
                                     otpState = otpState,
+                                    adminVerificationState = adminVerificationState,
                                     onBack = {
                                         onClearError()
                                         onClearOtp()
@@ -498,6 +517,8 @@ fun AuthScreen(
                                         onLoginWithPasskey("admin", hint, robot)
                                     },
                                     onSignInGoogle = onSignInGoogle,
+                                    onResendVerification = onResendAdminVerificationEmail,
+                                    onCheckVerification = { onCheckAdminEmailVerification {} },
                                     onRequestOtp = onRequestOtp,
                                     onVerifyOtp = onVerifyOtp,
                                     onClearOtp = onClearOtp,
@@ -596,7 +617,7 @@ private fun FourOptionAuthHub(
 
         PortalOptionButton(
             title = "ADMIN SIGN UP",
-            subtitle = if (isAdminConfigured) "Register new ${AppIdentity.OFFICIAL_COMPANY_NAME} Admin with Email OTP" else "First-time ${AppIdentity.OFFICIAL_COMPANY_NAME} Admin setup & 2FA",
+            subtitle = if (isAdminConfigured) "Register new ${AppIdentity.OFFICIAL_COMPANY_NAME} Admin with Email Verification" else "First-time ${AppIdentity.OFFICIAL_COMPANY_NAME} Admin setup & Email Verification",
             icon = Icons.Default.PersonAdd,
             containerColor = TealAccent,
             testTag = "auth_option_admin_signup",
@@ -711,12 +732,12 @@ private fun AdminSignUpSection(
     isStaffOnlyApk: Boolean,
     authError: String,
     cloudBusy: Boolean,
-    otpState: OtpUiState,
+    adminVerificationState: AdminEmailVerificationUiState,
     onBack: () -> Unit,
     onClearError: () -> Unit,
-    onClearOtp: () -> Unit = {},
-    onRequestOtp: (email: String, purpose: String) -> Unit,
-    onVerifyOtp: (otp: String, onVerified: () -> Unit) -> Unit,
+    onCheckVerification: () -> Unit,
+    onResendVerification: () -> Unit,
+    onCancelPendingVerification: () -> Unit,
     onRegisterCompanyAdmin: (
         adminName: String,
         mobile: String,
@@ -732,7 +753,6 @@ private fun AdminSignUpSection(
     var adminName by remember { mutableStateOf("") }
     var mobile by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
-    var otpInput by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var confirmPassword by remember { mutableStateOf("") }
     var twoFactorPassword by remember { mutableStateOf("") }
@@ -747,10 +767,10 @@ private fun AdminSignUpSection(
     val textToolbar = LocalTextToolbar.current
 
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(otpState.challengeId, otpState.expiresAtMillis, otpState.resendAvailableAtMillis, otpState.otpVerified) {
+    LaunchedEffect(adminVerificationState.awaitingVerification, adminVerificationState.resendAvailableAtMillis) {
         nowMillis = System.currentTimeMillis()
-        while (otpState.challengeId.isNotBlank() && !otpState.otpVerified &&
-            (otpState.expiresAtMillis > System.currentTimeMillis() || otpState.resendAvailableAtMillis > System.currentTimeMillis())
+        while (adminVerificationState.awaitingVerification &&
+            adminVerificationState.resendAvailableAtMillis > System.currentTimeMillis()
         ) {
             delay(1000L)
             nowMillis = System.currentTimeMillis()
@@ -759,17 +779,9 @@ private fun AdminSignUpSection(
 
     val passEval = remember(password) { AuthPolicy.evaluatePassword(password) }
     val trimmedEmail = email.trim()
-    val otpVerifiedForEmail = otpState.otpVerified && otpState.email.equals(trimmedEmail, ignoreCase = true)
-    val isChallengeForEmail = otpState.challengeId.isNotBlank() && otpState.email.equals(trimmedEmail, ignoreCase = true)
-    val resendWaitSec = if (otpState.resendAvailableAtMillis > nowMillis &&
-        (otpState.email.isBlank() || otpState.email.equals(trimmedEmail, ignoreCase = true))
-    ) {
-        ((otpState.resendAvailableAtMillis - nowMillis + 999L) / 1000L).toInt().coerceAtLeast(0)
+    val resendWaitSec = if (adminVerificationState.resendAvailableAtMillis > nowMillis) {
+        ((adminVerificationState.resendAvailableAtMillis - nowMillis + 999L) / 1000L).toInt().coerceAtLeast(0)
     } else 0
-    val expiryRemainingSec = if (isChallengeForEmail && !otpVerifiedForEmail && otpState.expiresAtMillis > nowMillis) {
-        ((otpState.expiresAtMillis - nowMillis) / 1000L).toInt().coerceAtLeast(0)
-    } else 0
-    val otpExpired = isChallengeForEmail && !otpVerifiedForEmail && otpState.expiresAtMillis > 0L && nowMillis >= otpState.expiresAtMillis
     val twoFactorDiffersFromPass = twoFactorPassword.isNotBlank() && twoFactorPassword != password
 
     val canSubmitCloud = !isStaffOnlyApk &&
@@ -777,7 +789,6 @@ private fun AdminSignUpSection(
         adminName.trim().length >= 2 &&
         mobile.filter { it.isDigit() }.length >= 10 &&
         AuthPolicy.isValidEmail(trimmedEmail) &&
-        otpVerifiedForEmail &&
         passEval.isStrong &&
         password == confirmPassword &&
         twoFactorPassword.trim().length >= 4 &&
@@ -823,6 +834,114 @@ private fun AdminSignUpSection(
             return@Column
         }
 
+        if (adminVerificationState.awaitingVerification && !adminVerificationState.fromLoginGate) {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                border = BorderStroke(1.2.dp, TealAccent),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth().testTag("signup_email_verification_pending_card")
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MarkEmailRead,
+                            contentDescription = null,
+                            tint = TealAccent,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Column {
+                            Text(
+                                text = "Verify Your Email Address",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Black,
+                                color = NavyDeep
+                            )
+                            Text(
+                                text = adminVerificationState.email.ifBlank { trimmedEmail },
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = TealAccent
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = "Your Admin account has been registered, but access to the Admin Dashboard is locked until you verify your email via the link sent by Firebase Authentication.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    if (adminVerificationState.message.isNotBlank()) {
+                        Text(
+                            text = adminVerificationState.message,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TealAccent,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.testTag("signup_verification_status_text")
+                        )
+                    }
+
+                    val displayErr = adminVerificationState.errorMessage.ifBlank { authError }
+                    if (displayErr.isNotBlank()) {
+                        Text(
+                            text = displayErr,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.testTag("signup_verification_error_text")
+                        )
+                    }
+
+                    Button(
+                        onClick = onCheckVerification,
+                        enabled = !adminVerificationState.busy && !cloudBusy,
+                        colors = ButtonDefaults.buttonColors(containerColor = GreenPaid, contentColor = Color.White),
+                        modifier = Modifier.fillMaxWidth().height(48.dp).testTag("signup_check_verification_button")
+                    ) {
+                        if (adminVerificationState.busy || cloudBusy) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), color = Color.White, strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = if (adminVerificationState.busy) "Checking Verification..." else "I've Verified My Email — Continue",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+
+                    OutlinedButton(
+                        onClick = onResendVerification,
+                        enabled = !adminVerificationState.busy && resendWaitSec == 0,
+                        modifier = Modifier.fillMaxWidth().height(46.dp).testTag("signup_resend_verification_button")
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = if (resendWaitSec > 0) "Resend Verification Email (${resendWaitSec}s)" else "Resend Verification Email",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    TextButton(
+                        onClick = onCancelPendingVerification,
+                        enabled = !adminVerificationState.busy,
+                        modifier = Modifier.fillMaxWidth().testTag("signup_cancel_verification_button")
+                    ) {
+                        Text("Cancel / Use Different Email", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+            return@Column
+        }
+
         // Permanently locked Official Company Name
         OutlinedTextField(
             value = AppIdentity.OFFICIAL_COMPANY_NAME,
@@ -859,10 +978,6 @@ private fun AdminSignUpSection(
             onValueChange = { updated ->
                 email = updated
                 onClearError()
-                if (otpState.email.isNotBlank() && !updated.trim().equals(otpState.email, ignoreCase = true)) {
-                    otpInput = ""
-                    onClearOtp()
-                }
             },
             label = { Text("Email Address") },
             leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
@@ -871,107 +986,23 @@ private fun AdminSignUpSection(
             modifier = Modifier.fillMaxWidth().bringIntoViewOnFocus().testTag("signup_admin_email")
         )
 
-        // Email OTP Verification block
         Surface(
-            color = when {
-                otpVerifiedForEmail -> GreenPaidBg
-                otpState.errorMessage.isNotBlank() || otpExpired -> RedDueBg
-                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-            },
-            border = BorderStroke(
-                1.dp,
-                when {
-                    otpVerifiedForEmail -> GreenPaid
-                    otpState.errorMessage.isNotBlank() || otpExpired -> RedDue
-                    else -> TealAccent
-                }
-            ),
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth()
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+            border = BorderStroke(1.dp, TealAccent.copy(alpha = 0.65f)),
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.fillMaxWidth().testTag("signup_email_verification_info")
         ) {
-            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = if (otpVerifiedForEmail) "Email OTP Verified" else "Email OTP Verification",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = if (otpVerifiedForEmail) GreenPaid else NavyDeep
-                    )
-                    OutlinedButton(
-                        onClick = { onRequestOtp(email, "ADMIN_SIGNUP") },
-                        enabled = !otpState.busy &&
-                            AuthPolicy.isValidEmail(trimmedEmail) &&
-                            resendWaitSec == 0 &&
-                            !otpState.blocked &&
-                            !otpVerifiedForEmail,
-                        modifier = Modifier.testTag("signup_send_otp_button")
-                    ) {
-                        val btnLabel = when {
-                            otpState.busy && !isChallengeForEmail -> "Sending..."
-                            otpVerifiedForEmail -> "Verified"
-                            resendWaitSec > 0 -> "Resend in ${resendWaitSec}s"
-                            isChallengeForEmail || otpExpired -> "Resend OTP"
-                            else -> "Send OTP"
-                        }
-                        Text(btnLabel, fontWeight = FontWeight.Bold)
-                    }
-                }
-                val showErrorForEmail = otpState.errorMessage.isNotBlank() &&
-                    (otpState.email.isBlank() || otpState.email.equals(trimmedEmail, ignoreCase = true))
-                if (showErrorForEmail) {
-                    Text(
-                        text = otpState.errorMessage,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.testTag("signup_otp_error_text")
-                    )
-                } else if (otpExpired) {
-                    Text(
-                        text = "OTP has expired after 5 minutes. Click Resend OTP to receive a new code.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.testTag("signup_otp_error_text")
-                    )
-                } else if (otpState.message.isNotBlank() && (otpVerifiedForEmail || isChallengeForEmail)) {
-                    val expirySuffix = if (!otpVerifiedForEmail && expiryRemainingSec > 0) {
-                        val mins = expiryRemainingSec / 60
-                        val secs = expiryRemainingSec % 60
-                        String.format(Locale.US, " · Valid %02d:%02d", mins, secs)
-                    } else ""
-                    Text(
-                        text = otpState.message + expirySuffix,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (otpVerifiedForEmail) GreenPaid else TealAccent,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.testTag("signup_otp_status_text")
-                    )
-                }
-                if (!otpVerifiedForEmail && isChallengeForEmail && !otpExpired && !otpState.blocked) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedTextField(
-                            value = otpInput,
-                            onValueChange = { otpInput = it.filter { ch -> ch.isDigit() }.take(6) },
-                            label = { Text("Enter 6-digit OTP") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            singleLine = true,
-                            modifier = Modifier.weight(1f).testTag("signup_otp_input")
-                        )
-                        Button(
-                            onClick = { onVerifyOtp(otpInput) {} },
-                            enabled = !otpState.busy && otpInput.length == 6,
-                            colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
-                            modifier = Modifier.height(50.dp).testTag("signup_verify_otp_button")
-                        ) {
-                            Text("Verify", fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
+            Row(
+                modifier = Modifier.padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(Icons.Default.MarkEmailRead, contentDescription = null, tint = TealAccent, modifier = Modifier.size(18.dp))
+                Text(
+                    text = "A Firebase verification link will be sent to your email on registration. Verify your email before opening the Admin Dashboard.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
 
@@ -1073,11 +1104,7 @@ private fun AdminSignUpSection(
                 Spacer(Modifier.width(8.dp))
             }
             Text(
-                text = when {
-                    cloudBusy -> "Creating Admin Workspace..."
-                    !otpVerifiedForEmail -> "Verify Email OTP to Create Admin"
-                    else -> "Complete Admin Sign Up"
-                },
+                text = if (cloudBusy) "Sending Verification Email..." else "Register & Send Verification Email",
                 fontWeight = FontWeight.Bold
             )
         }
@@ -1149,11 +1176,14 @@ private fun AdminLoginSection(
     adminLoginSecurityState: LoginSecurityState,
     hasAdminVerifyCode: Boolean,
     otpState: OtpUiState,
+    adminVerificationState: AdminEmailVerificationUiState = AdminEmailVerificationUiState(),
     onBack: () -> Unit,
     onClearError: () -> Unit,
     onLoginAdmin: (identifier: String, password: String, twoFactorCode: String, antiRobotPassed: Boolean) -> Unit,
     onLoginWithPasskey: (emailHint: String, antiRobotPassed: Boolean) -> Unit,
     onSignInGoogle: () -> Unit,
+    onResendVerification: () -> Unit = {},
+    onCheckVerification: () -> Unit = {},
     onRequestOtp: (email: String, purpose: String) -> Unit,
     onVerifyOtp: (otp: String, onVerified: () -> Unit) -> Unit,
     onClearOtp: () -> Unit,
@@ -1182,10 +1212,13 @@ private fun AdminLoginSection(
     val antiRobotPassed = antiRobotInput.trim() == captchaCode
 
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(adminLoginSecurityState.lockUntilMillis) {
-        while (adminLoginSecurityState.lockUntilMillis > System.currentTimeMillis()) {
-            nowMillis = System.currentTimeMillis()
+    LaunchedEffect(adminLoginSecurityState.lockUntilMillis, adminVerificationState.resendAvailableAtMillis) {
+        nowMillis = System.currentTimeMillis()
+        while (adminLoginSecurityState.lockUntilMillis > System.currentTimeMillis() ||
+            adminVerificationState.resendAvailableAtMillis > System.currentTimeMillis()
+        ) {
             delay(1000L)
+            nowMillis = System.currentTimeMillis()
         }
         nowMillis = System.currentTimeMillis()
     }
@@ -1193,6 +1226,9 @@ private fun AdminLoginSection(
     val remainingLockMs = adminLoginSecurityState.remainingLockMillis(nowMillis)
     val effectiveAttempts = adminLoginSecurityState.effectiveFailedAttempts(nowMillis)
     val remainingAttempts = adminLoginSecurityState.remainingAttempts(nowMillis)
+    val resendWaitSec = if (adminVerificationState.resendAvailableAtMillis > nowMillis) {
+        ((adminVerificationState.resendAvailableAtMillis - nowMillis + 999L) / 1000L).toInt().coerceAtLeast(0)
+    } else 0
 
     LaunchedEffect(adminLoginSecurityState.failedAttempts, adminLoginSecurityState.lockUntilMillis) {
         if (adminLoginSecurityState.failedAttempts > 0) {
@@ -1281,6 +1317,60 @@ private fun AdminLoginSection(
                 onLoginAdmin(identifier, password, twoFactorCode, antiRobotPassed)
             }
         )
+
+        if (adminVerificationState.awaitingVerification && adminVerificationState.fromLoginGate) {
+            Surface(
+                color = RedDueBg,
+                border = BorderStroke(1.2.dp, RedDue),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().testTag("login_unverified_email_banner")
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Email Verification Required (${adminVerificationState.email.ifBlank { identifier }})",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Black,
+                        color = RedDueDark
+                    )
+                    Text(
+                        text = adminVerificationState.message.ifBlank {
+                            "Click the Firebase verification link sent to your email before entering Admin Dashboard."
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = RedDueDark,
+                        modifier = Modifier.testTag("login_verification_status_text")
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = onResendVerification,
+                            enabled = !adminVerificationState.busy && resendWaitSec == 0,
+                            modifier = Modifier.weight(1f).testTag("login_resend_verification_button")
+                        ) {
+                            Text(
+                                text = if (resendWaitSec > 0) "Resend (${resendWaitSec}s)" else "Resend Email",
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Button(
+                            onClick = onCheckVerification,
+                            enabled = !adminVerificationState.busy,
+                            colors = ButtonDefaults.buttonColors(containerColor = TealAccent, contentColor = Color.White),
+                            modifier = Modifier.weight(1f).testTag("login_check_verification_button")
+                        ) {
+                            Text("I've Verified", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+            }
+        } else if (adminVerificationState.emailVerified && adminVerificationState.message.isNotBlank()) {
+            Text(
+                text = adminVerificationState.message,
+                color = GreenPaid,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.testTag("login_verification_status_text")
+            )
+        }
 
         if (recoverySuccessMsg.isNotEmpty()) {
             Text(recoverySuccessMsg, color = GreenPaid, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)

@@ -24,6 +24,17 @@ data class BackupImportSummary(
     val expensesCount: Int = 0
 )
 
+data class PendingAdminSignup(
+    val uid: String = "",
+    val email: String = "",
+    val adminName: String = "",
+    val mobile: String = "",
+    val twoFactorHash: String = ""
+) {
+    val isPresent: Boolean
+        get() = uid.isNotBlank() && email.isNotBlank()
+}
+
 object AuthHasher {
     fun sha256(value: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
@@ -496,6 +507,94 @@ class BillingRepository(
         val wsId = companyId.ifBlank { getActiveWorkspaceId() }
         if (pushToCloud && wsId.isNotBlank()) {
             cloudSync?.pushAccount(wsId, adminEntity)
+        }
+    }
+
+    suspend fun savePendingAdminSignup(
+        uid: String,
+        email: String,
+        adminName: String,
+        mobile: String,
+        twoFactorPassword: String
+    ) {
+        val tfHash = twoFactorPassword.trim().takeIf { it.isNotEmpty() }?.let { AuthHasher.sha256(it) }.orEmpty()
+        configDao.setAll(
+            listOf(
+                AppConfigEntity(KEY_PENDING_ADMIN_UID, uid.trim()),
+                AppConfigEntity(KEY_PENDING_ADMIN_EMAIL, email.trim().lowercase(Locale.US)),
+                AppConfigEntity(KEY_PENDING_ADMIN_NAME, adminName.trim()),
+                AppConfigEntity(KEY_PENDING_ADMIN_MOBILE, mobile.trim()),
+                AppConfigEntity(KEY_PENDING_ADMIN_TWO_FACTOR_HASH, tfHash)
+            )
+        )
+    }
+
+    suspend fun getPendingAdminSignup(): PendingAdminSignup = PendingAdminSignup(
+        uid = configDao.getValue(KEY_PENDING_ADMIN_UID).orEmpty().trim(),
+        email = configDao.getValue(KEY_PENDING_ADMIN_EMAIL).orEmpty().trim().lowercase(Locale.US),
+        adminName = configDao.getValue(KEY_PENDING_ADMIN_NAME).orEmpty().trim(),
+        mobile = configDao.getValue(KEY_PENDING_ADMIN_MOBILE).orEmpty().trim(),
+        twoFactorHash = configDao.getValue(KEY_PENDING_ADMIN_TWO_FACTOR_HASH).orEmpty().trim()
+    )
+
+    suspend fun verifyPendingTwoFactor(code: String): Boolean {
+        val stored = configDao.getValue(KEY_PENDING_ADMIN_TWO_FACTOR_HASH).orEmpty().trim()
+        if (stored.isBlank()) return false
+        return stored == AuthHasher.sha256(code.trim())
+    }
+
+    suspend fun clearPendingAdminSignup() {
+        configDao.setAll(
+            listOf(
+                AppConfigEntity(KEY_PENDING_ADMIN_UID, ""),
+                AppConfigEntity(KEY_PENDING_ADMIN_EMAIL, ""),
+                AppConfigEntity(KEY_PENDING_ADMIN_NAME, ""),
+                AppConfigEntity(KEY_PENDING_ADMIN_MOBILE, ""),
+                AppConfigEntity(KEY_PENDING_ADMIN_TWO_FACTOR_HASH, "")
+            )
+        )
+    }
+
+    suspend fun saveVerifiedCloudAdmin(
+        displayName: String,
+        phone: String,
+        email: String,
+        uid: String,
+        companyId: String,
+        rawPassword: String = "",
+        rawTwoFactorCode: String = ""
+    ) {
+        val cleanUser = AuthPolicy.CANONICAL_ADMIN_USERNAME
+        val passwordHash = if (rawPassword.isNotBlank()) {
+            AuthHasher.sha256(rawPassword)
+        } else {
+            AuthPolicy.FIREBASE_EMAIL_AUTH_MARKER
+        }
+        val pendingTfHash = configDao.getValue(KEY_PENDING_ADMIN_TWO_FACTOR_HASH).orEmpty().trim()
+        val resolvedTfHash = when {
+            rawTwoFactorCode.isNotBlank() -> AuthHasher.sha256(rawTwoFactorCode.trim())
+            pendingTfHash.isNotBlank() -> pendingTfHash
+            else -> ""
+        }
+        val adminEntity = UserAccountEntity(
+            username = cleanUser,
+            displayName = displayName.ifBlank { "Admin" },
+            passwordHash = passwordHash,
+            role = "admin",
+            phone = phone.trim(),
+            email = email.trim().lowercase(Locale.ROOT),
+            uid = uid.trim(),
+            companyId = companyId.trim(),
+            loginEnabled = true
+        )
+        _volatileCloudActive.value = false
+        _volatileDeviceRole.value = "admin"
+        db.withTransaction {
+            userDao.deleteAllAdmins()
+            userDao.upsert(adminEntity)
+            if (resolvedTfHash.isNotBlank()) {
+                configDao.setValue(AppConfigEntity(KEY_FINAL_CODE_HASH, resolvedTfHash))
+            }
         }
     }
 
@@ -3954,6 +4053,11 @@ class BillingRepository(
         const val KEY_TECH_VERIFIED_TECH_ID = "tech_verified_tech_id_v1"
         const val KEY_TECH_VERIFIED_PHONE = "tech_verified_phone_v1"
         const val KEY_TECH_MUST_CHANGE_PASSWORD = "tech_must_change_password_v1"
+        const val KEY_PENDING_ADMIN_UID = "pending_admin_uid_v1"
+        const val KEY_PENDING_ADMIN_EMAIL = "pending_admin_email_v1"
+        const val KEY_PENDING_ADMIN_NAME = "pending_admin_name_v1"
+        const val KEY_PENDING_ADMIN_MOBILE = "pending_admin_mobile_v1"
+        const val KEY_PENDING_ADMIN_TWO_FACTOR_HASH = "pending_admin_two_factor_hash_v1"
 
         const val DEFAULT_ADMIN_RECOVERY_PASSWORD = "Manoj2007"
         const val DEFAULT_COMPANY_NAME = AppIdentity.OFFICIAL_COMPANY_NAME

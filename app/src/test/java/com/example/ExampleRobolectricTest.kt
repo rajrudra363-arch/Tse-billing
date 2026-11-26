@@ -2522,13 +2522,13 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun adminSignUp_enforcesSixDigitEmailOtp_cooldown_error_andSubmitsOnlyAfterVerification() {
-        var otpState by mutableStateOf(com.example.ui.OtpUiState())
-        var requestedEmail = ""
-        var requestedPurpose = ""
-        var verifiedOtpSubmitted = ""
-        var clearOtpCalls = 0
+    fun adminSignUp_usesFirebaseEmailVerification_blocksUnverified_supportsResendAndLoginGate() {
+        var verificationState by mutableStateOf(com.example.ui.AdminEmailVerificationUiState())
         var registeredEmail = ""
+        var checkCalls = 0
+        var resendCalls = 0
+        var completedDashboardAccess = false
+        var cancelCalls = 0
 
         composeTestRule.setContent {
             TseBillingTheme {
@@ -2536,45 +2536,46 @@ class ExampleRobolectricTest {
                     isAdminConfigured = false,
                     accounts = emptyList(),
                     authError = "",
-                    otpState = otpState,
+                    adminVerificationState = verificationState,
                     onClearError = {},
                     onLogin = { _, _, _, _ -> },
-                    onClearOtp = {
-                        clearOtpCalls++
-                        otpState = com.example.ui.OtpUiState()
-                    },
-                    onRequestOtp = { email, purpose ->
-                        requestedEmail = email.trim()
-                        requestedPurpose = purpose
-                        val now = System.currentTimeMillis()
-                        otpState = com.example.ui.OtpUiState(
-                            challengeId = "ch_admin_signup_1",
-                            email = email.trim().lowercase(),
-                            purpose = purpose,
-                            expiresAtMillis = now + 300_000L,
-                            resendAvailableAtMillis = now + 60_000L,
-                            message = "6-digit OTP sent to ${email.trim()}"
+                    onRegisterCompanyAdmin = { _, _, email, _, _, _, _, onDone ->
+                        registeredEmail = email.trim().lowercase()
+                        verificationState = com.example.ui.AdminEmailVerificationUiState(
+                            awaitingVerification = true,
+                            email = registeredEmail,
+                            adminName = "Manoj Saha",
+                            mobile = "7083805120",
+                            uid = "uid_spark_admin_1",
+                            emailVerified = false,
+                            resendAvailableAtMillis = System.currentTimeMillis() + 60_000L,
+                            message = "Verification link sent to $registeredEmail.",
+                            fromLoginGate = false
                         )
+                        onDone()
                     },
-                    onVerifyOtp = { otp, _ ->
-                        verifiedOtpSubmitted = otp
-                        if (otp == "654321") {
-                            otpState = otpState.copy(
-                                otpVerified = true,
-                                verificationToken = "tok_verified_1",
-                                expiresAtMillis = 0L,
-                                message = "Email verified successfully",
-                                errorMessage = ""
+                    onCheckAdminEmailVerification = { onCompleted ->
+                        checkCalls++
+                        if (checkCalls == 1) {
+                            verificationState = verificationState.copy(
+                                errorMessage = "Email is not verified yet. Open the verification link first."
                             )
                         } else {
-                            otpState = otpState.copy(
-                                errorMessage = "Invalid OTP. 4 attempts remaining."
-                            )
+                            completedDashboardAccess = true
+                            verificationState = com.example.ui.AdminEmailVerificationUiState()
+                            onCompleted()
                         }
                     },
-                    onRegisterCompanyAdmin = { _, _, email, _, _, _, _, onDone ->
-                        registeredEmail = email
-                        onDone()
+                    onResendAdminVerificationEmail = {
+                        resendCalls++
+                        verificationState = verificationState.copy(
+                            resendAvailableAtMillis = System.currentTimeMillis() + 60_000L,
+                            message = "Verification email re-sent."
+                        )
+                    },
+                    onCancelPendingAdminVerification = {
+                        cancelCalls++
+                        verificationState = com.example.ui.AdminEmailVerificationUiState()
                     }
                 )
             }
@@ -2586,56 +2587,63 @@ class ExampleRobolectricTest {
 
         composeTestRule.onNodeWithTag("signup_company_name_locked").performScrollTo()
             .assertTextContains(com.example.data.AppIdentity.OFFICIAL_COMPANY_NAME)
-        composeTestRule.onNodeWithTag("signup_send_otp_button").performScrollTo().assertIsNotEnabled()
+        composeTestRule.onNodeWithTag("signup_email_verification_info").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("create_admin_button").performScrollTo().assertIsNotEnabled()
 
         composeTestRule.onNodeWithTag("signup_admin_name").performScrollTo().performTextInput("Manoj Saha")
         composeTestRule.onNodeWithTag("signup_admin_mobile").performScrollTo().performTextInput("7083805120")
         composeTestRule.onNodeWithTag("signup_admin_email").performScrollTo().performTextInput("admin@totalsolution.in")
-        composeTestRule.waitForIdle()
-
-        composeTestRule.onNodeWithTag("signup_send_otp_button").performScrollTo().assertIsEnabled().performClick()
-        composeTestRule.waitForIdle()
-
-        assertEquals("admin@totalsolution.in", requestedEmail)
-        assertEquals("ADMIN_SIGNUP", requestedPurpose)
-        // Cooldown active: button displays countdown and is disabled
-        composeTestRule.onNodeWithTag("signup_send_otp_button").performScrollTo().assertIsNotEnabled()
-        composeTestRule.onNodeWithTag("signup_otp_status_text").performScrollTo().assertIsDisplayed()
-
-        // 4-digit OTP keeps Verify button disabled; 6-digit OTP enables it
-        composeTestRule.onNodeWithTag("signup_otp_input").performScrollTo().performTextInput("1234")
-        composeTestRule.onNodeWithTag("signup_verify_otp_button").performScrollTo().assertIsNotEnabled()
-        composeTestRule.onNodeWithTag("signup_otp_input").performScrollTo().performTextInput("56")
-        composeTestRule.onNodeWithTag("signup_verify_otp_button").performScrollTo().assertIsEnabled().performClick()
-        composeTestRule.waitForIdle()
-
-        assertEquals("123456", verifiedOtpSubmitted)
-        composeTestRule.onNodeWithTag("signup_otp_error_text").performScrollTo()
-            .assertTextContains("Invalid OTP. 4 attempts remaining.")
-
-        // Strong password + matching confirm + differing 2FA password still blocked before OTP verification
         composeTestRule.onNodeWithTag("setup_admin_password").performScrollTo().performTextInput("AdminStrong@2026")
         composeTestRule.onNodeWithTag("setup_admin_confirm").performScrollTo().performTextInput("AdminStrong@2026")
         composeTestRule.onNodeWithTag("setup_admin_verify_code").performScrollTo().performTextInput("2FA@99")
         composeTestRule.onNodeWithTag("setup_admin_verify_code_confirm").performScrollTo().performTextInput("2FA@99")
-        composeTestRule.onNodeWithTag("create_admin_button").performScrollTo().assertIsNotEnabled()
-
-        // Verify with valid 6-digit OTP -> enables Complete Admin Sign Up
-        composeTestRule.onNodeWithTag("signup_otp_input").performScrollTo().performTextReplacement("654321")
-        composeTestRule.onNodeWithTag("signup_verify_otp_button").performScrollTo().assertIsEnabled().performClick()
         composeTestRule.waitForIdle()
-        assertEquals("654321", verifiedOtpSubmitted)
 
         composeTestRule.onNodeWithTag("create_admin_button").performScrollTo().assertIsEnabled().performClick()
         composeTestRule.waitForIdle()
-        assertEquals("admin@totalsolution.in", registeredEmail)
 
-        // Editing email after OTP verification resets OTP state
-        composeTestRule.onNodeWithTag("signup_admin_email").performScrollTo().performTextInput("2")
+        assertEquals("admin@totalsolution.in", registeredEmail)
+        assertFalse(completedDashboardAccess)
+
+        // Pending verification card is shown; Resend button obeys 60s cooldown
+        composeTestRule.onNodeWithTag("signup_email_verification_pending_card").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("signup_resend_verification_button").performScrollTo().assertIsNotEnabled()
+        composeTestRule.onNodeWithTag("signup_verification_status_text").performScrollTo()
+            .assertTextContains("Verification link sent to admin@totalsolution.in.")
+
+        // First Continue check while email is still unverified -> blocked with error message
+        composeTestRule.onNodeWithTag("signup_check_verification_button").performScrollTo().performClick()
         composeTestRule.waitForIdle()
-        assertTrue(clearOtpCalls >= 1)
-        composeTestRule.onNodeWithTag("create_admin_button").performScrollTo().assertIsNotEnabled()
+        assertFalse(completedDashboardAccess)
+        composeTestRule.onNodeWithTag("signup_verification_error_text").performScrollTo()
+            .assertTextContains("Email is not verified yet.")
+
+        // Cooldown expires -> Resend button enables and sends again
+        verificationState = verificationState.copy(resendAvailableAtMillis = System.currentTimeMillis() - 1_000L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("signup_resend_verification_button").performScrollTo().assertIsEnabled().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, resendCalls)
+
+        // Second Continue check after user verifies email -> unlocks Admin Dashboard completion
+        composeTestRule.onNodeWithTag("signup_check_verification_button").performScrollTo().performClick()
+        composeTestRule.waitForIdle()
+        assertTrue(completedDashboardAccess)
+
+        // Verify Login Gate also displays unverified email banner with Resend & Continue controls
+        verificationState = com.example.ui.AdminEmailVerificationUiState(
+            awaitingVerification = true,
+            email = "unverified@totalsolution.in",
+            message = "Email verification required. Click the link in your email or resend below.",
+            resendAvailableAtMillis = System.currentTimeMillis() - 1_000L,
+            fromLoginGate = true
+        )
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("login_unverified_email_banner").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("login_resend_verification_button").performScrollTo().assertIsEnabled().performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(2, resendCalls)
+        assertEquals(0, cancelCalls)
     }
 
     @Test

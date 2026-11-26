@@ -956,6 +956,27 @@ describe("TSE Billing Firestore Rules", () => {
       techDb.collection("workspaces").doc("ws_tse_1").collection("bills").doc("b_blocked").set(validBillData("b_blocked", "rahul_tech", "tech_1", 0))
     );
   });
+
+  test("unverified admin account cannot create workspace until email_verified is true", async () => {
+    const unverifiedAdminDb = testEnv.authenticatedContext("unverified_admin_1", {
+      email: "newadmin@totalsolution.in",
+      email_verified: false
+    }).firestore(DB_ID);
+    const verifiedAdminDb = testEnv.authenticatedContext("verified_admin_1", {
+      email: "newadmin@totalsolution.in",
+      email_verified: true
+    }).firestore(DB_ID);
+
+    await assertFails(
+      unverifiedAdminDb.collection("workspaces").doc("ws_unverified_1").set(validWorkspaceData("unverified_admin_1"))
+    );
+    await assertSucceeds(
+      verifiedAdminDb.collection("workspaces").doc("ws_verified_1").set({
+        ...validWorkspaceData("verified_admin_1"),
+        workspaceId: "ws_verified_1"
+      })
+    );
+  });
 });
 
 

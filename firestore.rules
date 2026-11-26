@@ -337,7 +337,7 @@ service cloud.firestore {
         resource.data.ownerUid == request.auth.uid ||
         request.auth.uid in resource.data.memberUids
       );
-      allow create: if isSignedIn() && isValidId(workspaceId) && isValidWorkspaceCreate(workspaceId);
+      allow create: if isSignedIn() && request.auth.token.email_verified == true && isValidId(workspaceId) && isValidWorkspaceCreate(workspaceId);
       allow update: if isSignedIn() && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid) &&
         request.resource.data.ownerUid == resource.data.ownerUid &&
         request.resource.data.workspaceId == resource.data.workspaceId &&

@@ -1,15 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { UserAccountEntity, UserSession, UserRole, CompanySettings } from '../types';
 import { AppDb } from '../storage/db';
-import { ShieldCheck, Lock, User, Upload, AlertCircle, KeyRound } from 'lucide-react';
+import { ShieldCheck, Lock, User, Upload, AlertCircle, KeyRound, Clock, X } from 'lucide-react';
 import { sound } from '../utils/soundEngine';
 
 interface AuthScreenProps {
   company: CompanySettings;
+  sessionNotice?: string | null;
+  onDismissSessionNotice?: () => void;
   onLoginSuccess: (session: UserSession) => void;
 }
 
-export const AuthScreen: React.FC<AuthScreenProps> = ({ company, onLoginSuccess }) => {
+export const AuthScreen: React.FC<AuthScreenProps> = ({
+  company,
+  sessionNotice,
+  onDismissSessionNotice,
+  onLoginSuccess,
+}) => {
   const [users, setUsers] = useState<UserAccountEntity[]>([]);
   const [selectedRole, setSelectedRole] = useState<UserRole>('admin');
   const [username, setUsername] = useState<string>('@TotalSolutionAdmin');
@@ -197,6 +204,27 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ company, onLoginSuccess 
 
         {/* Content */}
         <div className="p-6 sm:p-8 space-y-6">
+          {sessionNotice && (
+            <div
+              role="status"
+              data-testid="idle-logout-notice"
+              className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-900 text-xs font-semibold flex items-start gap-2.5"
+            >
+              <Clock className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
+              <span className="flex-1">{sessionNotice}</span>
+              {onDismissSessionNotice && (
+                <button
+                  type="button"
+                  onClick={onDismissSessionNotice}
+                  aria-label="Dismiss session timeout notice"
+                  className="text-amber-700 hover:text-amber-950 p-0.5 rounded"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          )}
+
           {error && (
             <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-semibold flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />

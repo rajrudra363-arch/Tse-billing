@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   UserSession,
   BillEntity,
@@ -18,6 +18,13 @@ import {
 } from './types';
 import { AppDb } from './storage/db';
 import { sound } from './utils/soundEngine';
+import {
+  IDLE_ACTIVITY_EVENTS,
+  IDLE_TIMEOUT_MS,
+  LAST_ACTIVITY_STORAGE_KEY,
+  createIdleSessionTracker,
+  isSessionIdleExpired,
+} from './utils/idleTimer';
 import { TopBar } from './components/TopBar';
 import { NotificationCenterDialog } from './components/NotificationCenterDialog';
 import { AuthScreen } from './screens/AuthScreen';
@@ -54,10 +61,31 @@ type NavTab =
   | 'SETTINGS';
 
 export const App: React.FC = () => {
-  // Session State
+  // Session State (invalidate immediately if persisted session has been idle >= 30 minutes)
+  const [logoutNotice, setLogoutNotice] = useState<string | null>(() => {
+    const saved = localStorage.getItem('tse_active_session');
+    if (!saved) return null;
+    const rawLast = localStorage.getItem(LAST_ACTIVITY_STORAGE_KEY);
+    const parsedLast = rawLast ? Number(rawLast) : NaN;
+    if (isSessionIdleExpired(parsedLast, Date.now(), IDLE_TIMEOUT_MS)) {
+      localStorage.removeItem('tse_active_session');
+      localStorage.removeItem(LAST_ACTIVITY_STORAGE_KEY);
+      return 'Signed out automatically after 30 minutes of inactivity to protect shared workspace devices.';
+    }
+    return null;
+  });
+
   const [session, setSession] = useState<UserSession | null>(() => {
     const saved = localStorage.getItem('tse_active_session');
-    return saved ? JSON.parse(saved) : null;
+    if (!saved) return null;
+    const rawLast = localStorage.getItem(LAST_ACTIVITY_STORAGE_KEY);
+    const parsedLast = rawLast ? Number(rawLast) : NaN;
+    if (isSessionIdleExpired(parsedLast, Date.now(), IDLE_TIMEOUT_MS)) {
+      localStorage.removeItem('tse_active_session');
+      localStorage.removeItem(LAST_ACTIVITY_STORAGE_KEY);
+      return null;
+    }
+    return JSON.parse(saved);
   });
 
   // Active Tab
@@ -117,8 +145,10 @@ export const App: React.FC = () => {
   };
 
   const handleLoginSuccess = (userSession: UserSession) => {
+    setLogoutNotice(null);
     setSession(userSession);
     localStorage.setItem('tse_active_session', JSON.stringify(userSession));
+    localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(Date.now()));
     if (userSession.isSuperAdmin) {
       setActiveTab('ANALYTICS');
     } else {
@@ -126,11 +156,100 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     sound.playClick();
+    setNotificationModalOpen(false);
     setSession(null);
     localStorage.removeItem('tse_active_session');
-  };
+    localStorage.removeItem(LAST_ACTIVITY_STORAGE_KEY);
+  }, []);
+
+  const handleLogoutRef = useRef(handleLogout);
+  handleLogoutRef.current = handleLogout;
+
+  // Idle Session Timer: automatically call handleLogout after 30 minutes of inactivity
+  useEffect(() => {
+    if (!session) return;
+
+    const readStoredActivity = (): number | undefined => {
+      const raw = localStorage.getItem(LAST_ACTIVITY_STORAGE_KEY);
+      if (!raw) return undefined;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+    };
+
+    const tracker = createIdleSessionTracker({
+      timeoutMs: IDLE_TIMEOUT_MS,
+      onIdle: () => {
+        setLogoutNotice(
+          'Signed out automatically after 30 minutes of inactivity to protect shared workspace devices.'
+        );
+        handleLogoutRef.current();
+      },
+    });
+
+    const initialTs = readStoredActivity() ?? Date.now();
+    localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(initialTs));
+    tracker.start(initialTs);
+    if (tracker.isStopped()) {
+      return () => {
+        tracker.stop();
+      };
+    }
+
+    let lastThrottledRecord = 0;
+    const handleActivity = (event: Event) => {
+      const now = Date.now();
+      const isHighFrequency =
+        event.type === 'mousemove' || event.type === 'scroll' || event.type === 'wheel';
+      if (isHighFrequency && now - lastThrottledRecord < 1000) {
+        return;
+      }
+      lastThrottledRecord = now;
+      localStorage.setItem(LAST_ACTIVITY_STORAGE_KEY, String(now));
+      tracker.recordActivity();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        const stored = readStoredActivity();
+        if (stored !== undefined && isSessionIdleExpired(stored, Date.now(), IDLE_TIMEOUT_MS)) {
+          setLogoutNotice(
+            'Signed out automatically after 30 minutes of inactivity to protect shared workspace devices.'
+          );
+          handleLogoutRef.current();
+          return;
+        }
+        tracker.checkExpired();
+      }
+    };
+
+    const handleStorageSync = (event: StorageEvent) => {
+      if (event.key === 'tse_active_session' && event.newValue === null) {
+        handleLogoutRef.current();
+      } else if (event.key === LAST_ACTIVITY_STORAGE_KEY && event.newValue) {
+        const synced = Number(event.newValue);
+        if (Number.isFinite(synced) && synced > tracker.getLastActivityAt()) {
+          tracker.recordActivity();
+        }
+      }
+    };
+
+    for (const eventName of IDLE_ACTIVITY_EVENTS) {
+      window.addEventListener(eventName, handleActivity, { passive: true });
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('storage', handleStorageSync);
+
+    return () => {
+      tracker.stop();
+      for (const eventName of IDLE_ACTIVITY_EVENTS) {
+        window.removeEventListener(eventName, handleActivity);
+      }
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('storage', handleStorageSync);
+    };
+  }, [session]);
 
   const toggleSound = () => {
     const next = sound.toggle();
@@ -278,7 +397,14 @@ export const App: React.FC = () => {
   }
 
   if (!session) {
-    return <AuthScreen company={company} onLoginSuccess={handleLoginSuccess} />;
+    return (
+      <AuthScreen
+        company={company}
+        sessionNotice={logoutNotice}
+        onDismissSessionNotice={() => setLogoutNotice(null)}
+        onLoginSuccess={handleLoginSuccess}
+      />
+    );
   }
 
   return (
@@ -295,7 +421,10 @@ export const App: React.FC = () => {
           setNotifications(AppDb.getNotifications());
           setNotificationModalOpen(true);
         }}
-        onLogout={handleLogout}
+        onLogout={() => {
+          setLogoutNotice(null);
+          handleLogout();
+        }}
       />
 
       {/* Navigation Sub-Header Bar */}

@@ -279,6 +279,13 @@ fun TseBillingApp(viewModel: BillingViewModel) {
         val lastCreatedTechPasskey by viewModel.lastCreatedTechPasskey.collectAsStateWithLifecycle()
         val dueInstallationReminders by viewModel.dueInstallationReminders.collectAsStateWithLifecycle()
         val comboPackages by viewModel.comboPackages.collectAsStateWithLifecycle()
+        val employees by viewModel.employees.collectAsStateWithLifecycle()
+        val salaryPayments by viewModel.salaryPayments.collectAsStateWithLifecycle()
+        val employeeSalarySummaries by viewModel.employeeSalarySummaries.collectAsStateWithLifecycle()
+        val upiTransactions by viewModel.upiTransactions.collectAsStateWithLifecycle()
+        val activeUpiTransaction by viewModel.activeUpiTransaction.collectAsStateWithLifecycle()
+        val qrGatewayBusy by viewModel.qrGatewayBusy.collectAsStateWithLifecycle()
+        val billPaymentFilter by viewModel.billPaymentFilter.collectAsStateWithLifecycle()
         var showNotificationCenter by remember { mutableStateOf(false) }
 
         val lifecycleOwner = LocalLifecycleOwner.current
@@ -528,6 +535,7 @@ fun TseBillingApp(viewModel: BillingViewModel) {
                     NavItem(MainTab.CUSTOMERS, "Customers", Icons.Default.People),
                     NavItem(MainTab.HELP, "Help Desk", Icons.Default.SupportAgent),
                     NavItem(MainTab.PRODUCTS, "Products", Icons.Default.Inventory2),
+                    NavItem(MainTab.EMPLOYEES, "Employees", Icons.Default.People),
                     NavItem(MainTab.SETTINGS, "Settings", Icons.Default.Settings)
                 )
                 s.isAdmin && !isStaffOnlyApk -> listOf(

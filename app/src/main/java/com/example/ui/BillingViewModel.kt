@@ -2255,7 +2255,7 @@ class BillingViewModel(
             val discovered = sync.discoverWorkspaceForSignedInUser().getOrNull()
             if (discovered == null || BillingRepository.normalizeRole(discovered.deviceRole) != "super_admin") {
                 _cloudBusy.value = false
-                sync.signOut(sync.contextForAuth())
+                com.google.firebase.auth.FirebaseAuth.getInstance().signOut()
                 _authError.value = "This account is not authorized as Super Admin."
                 soundEngine.play(SoundCue.ERROR)
                 return@launch

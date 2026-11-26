@@ -388,24 +388,32 @@ data class ProductComboItem(
     val productName: String = "",
     val unit: String = "Nos",
     val qty: Double = 1.0,
-    val catalogRate: Double = 0.0,
+    val rate: Double = 0.0,
+    val catalogRate: Double = rate,
     val folder: String = ""
-)
+) {
+    val amount: Double get() = qty.coerceAtLeast(0.0) * rate.coerceAtLeast(0.0)
+}
 
 data class ProductComboFile(
-    val comboFileId: String = UUID.randomUUID().toString(),
+    val id: String = UUID.randomUUID().toString(),
+    val comboFileId: String = id,
     val companyId: String = "",
     val name: String = "",
     val description: String = "",
     val items: List<ProductComboItem> = emptyList(),
     val comboPrice: Double = 0.0,
+    val totalAmount: Double = comboPrice,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 ) {
-    val catalogSum: Double get() = items.sumOf { (it.qty.coerceAtLeast(0.0) * it.catalogRate.coerceAtLeast(0.0)) }
+    val catalogSum: Double get() = items.sumOf { it.amount }
     val effectiveComboPrice: Double get() = if (comboPrice > 0.0) comboPrice else catalogSum
     val totalQty: Double get() = items.sumOf { it.qty }
 }
+
+typealias ComboPackage = ProductComboFile
+typealias ComboPackageItem = ProductComboItem
 
 object ProductComboFileJson {
     fun itemsToJson(items: List<ProductComboItem>): String {
@@ -468,35 +476,13 @@ object ProductComboFileJson {
     )
 }
 
-// Legacy ComboPackage structures retained solely for automatic non-destructive migration from older versions.
-data class ComboPackageItem(
-    val productId: Long = 0L,
-    val productName: String = "",
-    val unit: String = "Nos",
-    val qty: Double = 1.0,
-    val rate: Double = 0.0,
-    val folder: String = ""
-) {
-    val amount: Double get() = qty.coerceAtLeast(0.0) * rate.coerceAtLeast(0.0)
-}
-
-data class ComboPackage(
-    val id: String = UUID.randomUUID().toString(),
-    val name: String = "",
-    val description: String = "",
-    val items: List<ComboPackageItem> = emptyList(),
-    val createdAt: Long = System.currentTimeMillis()
-) {
-    val totalAmount: Double get() = items.sumOf { it.amount }
-    val totalQty: Double get() = items.sumOf { it.qty }
-}
-
 object ComboPackageJson {
     fun toJsonObject(pkg: ComboPackage): JSONObject = JSONObject().apply {
         put("id", pkg.id)
         put("name", pkg.name)
         put("desc", pkg.description)
         put("createdAt", pkg.createdAt)
+        put("comboPrice", pkg.comboPrice)
         val itemsArr = JSONArray()
         pkg.items.forEach { itm ->
             itemsArr.put(
@@ -517,21 +503,24 @@ object ComboPackageJson {
         val itemsArr = obj.optJSONArray("items") ?: JSONArray()
         val items = List(itemsArr.length()) { j ->
             val itmObj = itemsArr.getJSONObject(j)
-            ComboPackageItem(
-                productId = itmObj.optLong("prodId", 0L),
-                productName = itmObj.optString("prodName", ""),
+            ProductComboItem(
+                productId = itmObj.optLong("prodId", itmObj.optLong("productId", 0L)),
+                productName = itmObj.optString("prodName", itmObj.optString("productName", "")),
                 unit = itmObj.optString("unit", "Nos"),
                 qty = itmObj.optDouble("qty", 1.0),
-                rate = itmObj.optDouble("rate", 0.0),
+                catalogRate = itmObj.optDouble("rate", itmObj.optDouble("catalogRate", 0.0)),
                 folder = itmObj.optString("folder", "")
             )
         }
-        return ComboPackage(
-            id = obj.optString("id", UUID.randomUUID().toString()),
+        return ProductComboFile(
+            comboFileId = obj.optString("id", obj.optString("comboFileId", UUID.randomUUID().toString())),
+            companyId = obj.optString("companyId", ""),
             name = obj.optString("name", "Combo File"),
-            description = obj.optString("desc", ""),
+            description = obj.optString("desc", obj.optString("description", "")),
             items = items,
-            createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+            comboPrice = obj.optDouble("comboPrice", 0.0),
+            createdAt = obj.optLong("createdAt", System.currentTimeMillis()),
+            updatedAt = obj.optLong("updatedAt", System.currentTimeMillis())
         )
     }
 

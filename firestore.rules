@@ -15,8 +15,8 @@ service cloud.firestore {
 
     function isBootstrappedAdmin() {
       return isSignedIn() && (
-        (request.auth.token.email == 'rajrudra363@gmail.com' &&
-         request.auth.token.email_verified == true) ||
+        (request.auth.token.get('email', '') == 'rajrudra363@gmail.com' &&
+         request.auth.token.get('email_verified', false) == true) ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
       );
     }
@@ -75,7 +75,7 @@ service cloud.firestore {
     function isStrictSuperAdmin(companyId) {
       return isSignedIn() &&
         !exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
-        request.auth.token.email != 'rajrudra363@gmail.com' &&
+        request.auth.token.get('email', '') != 'rajrudra363@gmail.com' &&
         (!exists(/databases/$(database)/documents/workspaces/$(companyId)) ||
           workspaceDoc(companyId).data.ownerUid != request.auth.uid) &&
         !isTechnicianMember(companyId) &&
@@ -103,6 +103,7 @@ service cloud.firestore {
           'voiceBillDone', 'voiceModelId', 'memberUids', 'createdAt', 'updatedAt'
         ]) &&
         d.workspaceId == workspaceId &&
+        (!('companyId' in d) || d.companyId == workspaceId) &&
         d.ownerUid == request.auth.uid &&
         d.ownerEmail is string &&
         d.techShareCode is string && d.techShareCode.size() >= 8 && d.techShareCode.size() <= 64 &&
@@ -337,7 +338,7 @@ service cloud.firestore {
         resource.data.ownerUid == request.auth.uid ||
         request.auth.uid in resource.data.memberUids
       );
-      allow create: if isSignedIn() && request.auth.token.email_verified == true && isValidId(workspaceId) && isValidWorkspaceCreate(workspaceId);
+      allow create: if isSignedIn() && request.auth.token.get('email_verified', false) == true && isValidId(workspaceId) && isValidWorkspaceCreate(workspaceId);
       allow update: if isSignedIn() && (isBootstrappedAdmin() || resource.data.ownerUid == request.auth.uid) &&
         request.resource.data.ownerUid == resource.data.ownerUid &&
         request.resource.data.workspaceId == resource.data.workspaceId &&
